@@ -7,10 +7,10 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="2*" MinHeight="200"/>
+            <RowDefinition Height="2*" MinHeight="200" x:Name="RowPlaene"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*" MinHeight="120"/>
+            <RowDefinition Height="1.2*" MinHeight="80" x:Name="RowDetail"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -34,7 +34,18 @@
                       VerticalAlignment="Center" Margin="0,0,20,0" Checked="ChkSpaetePaed_Changed" Unchecked="ChkSpaetePaed_Changed"/>
 
             <CheckBox x:Name="ChkKlassenVergleich" Content="Klassenvergleich zeigen"
-                      VerticalAlignment="Center" Checked="ChkKlassenVergleich_Changed" Unchecked="ChkKlassenVergleich_Changed"/>
+                      VerticalAlignment="Center" Margin="0,0,20,0" Checked="ChkKlassenVergleich_Changed" Unchecked="ChkKlassenVergleich_Changed"/>
+
+            <CheckBox x:Name="ChkVergleichsModus" Content="Vergleichsmodus (2 Lösungen)"
+                      VerticalAlignment="Center" Margin="0,0,10,0" Checked="ChkVergleichsModus_Changed" Unchecked="ChkVergleichsModus_Changed"/>
+            <TextBlock x:Name="LblVglLoesung" Text="2. Lösung:" FontWeight="Bold" VerticalAlignment="Center"
+                       Margin="0,0,6,0" Visibility="Collapsed"/>
+            <Button x:Name="BtnVorigeVglLoesung2" Content="&#9664;" Width="28" VerticalAlignment="Center"
+                    Margin="0,0,2,0" ToolTip="Vorige 2. Lösung" Click="BtnVorigeVglLoesung2_Click" Visibility="Collapsed"/>
+            <ComboBox x:Name="CboVglLoesung2" Width="160" VerticalAlignment="Center" Margin="0,0,2,0"
+                      SelectionChanged="CboVglLoesung2_SelectionChanged" Visibility="Collapsed"/>
+            <Button x:Name="BtnNaechsteVglLoesung2" Content="&#9654;" Width="28" VerticalAlignment="Center"
+                    ToolTip="Nächste 2. Lösung" Click="BtnNaechsteVglLoesung2_Click" Visibility="Collapsed"/>
         </StackPanel>
 
         <!-- Hinweiszeile -->
@@ -42,7 +53,7 @@
                    Text="Links Lehrerplan, rechts Klassenplan. Klick auf eine Zelle zeigt im anderen Plan die zugehoerige Klasse bzw. den Lehrer. Ziehen: leere Zelle = verschieben, belegte Zelle gleicher Stundenzahl = tauschen, Parkbereich = entplanen. Ressourcenkonflikte werden hart gesperrt; Qualitaetsprobleme gelb gewarnt."/>
 
         <!-- Hauptbereich: Lehrerplan | Klassenplan | Vergleich-Vorher | Vergleich-Nachher | KlVgl-Vorher | KlVgl-Nachher -->
-        <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+        <ScrollViewer x:Name="ScrollEditAnsicht" Grid.Row="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>
@@ -176,8 +187,88 @@
         </Grid>
         </ScrollViewer>
 
+        <!-- VERGLEICHSMODUS: 1x4 (Lehrer A | Lehrer B | Klasse A | Klasse B nebeneinander) -->
+        <ScrollViewer x:Name="ScrollVergleichsModus" Grid.Row="2" Visibility="Collapsed"
+                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                      HorizontalAlignment="Left">
+        <DockPanel>
+            <!-- Eigene Lehrer/Klasse-Navigationsleiste (die Dropdowns der Editieransicht
+                 sind im Vergleichsmodus ausgeblendet und daher nicht erreichbar) -->
+            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,4" Height="32">
+                <TextBlock Text="Lehrer:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <Button x:Name="BtnVmVorigerLehrer" Content="&#9664;" Width="28" VerticalAlignment="Center"
+                        Margin="0,0,2,0" ToolTip="Voriger Lehrer" Click="BtnVorigerLehrer_Click"/>
+                <ComboBox x:Name="CboVmLehrer" Width="140" VerticalAlignment="Center" Margin="0,0,2,0"
+                          SelectionChanged="CboVmLehrer_SelectionChanged"/>
+                <Button x:Name="BtnVmNaechsterLehrer" Content="&#9654;" Width="28" VerticalAlignment="Center"
+                        Margin="0,0,24,0" ToolTip="Naechster Lehrer" Click="BtnNaechsterLehrer_Click"/>
+
+                <TextBlock Text="Klasse:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <Button x:Name="BtnVmVorigeKlasse" Content="&#9664;" Width="28" VerticalAlignment="Center"
+                        Margin="0,0,2,0" ToolTip="Vorige Klasse" Click="BtnVorigeKlasse_Click"/>
+                <ComboBox x:Name="CboVmKlasse" Width="140" VerticalAlignment="Center" Margin="0,0,2,0"
+                          SelectionChanged="CboVmKlasse_SelectionChanged"/>
+                <Button x:Name="BtnVmNaechsteKlasse" Content="&#9654;" Width="28" VerticalAlignment="Center"
+                        ToolTip="Naechste Klasse" Click="BtnNaechsteKlasse_Click"/>
+            </StackPanel>
+
+        <Grid x:Name="GridVergleichsModus">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Lehrer Lösung A -->
+            <Border Grid.Column="0" BorderBrush="#CCC" BorderThickness="1" Margin="0,0,2,0">
+                <DockPanel>
+                    <TextBlock x:Name="LblVmLehrerA" DockPanel.Dock="Top" Text="LEHRER – Lösung A"
+                               FontWeight="Bold" Height="20" HorizontalAlignment="Center" Margin="0,2,0,2"/>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <Grid x:Name="VmLehrerGridA"/>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <!-- Lehrer Lösung B -->
+            <Border Grid.Column="1" BorderBrush="#CCC" BorderThickness="1" Margin="2,0,2,0" Background="#FBFBFB">
+                <DockPanel>
+                    <TextBlock x:Name="LblVmLehrerB" DockPanel.Dock="Top" Text="LEHRER – Lösung B"
+                               FontWeight="Bold" Height="20" HorizontalAlignment="Center" Margin="0,2,0,2"/>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <Grid x:Name="VmLehrerGridB"/>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <!-- Klasse Lösung A -->
+            <Border Grid.Column="2" BorderBrush="#CCC" BorderThickness="1" Margin="8,0,2,0">
+                <DockPanel>
+                    <TextBlock x:Name="LblVmKlasseA" DockPanel.Dock="Top" Text="KLASSE – Lösung A"
+                               FontWeight="Bold" Height="20" HorizontalAlignment="Center" Margin="0,2,0,2"/>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <Grid x:Name="VmKlasseGridA"/>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <!-- Klasse Lösung B -->
+            <Border Grid.Column="3" BorderBrush="#CCC" BorderThickness="1" Margin="2,0,0,0" Background="#FBFBFB">
+                <DockPanel>
+                    <TextBlock x:Name="LblVmKlasseB" DockPanel.Dock="Top" Text="KLASSE – Lösung B"
+                               FontWeight="Bold" Height="20" HorizontalAlignment="Center" Margin="0,2,0,2"/>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <Grid x:Name="VmKlasseGridB"/>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+        </Grid>
+        </DockPanel>
+        </ScrollViewer>
+
         <!-- Parkbereich (waagerecht unter den Plaenen) -->
-        <Border Grid.Row="3" BorderBrush="#CCC" BorderThickness="1" Margin="0,8,0,0"
+        <Border x:Name="BrdParkbereich" Grid.Row="3" BorderBrush="#CCC" BorderThickness="1" Margin="0,8,0,0"
                 Background="#FAFAFA" AllowDrop="True" Drop="Parkbereich_Drop" DragOver="Zelle_DragOver"
                 Height="90">
             <DockPanel>
@@ -189,38 +280,53 @@
             </DockPanel>
         </Border>
 
-        <!-- Verschiebbarer Trenner: Stundenplan/Parkbereich <-> Diagnose -->
-        <GridSplitter Grid.Row="4" Height="6" HorizontalAlignment="Stretch"
-                      VerticalAlignment="Center" Background="#BBB"
+        <!-- Verschiebbarer Trenner: Stundenplan/Parkbereich <-> Diagnose.
+             Resized Row 2 (Pläne) gegen Row 5 (Detailbereich): nach unten ziehen
+             vergrößert die Pläne, nach oben den Detailbereich. -->
+        <GridSplitter x:Name="SplitterDetail" Grid.Row="4" Height="6" HorizontalAlignment="Stretch"
+                      VerticalAlignment="Center" Background="#999"
                       ResizeBehavior="PreviousAndNext" ResizeDirection="Rows"
                       Margin="0,4,0,0" Cursor="SizeNS"/>
 
-        <!-- Detail-Bereich: links Tauschliste, daneben Details/Diagnose -->
-        <Border Grid.Row="5" BorderBrush="#DDD" BorderThickness="1" Margin="0,8,0,0" Padding="6"
+        <!-- Detail-Bereich: links Tauschliste, daneben Verschiebung, daneben Details/Diagnose.
+             Spalten sind über GridSplitter verschiebbar; Min-Breiten verhindern Verschwinden. -->
+        <Border x:Name="BrdDetailBereich" Grid.Row="5" BorderBrush="#DDD" BorderThickness="1" Margin="0,8,0,0" Padding="6"
                 Background="#F7F7F7">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="320"/>
-                    <ColumnDefinition Width="320"/>
-                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="220" MinWidth="60"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="220" MinWidth="60"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*" MinWidth="120"/>
                 </Grid.ColumnDefinitions>
-                <Border Grid.Column="0" BorderBrush="#EEE" BorderThickness="0,0,1,0" Padding="0,0,6,0" Margin="0,0,8,0">
+                <Border Grid.Column="0" BorderBrush="#EEE" BorderThickness="0,0,1,0" Padding="0,0,6,0">
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Top" Text="Tauschvorschlaege:" FontWeight="Bold" Margin="0,0,0,4"/>
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <StackPanel x:Name="PnlTausch"/>
                         </ScrollViewer>
                     </DockPanel>
                 </Border>
-                <Border Grid.Column="1" BorderBrush="#EEE" BorderThickness="0,0,1,0" Padding="0,0,6,0" Margin="0,0,8,0">
+
+                <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center"
+                              VerticalAlignment="Stretch" Background="#CCC"
+                              ResizeBehavior="PreviousAndNext" ResizeDirection="Columns" Cursor="SizeWE"/>
+
+                <Border Grid.Column="2" BorderBrush="#EEE" BorderThickness="0,0,1,0" Padding="6,0,6,0">
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Top" Text="Verschiebung mit Ausweich:" FontWeight="Bold" Margin="0,0,0,4"/>
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <StackPanel x:Name="PnlVerschieb"/>
                         </ScrollViewer>
                     </DockPanel>
                 </Border>
-                <DockPanel Grid.Column="2">
+
+                <GridSplitter Grid.Column="3" Width="5" HorizontalAlignment="Center"
+                              VerticalAlignment="Stretch" Background="#CCC"
+                              ResizeBehavior="PreviousAndNext" ResizeDirection="Columns" Cursor="SizeWE"/>
+
+                <DockPanel Grid.Column="4" Margin="6,0,0,0">
                     <TextBlock DockPanel.Dock="Top" Text="Details / Diagnose:" FontWeight="Bold" Margin="0,0,0,4"/>
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <TextBlock x:Name="TxtDetails" TextWrapping="Wrap" Text="(noch keine Auswahl)" FontFamily="Consolas" FontSize="16.5"/>

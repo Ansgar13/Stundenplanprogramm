@@ -39,6 +39,13 @@ namespace Stundenplan_V2
 
         private bool _initialisiert = false;
 
+        // ---- Vergleichsmodus (2 Lösungen nebeneinander, reine Ansicht) ----
+        private bool _vergleichsModus = false;
+        private bool _vmSyncLaeuft = false;        // verhindert Sync-Schleife zwischen Cbo(Vm)Lehrer/Klasse
+        private string _vglLabel2;                 // Label der 2. Lösung
+        private int[,] _vglBelegung2;              // Belegung der 2. Lösung (unverändert)
+        private List<UnterrichtsBlock> _vglBlocks2;// Blocks der 2. Lösung
+
         private class DragNutzlast
         {
             public int BlockIndex;       // Index in _blocks
@@ -117,6 +124,11 @@ namespace Stundenplan_V2
             _aktLabel = label;
             _blocks = sol.blocks;
 
+            // Bisher angezeigten Lehrer/Klasse merken, um sie nach dem
+            // Neuladen wiederherzustellen (sofern in der neuen Lösung vorhanden).
+            string vorherLehrer = CboLehrer.SelectedItem as string;
+            string vorherKlasse = CboKlasse.SelectedItem as string;
+
             // Hervorhebung/Rotation zurücksetzen (neue Lösung)
             _highlightBloecke = new();
             _rotBlockIdx = -1;
@@ -133,8 +145,9 @@ namespace Stundenplan_V2
                     _belegungOriginal[b, s] = sol.belegung[b, s];
                 }
 
-            FuelleLehrerKlasseDropdowns();
-            ZeichneBeideGrids();
+            FuelleLehrerKlasseDropdowns(vorherLehrer, vorherKlasse);
+            if (_vergleichsModus) ZeichneVergleichsModus();
+            else ZeichneBeideGrids();
             ZeichneParkbereich();
             SetStatus("Lösung '" + label + "' geladen.", false);
         }
@@ -142,6 +155,8 @@ namespace Stundenplan_V2
         private void CboLehrer_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (!_initialisiert || _belegung == null) return;
+            SpiegeleAuswahlInVm(CboLehrer, CboVmLehrer);
+            if (_vergleichsModus) { ZeichneVergleichsModus(); return; }
             ZeichneLehrerGrid();
             // Bei aktiver Fixierung den Lehrerpfeil fuer den neuen Lehrer neu zeichnen
             var kette = _fixierteKette;
@@ -156,6 +171,8 @@ namespace Stundenplan_V2
         private void CboKlasse_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (!_initialisiert || _belegung == null) return;
+            SpiegeleAuswahlInVm(CboKlasse, CboVmKlasse);
+            if (_vergleichsModus) { ZeichneVergleichsModus(); return; }
             ZeichneKlasseGrid();
             // Bei aktiver Fixierung die Klassenpfeile neu zeichnen
             var kette = _fixierteKette;
@@ -216,8 +233,408 @@ namespace Stundenplan_V2
             CboKlasse.SelectedIndex = (CboKlasse.SelectedIndex - 1 + n) % n;
         }
 
-        // Füllt beide Dropdowns (Lehrer + Klassen) aus der aktuellen Lösung
-        private void FuelleLehrerKlasseDropdowns()
+        // Die Vergleichsmodus-Dropdowns (CboVmLehrer/CboVmKlasse) sind nur
+        // Spiegel der echten Master-Dropdowns (CboLehrer/CboKlasse), die im
+        // Vergleichsmodus ausgeblendet, aber weiterhin die einzige Quelle der
+        // Auswahl sind. Auswahl im Vm-Dropdown wird hier in den Master
+        // zurückgeschrieben (löst dort das Neuzeichnen aus).
+        private void CboVmLehrer_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_initialisiert || _vmSyncLaeuft) return;
+            string sel = CboVmLehrer.SelectedItem as string;
+            if (sel == null) return;
+            int idx = CboLehrer.Items.IndexOf(sel);
+            if (idx >= 0 && idx != CboLehrer.SelectedIndex) CboLehrer.SelectedIndex = idx;
+            else if (_vergleichsModus) ZeichneVergleichsModus();
+        }
+
+        private void CboVmKlasse_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_initialisiert || _vmSyncLaeuft) return;
+            string sel = CboVmKlasse.SelectedItem as string;
+            if (sel == null) return;
+            int idx = CboKlasse.Items.IndexOf(sel);
+            if (idx >= 0 && idx != CboKlasse.SelectedIndex) CboKlasse.SelectedIndex = idx;
+            else if (_vergleichsModus) ZeichneVergleichsModus();
+        }
+
+        // Übernimmt Items + Auswahl vom Master-Dropdown in das Vm-Dropdown,
+        // ohne dabei das CboVm..._SelectionChanged-Handling auszulösen.
+        private void SpiegeleAuswahlInVm(System.Windows.Controls.ComboBox master,
+                                         System.Windows.Controls.ComboBox vm)
+        {
+            if (vm == null) return;
+            _vmSyncLaeuft = true;
+            try
+            {
+                // Items angleichen (nur wenn nötig, Reihenfolge ist identisch)
+                if (vm.Items.Count != master.Items.Count)
+                {
+                    vm.Items.Clear();
+                    foreach (var it in master.Items) vm.Items.Add(it);
+                }
+                vm.SelectedItem = master.SelectedItem;
+            }
+            finally { _vmSyncLaeuft = false; }
+        }
+
+        // =====================================================
+        // VERGLEICHSMODUS (2 Lösungen nebeneinander, reine Ansicht)
+        // =====================================================
+        private void ChkVergleichsModus_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_initialisiert) return;
+            _vergleichsModus = ChkVergleichsModus.IsChecked == true;
+
+            // Zweites Lösungs-Dropdown + Pfeile ein-/ausblenden
+            var vis = _vergleichsModus ? Visibility.Visible : Visibility.Collapsed;
+            LblVglLoesung.Visibility = vis;
+            BtnVorigeVglLoesung2.Visibility = vis;
+            CboVglLoesung2.Visibility = vis;
+            BtnNaechsteVglLoesung2.Visibility = vis;
+
+            if (_vergleichsModus)
+            {
+                // Den (anders gearteten) Tausch-Klassenvergleich deaktivieren,
+                // damit sich die beiden Vergleichsansichten nicht überlagern.
+                if (ChkKlassenVergleich.IsChecked == true)
+                    ChkKlassenVergleich.IsChecked = false;
+                ChkKlassenVergleich.IsEnabled = false;
+
+                // 2. Lösungs-Dropdown füllen (alle außer der aktuellen als Default)
+                if (CboVglLoesung2.Items.Count == 0)
+                {
+                    foreach (var l in _loesungen)
+                        CboVglLoesung2.Items.Add(l.label);
+                }
+                if (CboVglLoesung2.SelectedItem == null)
+                {
+                    // Default: erste Lösung, die nicht die aktuelle ist
+                    int defIdx = 0;
+                    for (int i = 0; i < CboVglLoesung2.Items.Count; i++)
+                        if ((CboVglLoesung2.Items[i] as string) != _aktLabel) { defIdx = i; break; }
+                    CboVglLoesung2.SelectedIndex = defIdx;  // löst LadeVglLoesung2 aus
+                }
+
+                // Edit-Ansicht ausblenden, 2x2 einblenden
+                ScrollEditAnsicht.Visibility = Visibility.Collapsed;
+                ScrollVergleichsModus.Visibility = Visibility.Visible;
+                LeereTauschvorschlaege();   // Vorschläge/Pfeile sind hier sinnlos
+
+                // Vergleichsmodus ist reine Ansicht: Parkbereich, Trenner und
+                // Detail-/Tauschbereich ausblenden, damit die 4 Pläne den vollen
+                // vertikalen Platz bekommen. Detail-Zeile auf 0 zusammenfahren.
+                SetzeUnterbereicheSichtbar(false);
+
+                // Vergleichsmodus-Dropdowns mit aktueller Lehrer-/Klassenauswahl füllen
+                SpiegeleAuswahlInVm(CboLehrer, CboVmLehrer);
+                SpiegeleAuswahlInVm(CboKlasse, CboVmKlasse);
+
+                ZeichneVergleichsModus();
+            }
+            else
+            {
+                ChkKlassenVergleich.IsEnabled = true;
+                ScrollEditAnsicht.Visibility = Visibility.Visible;
+                ScrollVergleichsModus.Visibility = Visibility.Collapsed;
+                SetzeUnterbereicheSichtbar(true);
+                ZeichneBeideGrids();
+            }
+        }
+
+        // Blendet Parkbereich, Trenner und Detail-/Tauschbereich ein/aus.
+        // Im Vergleichsmodus (reine Ansicht) werden sie ausgeblendet, damit die
+        // Pläne den gesamten Platz nutzen können.
+        private void SetzeUnterbereicheSichtbar(bool sichtbar)
+        {
+            var vis = sichtbar ? Visibility.Visible : Visibility.Collapsed;
+            if (BrdParkbereich != null) BrdParkbereich.Visibility = vis;
+            if (BrdDetailBereich != null) BrdDetailBereich.Visibility = vis;
+            if (SplitterDetail != null) SplitterDetail.Visibility = vis;
+            // Detail-Zeile im Vergleichsmodus auf 0 zusammenfahren, sonst zurück.
+            // Gleichzeitig den Planbereich auf maximale Höhe setzen, damit im
+            // Vergleichsmodus alle 11 Stunden durch Vergrößern des Fensters
+            // sichtbar gemacht werden können.
+            if (RowDetail != null)
+                RowDetail.Height = sichtbar ? new GridLength(1.2, GridUnitType.Star) : new GridLength(0);
+            if (RowPlaene != null)
+                RowPlaene.Height = sichtbar ? new GridLength(2, GridUnitType.Star) : new GridLength(1, GridUnitType.Star);
+        }
+
+        private void CboVglLoesung2_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_initialisiert) return;
+            LadeVglLoesung2(CboVglLoesung2.SelectedItem as string);
+            if (_vergleichsModus) ZeichneVergleichsModus();
+        }
+
+        private void LadeVglLoesung2(string label)
+        {
+            if (label == null) { _vglLabel2 = null; _vglBelegung2 = null; _vglBlocks2 = null; return; }
+            var sol = _loesungen.FirstOrDefault(l => l.label == label);
+            if (sol.belegung == null) { _vglLabel2 = null; _vglBelegung2 = null; _vglBlocks2 = null; return; }
+
+            _vglLabel2 = label;
+            _vglBlocks2 = sol.blocks;
+            int B = _vglBlocks2.Count, S = _slots.Count;
+            _vglBelegung2 = new int[B, S];
+            for (int b = 0; b < B; b++)
+                for (int s = 0; s < S; s++)
+                    _vglBelegung2[b, s] = sol.belegung[b, s];
+        }
+
+        private void BtnNaechsteVglLoesung2_Click(object sender, RoutedEventArgs e)
+        {
+            if (CboVglLoesung2.Items.Count == 0) return;
+            CboVglLoesung2.SelectedIndex = (CboVglLoesung2.SelectedIndex + 1) % CboVglLoesung2.Items.Count;
+        }
+
+        private void BtnVorigeVglLoesung2_Click(object sender, RoutedEventArgs e)
+        {
+            if (CboVglLoesung2.Items.Count == 0) return;
+            int n = CboVglLoesung2.Items.Count;
+            CboVglLoesung2.SelectedIndex = (CboVglLoesung2.SelectedIndex - 1 + n) % n;
+        }
+
+        // Zeichnet die 4 Pläne: oben Lehrer (Lösung A | B), unten Klasse (A | B).
+        // Lösung A = aktuell geladene Lösung (_belegung/_blocks),
+        // Lösung B = ausgewählte Vergleichslösung (_vglBelegung2/_vglBlocks2).
+        // Reine Ansicht: alle Grids interaktiv:false.
+        private void ZeichneVergleichsModus()
+        {
+            if (!_vergleichsModus) return;
+
+            string lehrer = CboLehrer.SelectedItem as string;
+            string klasse = CboKlasse.SelectedItem as string;
+
+            LblVmLehrerA.Text = $"LEHRER {lehrer} – {_aktLabel}";
+            LblVmLehrerB.Text = $"LEHRER {lehrer} – {(_vglLabel2 ?? "—")}";
+            LblVmKlasseA.Text = $"KLASSE {klasse} – {_aktLabel}";
+            LblVmKlasseB.Text = $"KLASSE {klasse} – {(_vglLabel2 ?? "—")}";
+
+            // Lösung A (aktuelle Belegung) — Vergleich gegen Lösung B
+            ZeichneVergleichsGrid(VmLehrerGridA, lehrer, lehrerAnsicht: true,  belegung: _belegung, blocks: _blocks,
+                                  andereBelegung: _vglBelegung2, andereBlocks: _vglBlocks2);
+            ZeichneVergleichsGrid(VmKlasseGridA, klasse, lehrerAnsicht: false, belegung: _belegung, blocks: _blocks,
+                                  andereBelegung: _vglBelegung2, andereBlocks: _vglBlocks2);
+
+            // Lösung B (Vergleichsbelegung) — Vergleich gegen Lösung A
+            if (_vglBelegung2 != null && _vglBlocks2 != null)
+            {
+                ZeichneVergleichsGrid(VmLehrerGridB, lehrer, lehrerAnsicht: true,  belegung: _vglBelegung2, blocks: _vglBlocks2,
+                                      andereBelegung: _belegung, andereBlocks: _blocks);
+                ZeichneVergleichsGrid(VmKlasseGridB, klasse, lehrerAnsicht: false, belegung: _vglBelegung2, blocks: _vglBlocks2,
+                                      andereBelegung: _belegung, andereBlocks: _blocks);
+            }
+            else
+            {
+                VmLehrerGridB.Children.Clear();
+                VmKlasseGridB.Children.Clear();
+            }
+        }
+
+        // Wie ZeichneEinGrid, aber mit explizit übergebenen Blocks (nötig, weil
+        // die 2. Lösung andere Blocks haben kann als die aktuelle) und immer
+        // nicht-interaktiv. Klick auf eine Zelle wechselt synchron Lehrer/Klasse
+        // in beiden Lösungsspalten.
+        private void ZeichneVergleichsGrid(Grid grid, string auswahl, bool lehrerAnsicht,
+                                           int[,] belegung, List<UnterrichtsBlock> blocks,
+                                           int[,] andereBelegung = null, List<UnterrichtsBlock> andereBlocks = null)
+        {
+            grid.Children.Clear();
+            grid.ColumnDefinitions.Clear();
+            grid.RowDefinitions.Clear();
+            if (auswahl == null || belegung == null || blocks == null) return;
+
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
+            foreach (var _ in _tage)
+                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ZellBreite) });
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            foreach (var _ in _stunden)
+                grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(76) });
+
+            for (int ti = 0; ti < _tage.Count; ti++)
+            {
+                var tb = new TextBlock { Text = _tage[ti], FontWeight = FontWeights.Bold,
+                    HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(2) };
+                Grid.SetRow(tb, 0); Grid.SetColumn(tb, ti + 1); grid.Children.Add(tb);
+            }
+            for (int hi = 0; hi < _stunden.Count; hi++)
+            {
+                var tb = new TextBlock { Text = _stunden[hi].ToString(), FontWeight = FontWeights.Bold,
+                    HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+                Grid.SetRow(tb, hi + 1); Grid.SetColumn(tb, 0); grid.Children.Add(tb);
+            }
+
+            for (int ti = 0; ti < _tage.Count; ti++)
+                for (int hi = 0; hi < _stunden.Count; hi++)
+                {
+                    int slotIdx = FindeSlot(_tage[ti], _stunden[hi]);
+                    var zelle = BaueVergleichsZelle(slotIdx, auswahl, lehrerAnsicht, belegung, blocks,
+                                                    andereBelegung, andereBlocks);
+                    Grid.SetRow(zelle, hi + 1); Grid.SetColumn(zelle, ti + 1);
+                    grid.Children.Add(zelle);
+                }
+        }
+
+        // Baut eine reine Anzeige-Zelle für den Vergleichsmodus. Klick auf eine
+        // belegte Zelle wechselt synchron Lehrer/Klasse: im Lehrerteil → zur
+        // zugehörigen Klasse, im Klassenteil → zum zugehörigen Lehrer.
+        // Ist andereBelegung/andereBlocks gesetzt, wird die Zelle gelb gefärbt,
+        // wenn sich die für die aktuelle Auswahl relevante Belegung (Menge der
+        // UNrn) dieses Slots zwischen beiden Lösungen unterscheidet.
+        private Border BaueVergleichsZelle(int slotIdx, string auswahl, bool lehrerAnsicht,
+                                           int[,] belegung, List<UnterrichtsBlock> blocks,
+                                           int[,] andereBelegung = null, List<UnterrichtsBlock> andereBlocks = null)
+        {
+            var border = new Border
+            {
+                BorderBrush = Brushes.LightGray,
+                BorderThickness = new Thickness(0.5),
+                Margin = new Thickness(1),
+                Background = Brushes.White
+            };
+            if (slotIdx < 0) { border.Background = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)); return border; }
+
+            // Zeitwunsch-Gewichtungszahl (wie im normalen Editor)
+            int? wunsch = null;
+            if (auswahl != null)
+            {
+                var quelle = lehrerAnsicht ? _slots[slotIdx].LehrerWunsch : _slots[slotIdx].KlassenWunsch;
+                if (quelle.TryGetValue(auswahl, out int w)) wunsch = w;
+            }
+
+            var betroffene = new List<int>();
+            for (int b = 0; b < blocks.Count; b++)
+            {
+                if (belegung[b, slotIdx] != 1) continue;
+                bool betrifft = lehrerAnsicht
+                    ? blocks[b].Teile.Any(t => t.Lehrer == auswahl)
+                    : blocks[b].Teile.Any(t => t.Klassen.Contains(auswahl));
+                if (betrifft) betroffene.Add(b);
+            }
+
+            // Unterschiedlich belegt? Vergleiche die Menge der relevanten UNrn
+            // (UNr ist über beide Lösungen hinweg stabil, Block-Indizes nicht).
+            bool unterschiedlich = false;
+            if (andereBelegung != null && andereBlocks != null)
+            {
+                var unrHier = UnrnImSlot(slotIdx, auswahl, lehrerAnsicht, belegung, blocks);
+                var unrDort = UnrnImSlot(slotIdx, auswahl, lehrerAnsicht, andereBelegung, andereBlocks);
+                unterschiedlich = !unrHier.SetEquals(unrDort);
+            }
+            if (unterschiedlich)
+                border.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xF1, 0x99)); // gelb
+
+            if (betroffene.Count == 0)
+            {
+                if (wunsch.HasValue) border.Child = BaueWunschLabel(wunsch.Value);
+                return border;
+            }
+
+            var hStack = new System.Windows.Controls.Primitives.UniformGrid { Rows = 1 };
+            foreach (int b in betroffene.Take(3))
+            {
+                var block = blocks[b];
+                var teile = block.Teile;
+                string klassen = string.Join(",", teile.SelectMany(t => t.Klassen).Distinct());
+                string faecher = string.Join(",", teile.Select(t => t.Fach).Distinct());
+                string lehrerTxt = string.Join(",", teile.Select(t => t.Lehrer).Distinct());
+                string ersteZeile = lehrerAnsicht ? klassen : (block.Zeilentext ?? "");
+
+                var inner = new Border
+                {
+                    // Bei Unterschied transparent lassen, damit das gelbe
+                    // Zellen-Background durchscheint; sonst das normale Hellblau.
+                    Background = unterschiedlich
+                        ? Brushes.Transparent
+                        : new SolidColorBrush(Color.FromRgb(0xE8, 0xF0, 0xFE)),
+                    BorderBrush = Brushes.Gray, BorderThickness = new Thickness(0.5),
+                    Padding = new Thickness(2), Cursor = System.Windows.Input.Cursors.Hand,
+                    HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch
+                };
+                var tb = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
+                tb.Inlines.Add(new System.Windows.Documents.Run(ersteZeile + "\n") { FontWeight = FontWeights.Bold });
+                tb.Inlines.Add(new System.Windows.Documents.Run(faecher + "\n"));
+                tb.Inlines.Add(new System.Windows.Documents.Run(lehrerTxt + "\n") { Foreground = Brushes.DarkSlateGray, FontWeight = FontWeights.SemiBold });
+                tb.Inlines.Add(new System.Windows.Documents.Run("UNr " + block.UNr) { FontSize = 10, Foreground = Brushes.Gray });
+                inner.Child = tb;
+
+                // Klick-Synchronisation (reine Navigation, kein Drag)
+                int blockKopie = b;
+                bool ausLehrer = lehrerAnsicht;
+                var blocksKopie = blocks;
+                inner.MouseLeftButtonUp += (s2, e2) =>
+                    VergleichsKlickSync(blocksKopie[blockKopie], ausLehrer);
+
+                hStack.Children.Add(inner);
+            }
+
+            if (wunsch.HasValue)
+            {
+                var g = new Grid();
+                g.Children.Add(hStack);
+                g.Children.Add(BaueWunschLabel(wunsch.Value));
+                border.Child = g;
+            }
+            else border.Child = hStack;
+
+            return border;
+        }
+
+        // Menge der UNrn, die in diesem Slot die gewählte Auswahl (Lehrer bzw.
+        // Klasse) betreffen — Basis für den Belegungsvergleich zwischen zwei Lösungen.
+        private HashSet<int> UnrnImSlot(int slotIdx, string auswahl, bool lehrerAnsicht,
+                                        int[,] belegung, List<UnterrichtsBlock> blocks)
+        {
+            var menge = new HashSet<int>();
+            if (slotIdx < 0 || auswahl == null) return menge;
+            for (int b = 0; b < blocks.Count; b++)
+            {
+                if (belegung[b, slotIdx] != 1) continue;
+                bool betrifft = lehrerAnsicht
+                    ? blocks[b].Teile.Any(t => t.Lehrer == auswahl)
+                    : blocks[b].Teile.Any(t => t.Klassen.Contains(auswahl));
+                if (betrifft) menge.Add(blocks[b].UNr);
+            }
+            return menge;
+        }
+
+        // Klick auf Unterricht im Vergleichsmodus: wechselt Lehrer bzw. Klasse
+        // (löst über die Dropdown-SelectionChanged das Neuzeichnen beider Spalten aus).
+        private void VergleichsKlickSync(UnterrichtsBlock block, bool ausLehrerPlan)
+        {
+            if (ausLehrerPlan)
+            {
+                // Im Lehrerteil geklickt → zur zugehörigen Klasse wechseln
+                var klasse = block.Teile.SelectMany(t => t.Klassen)
+                                  .Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().FirstOrDefault();
+                if (klasse != null)
+                {
+                    int idx = CboKlasse.Items.IndexOf(klasse);
+                    if (idx >= 0 && idx != CboKlasse.SelectedIndex) CboKlasse.SelectedIndex = idx;
+                    else ZeichneVergleichsModus();
+                }
+            }
+            else
+            {
+                // Im Klassenteil geklickt → zum zugehörigen Lehrer wechseln
+                var lehrer = block.Teile.Select(t => t.Lehrer)
+                                  .Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().FirstOrDefault();
+                if (lehrer != null)
+                {
+                    int idx = CboLehrer.Items.IndexOf(lehrer);
+                    if (idx >= 0 && idx != CboLehrer.SelectedIndex) CboLehrer.SelectedIndex = idx;
+                    else ZeichneVergleichsModus();
+                }
+            }
+        }
+
+        // Füllt beide Dropdowns (Lehrer + Klassen) aus der aktuellen Lösung.
+        // Optionale Parameter behaltenLehrer/behaltenKlasse: falls gesetzt und
+        // in der neuen Lösung vorhanden, wird diese Auswahl beibehalten statt
+        // auf den ersten Eintrag zurückzuspringen.
+        private void FuelleLehrerKlasseDropdowns(string behaltenLehrer = null, string behaltenKlasse = null)
         {
             CboLehrer.Items.Clear();
             foreach (var l in _blocks.SelectMany(b => b.Teile.Select(t => t.Lehrer))
@@ -231,8 +648,16 @@ namespace Stundenplan_V2
                                      .Distinct().OrderBy(s => s))
                 CboKlasse.Items.Add(k);
 
-            if (CboLehrer.Items.Count > 0) CboLehrer.SelectedIndex = 0;
-            if (CboKlasse.Items.Count > 0) CboKlasse.SelectedIndex = 0;
+            if (CboLehrer.Items.Count > 0)
+            {
+                int idx = behaltenLehrer != null ? CboLehrer.Items.IndexOf(behaltenLehrer) : -1;
+                CboLehrer.SelectedIndex = idx >= 0 ? idx : 0;
+            }
+            if (CboKlasse.Items.Count > 0)
+            {
+                int idx = behaltenKlasse != null ? CboKlasse.Items.IndexOf(behaltenKlasse) : -1;
+                CboKlasse.SelectedIndex = idx >= 0 ? idx : 0;
+            }
         }
 
         // =====================================================

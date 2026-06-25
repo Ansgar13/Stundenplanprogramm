@@ -331,9 +331,30 @@ namespace Stundenplan_V2
             Dictionary<string, int> extraFreieTage,
             List<(int stundeVor, int stundeNach)> grossePausen,
             bool verbotSpäteDoppel,
-            Action<string> log)
+            Action<string> log,
+            HashSet<string> lehrerFreiTageMinus3 = null,
+            bool verbotMinus2Lehrer = false,
+            HashSet<string> lehrerFreiTageMinus2 = null)
         {
             bool IstOK(CpSolverStatus st) => st == CpSolverStatus.Optimal || st == CpSolverStatus.Feasible;
+
+            // Für die Stufe 5 (FreeDay) nur Lehrer einbeziehen, für die das
+            // FreeDay-Constraint im echten Solver auch HART erzwungen wird.
+            // Lehrer mit -2 (nur Strafe, kein Verbot) werden im Diagnose-Modell
+            // ausgelassen, damit keine False-Positives entstehen.
+            Dictionary<string, int> extraFreieTageHart = null;
+            if (extraFreieTage != null && extraFreieTage.Count > 0)
+            {
+                extraFreieTageHart = new Dictionary<string, int>();
+                foreach (var kv in extraFreieTage)
+                {
+                    bool istHart = (lehrerFreiTageMinus3 != null && lehrerFreiTageMinus3.Contains(kv.Key))
+                                || (verbotMinus2Lehrer && lehrerFreiTageMinus2 != null && lehrerFreiTageMinus2.Contains(kv.Key));
+                    if (istHart)
+                        extraFreieTageHart[kv.Key] = kv.Value;
+                }
+                if (extraFreieTageHart.Count == 0) extraFreieTageHart = null;
+            }
 
             // Stufe 1: Basis
             var s1 = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
@@ -440,18 +461,22 @@ namespace Stundenplan_V2
             }
             DiagLog(log, "  [Diagnose] ✓ Mit Doppelstunden feasible.");
 
-            // Stufe 5: + FreeDay
+            // Stufe 5: + FreeDay (nur mit HART konfigurierten freien Tagen)
             var s5 = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                 mitKlassenSperren: true,
                 fachraumLimit: fachraumLimit, mitRäume: true,
-                extraFreieTage: extraFreieTage, mitFreeDay: true,
+                extraFreieTage: extraFreieTageHart, mitFreeDay: extraFreieTageHart != null,
                 grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel, mitDoppelstunden: true,
                 mitFachProKlasseProTag: true);
             if (!IstOK(s5))
             {
                 DiagLog(log, "  [Diagnose] ❌ Mit FreeDay-Constraint infeasible!");
-                DiagLog(log, "  [Diagnose]    → 'extraFreieTage' für mind. einen Lehrer ist nicht erfüllbar.");
-                DiagLog(log, "  [Diagnose]    Prüfen: Spalte 'FreieTage' in der LehrerStammdaten.");
+                DiagLog(log, "  [Diagnose]    → 'extraFreieTage' (-3) für mind. einen Lehrer ist nicht erfüllbar.");
+                DiagLog(log, "  [Diagnose]    Prüfen: Spalte FT in der Exceldatei (Wert -3 = harte Sperre).");
+                if (extraFreieTage != null && extraFreieTageHart != null &&
+                    extraFreieTage.Count > extraFreieTageHart.Count)
+                    DiagLog(log, $"  [Diagnose]    Hinweis: {extraFreieTage.Count - extraFreieTageHart.Count} Lehrer " +
+                                  "mit -2 (Strafe) wurden bewusst aus dem Test ausgelassen.");
                 return;
             }
 
@@ -810,7 +835,12 @@ namespace Stundenplan_V2
             bool verbotMinus2Lehrer = false,
             int strafeMinus2Lehrer = 0,
             HashSet<string> lehrerFreiTageMinus2 = null,
-            HashSet<string> lehrerFreiTageMinus3 = null)
+            HashSet<string> lehrerFreiTageMinus3 = null,
+            // Stabilitätsmodus (Button 11 "Minimale Änderungen"):
+            // ausgangsplan  = blockIdx → slotIdx der Referenzlösung
+            // stabilitaetsGewicht > 0 aktiviert Belohnung für beibehaltene Slots
+            Dictionary<int, int> ausgangsplan = null,
+            int stabilitaetsGewicht = 0)
         {
             var model = new CpModel();
             int B = blocks.Count;
@@ -1525,7 +1555,53 @@ namespace Stundenplan_V2
                 gewichtFrüh, gewichtSpät, gewichtPäd, gewichtFrei,
                 strafeHohl, strafeDoppelHohl, strafeDreifachHohl, strafeEinzel,
                 strafeStdFolge, strafeSpäteLk, strafeHauptfachSpät, strafeMinus2Lehrer);
+
+            // Stabilitätsmodus: Für jeden Block, der im Ausgangsplan einen
+            // bekannten Slot hat, wird das Beibehalten dieses Slots belohnt
+            // (x[b,s] == 1 → +stabilitaetsGewicht). Fix-UNrn-Blöcke werden
+            // ausgelassen (sie sind ohnehin fixiert und brauchen keinen Bonus).
+            // Zusätzlich erhält der Solver den Ausgangsplan als Hint-Wert, damit
+            // er die Suche nahe am Ziel beginnt und schneller gute Lösungen findet.
+            if (ausgangsplan != null && ausgangsplan.Count > 0 && stabilitaetsGewicht > 0)
+            {
+                var stabVars = new List<BoolVar>();
+                foreach (var kvp in ausgangsplan)
+                {
+                    // Compound-Key: Key = bIdx * S + sIdx
+                    int bIdx = kvp.Key / S;
+                    int sIdx = kvp.Key % S;
+                    if (bIdx < 0 || bIdx >= B || sIdx < 0 || sIdx >= S) continue;
+                    // Nicht für fixierte Blöcke — die werden sowieso erzwungen
+                    bool istFixiert = slots[sIdx].FixUNrn.Contains(blocks[bIdx].UNr);
+                    if (istFixiert) continue;
+                    stabVars.Add(x[bIdx, sIdx]);
+                }
+                if (stabVars.Count > 0)
+                {
+                    qualityExpr = qualityExpr +
+                        LinearExpr.Sum(stabVars) * stabilitaetsGewicht;
+                    log?.Invoke($"  Stabilitätsmodus: {stabVars.Count} belegbare Ausgangsslots belohnt " +
+                                $"(Gewicht {stabilitaetsGewicht}).");
+                }
+            }
             model.Maximize(qualityExpr);
+
+            // Ausgangsplan-Hints: Nur die BELEGTEN Slots bekommen einen Hint=1.
+            // Unbelegte Slots erhalten KEINEN expliziten Hint (OR-Tools nimmt für
+            // BoolVars ohne Hint intern 0 an). Das vermeidet widersprüchliche Hints
+            // bei Blöcken mit Wst>1, bei denen mehrere Slots gleichzeitig =1 sein
+            // müssen — früheres Setzen aller anderen auf 0 überschrieb die 1-Hints
+            // der weiteren belegten Slots und erzeugte inkonsistente Startwerte.
+            if (ausgangsplan != null)
+            {
+                foreach (var kvp in ausgangsplan)
+                {
+                    int bIdx = kvp.Key / S;
+                    int sIdx = kvp.Key % S;
+                    if (bIdx < 0 || bIdx >= B || sIdx < 0 || sIdx >= S) continue;
+                    model.AddHint(x[bIdx, sIdx], 1);
+                }
+            }
 
             // =====================================================
             // SOLVER
@@ -1561,18 +1637,30 @@ namespace Stundenplan_V2
                 DiagLog(log, $"  [Diagnose] Blöcke: {B}, Slots: {S}");
                 DiagLog(log, $"  [Diagnose] Lehrer: {lehrerListe.Count}, Gesamt-Wst: {blocks.Sum(b => b.Wst)}");
 
-                // Fix-Slot Lehrer-Doppelbelegungen
+                // Fix-Slot Lehrer-Doppelbelegungen (A/B-Wochen-aware)
                 var fixKonflikte = new List<string>();
                 foreach (var slot in slots.Where(s => s.FixUNrn.Count > 1))
                 {
-                    var lehrerImSlot = new HashSet<string>();
+                    var lehrerMitWg = new Dictionary<string, string>(); // lehrer → WochenGruppe
                     foreach (var unr in slot.FixUNrn)
                     {
                         var block = blocks.FirstOrDefault(b => b.UNr == unr);
                         if (block == null) continue;
+                        string wg = (block.WochenGruppe ?? "").Trim();
                         foreach (var t in block.Teile)
-                            if (!lehrerImSlot.Add(t.Lehrer))
+                        {
+                            if (lehrerMitWg.TryGetValue(t.Lehrer, out string vorhandenesWg))
+                            {
+                                // Kein Konflikt wenn A-Woche gegen B-Woche
+                                if ((vorhandenesWg == "A" && wg == "B") || (vorhandenesWg == "B" && wg == "A"))
+                                    continue;
                                 fixKonflikte.Add($"{slot.WTag} Std.{slot.Stunde}: Lehrer {t.Lehrer} doppelt fixiert");
+                            }
+                            else
+                            {
+                                lehrerMitWg[t.Lehrer] = wg;
+                            }
+                        }
                     }
                 }
                 foreach (var k in fixKonflikte)
@@ -1627,33 +1715,42 @@ namespace Stundenplan_V2
                 // =====================================================
                 DiagLog(log, "  [Diagnose] === Erweiterte FixUNrn-Prüfung ===");
 
-                // 1) Klassen-Doppelbelegung in Fix-Slots (KKK berücksichtigt)
+                // 1) Klassen-Doppelbelegung in Fix-Slots (KKK- und A/B-Wochen-aware)
                 foreach (var slot in slots.Where(s => s.FixUNrn.Count > 1))
                 {
                     // HashSet statt List → keine Mehrfacheinträge bei Blöcken mit mehreren Teilen
-                    var klassenImSlot = new Dictionary<string, HashSet<(int unr, string kkk)>>();
+                    var klassenImSlot = new Dictionary<string, HashSet<(int unr, string kkk, string wg)>>();
                     foreach (var unr in slot.FixUNrn)
                     {
                         var block = blocks.FirstOrDefault(b => b.UNr == unr);
                         if (block == null) continue;
                         string kkk = (block.KKK ?? "").Trim();
+                        string wg  = (block.WochenGruppe ?? "").Trim();
                         // Pro Block eindeutige Klassen (alle Teile zusammen, dedupliziert)
                         foreach (var k in block.Teile.SelectMany(t => t.Klassen).Distinct())
                         {
                             if (!klassenImSlot.ContainsKey(k))
-                                klassenImSlot[k] = new HashSet<(int, string)>();
-                            klassenImSlot[k].Add((unr, kkk));
+                                klassenImSlot[k] = new HashSet<(int, string, string)>();
+                            klassenImSlot[k].Add((unr, kkk, wg));
                         }
                     }
                     foreach (var kv in klassenImSlot.Where(kv => kv.Value.Count > 1))
                     {
+                        // A-Woche vs B-Woche: kein Konflikt
+                        var wgGruppen = kv.Value.Select(x => x.wg).Distinct().ToList();
+                        bool nurABWochen = wgGruppen.Count == 2 &&
+                                          ((wgGruppen[0] == "A" && wgGruppen[1] == "B") ||
+                                           (wgGruppen[0] == "B" && wgGruppen[1] == "A"));
+                        if (nurABWochen) continue;
+
                         // Konflikt nur wenn unterschiedliche oder leere KKK
                         var gruppen = kv.Value.GroupBy(x => x.kkk).ToList();
                         bool konflikt = kv.Value.Any(x => string.IsNullOrEmpty(x.kkk)) || gruppen.Count > 1;
                         if (konflikt)
                         {
                             var unrTxt = string.Join(",", kv.Value.Select(x =>
-                                $"{x.unr}(KKK={(string.IsNullOrEmpty(x.kkk) ? "-" : x.kkk)})"));
+                                $"{x.unr}(KKK={(string.IsNullOrEmpty(x.kkk) ? "-" : x.kkk)}" +
+                                $"{(string.IsNullOrEmpty(x.wg) ? "" : "/" + x.wg)})"));
                             DiagLog(log, $"  [Diagnose] Fix-Klassen-Konflikt: {slot.WTag} Std.{slot.Stunde}: Klasse {kv.Key} → {unrTxt}");
                         }
                     }
@@ -1752,7 +1849,8 @@ namespace Stundenplan_V2
                                 new HashSet<string>(),
                                 anzahlKlassenSperren,
                                 fachraumLimit, extraFreieTage, grossePausen, verbotSpäteDoppel,
-                                log);
+                                log,
+                                lehrerFreiTageMinus3, verbotMinus2Lehrer, lehrerFreiTageMinus2);
                         }
                         else
                         {
@@ -1852,7 +1950,8 @@ namespace Stundenplan_V2
                                     alleLehrerMitSperren,
                                     anzahlKlassenSperren,
                                     fachraumLimit, extraFreieTage, grossePausen, verbotSpäteDoppel,
-                                    log);
+                                    log,
+                                    lehrerFreiTageMinus3, verbotMinus2Lehrer, lehrerFreiTageMinus2);
                             }
                         }
                     }
@@ -2432,6 +2531,141 @@ namespace Stundenplan_V2
                     if (t1.Fach == t2.Fach && t1.Klassen.Intersect(t2.Klassen).Any())
                         return true;
             return false;
+        }
+
+        // =====================================================
+        // ÖFFENTLICHE METHODE: MINIMALE ÄNDERUNGEN (Button 11)
+        // Führt einen Solver-Lauf mit Stabilitätsbelohnung durch.
+        // Der Ausgangsplan (als int[,] belegung) gibt vor, welche
+        // Block-Slot-Belegungen beibehalten werden sollen. Das
+        // stabilitaetsGewicht steuert, wie stark der Solver am
+        // Ausgangsplan "klebt" gegenüber reiner Qualitätsoptimierung.
+        // Entplante Blöcke (belegung[b,*] == 0 überall) erhalten
+        // keinen Stabilitäts-Anker – der Solver platziert sie frei.
+        // =====================================================
+        public static List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)>
+            PlanenMitStabilitaet(
+            string excelPfad,
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            Dictionary<string, int> fachraumLimit,
+            Dictionary<string, int> extraFreieTage,
+            int[,] ausgangsplanBelegung,
+            int stabilitaetsGewicht,
+            int anzahlLoesungen,
+            int zeitlimitSekunden,
+            HashSet<string> nichtFreieTage,
+            int gewichtFrüh,
+            int gewichtSpät,
+            int gewichtPäd,
+            int gewichtFrei,
+            int strafeHohl,
+            int strafeDoppelHohl,
+            int strafeDreifachHohl,
+            int strafeStdFolge,
+            int strafeEinzel,
+            int strafeSpäteLk,
+            Dictionary<string, LehrerStammdaten> lehrerStammdaten,
+            List<(int stundeVor, int stundeNach)> grossePausen,
+            bool verbotSpäteDoppel,
+            int hauptfachSpätAnteilProzent,
+            int strafeHauptfachSpät,
+            bool verbotMinus2Lehrer,
+            int strafeMinus2Lehrer,
+            HashSet<string> lehrerFreiTageMinus2,
+            HashSet<string> lehrerFreiTageMinus3,
+            Action<string> log,
+            out string debug)
+        {
+            debug = "";
+            _infeasibleDetails.Clear();
+
+            int B = blocks.Count;
+            int S = slots.Count;
+
+            // Ausgangsplan als blockIdx → slotIdx konvertieren.
+            // Hat ein Block mehrere Stunden (Wst > 1), wird jede einzeln
+            // eingetragen – x[b,s] wird pro Slot belohnt, nicht pro Block.
+            var ausgangsplanDict = new Dictionary<int, int>();
+            for (int b = 0; b < B && b < ausgangsplanBelegung.GetLength(0); b++)
+                for (int s = 0; s < S && s < ausgangsplanBelegung.GetLength(1); s++)
+                    if (ausgangsplanBelegung[b, s] == 1)
+                        ausgangsplanDict[b * S + s] = s; // Schlüssel eindeutig per (b,s)-Paar
+
+            // Flache Dictionary für PlanenIntern: pro (blockIdx, slotIdx)-Paar
+            // einen eigenen Eintrag – PlanenIntern erwartet blockIdx*S+slotIdx
+            // als Schlüssel NICHT, sondern blockIdx → slotIdx für EINE Stunde.
+            // Wir übergeben stattdessen eine Liste aller (b,s)-Paare als
+            // Dictionary<int,int> wobei Key = b*S+s und Value = s; PlanenIntern
+            // iteriert darüber und wertet kvp.Key/S als blockIdx, kvp.Key%S als slotIdx.
+            // → Eigenes Dictionary-Format: Key = blockIdx, Value = slotIdx für JEDEN Slot.
+            // Da ein Block mehrere Slots haben kann, verwenden wir b*S+s als Key.
+            // PlanenIntern muss dies auflösen. Wir passen die Auflösung deshalb an:
+            // Tatsächlich wird in PlanenIntern über ausgangsplan.Keys iteriert und
+            // kvp.Key als blockIdx, kvp.Value als slotIdx verwendet. Für Wst>1-Blöcke
+            // brauchen wir MEHRERE Einträge → wir nutzen einen getrennten Dictionary-Typ.
+            // LÖSUNG: Wir übergeben ausgangsplan als Dictionary<int,int> mit
+            // Key = b*1000+s (Compound-Key) und lösen das in PlanenIntern auf.
+            // Einfacher: PlanenIntern bekommt die Pairs direkt als List<(int b, int s)>.
+            // Da das eine breaking change wäre, verwenden wir stattdessen
+            // Dictionary<int,int> mit Key=b (überschreibt auf letztem s bei Wst>1)
+            // und verarbeiten jeden belegten (b,s)-Slot einzeln durch den neuen
+            // erweiterten Mechanismus: ausgangsplan speichert alle belegten Slots.
+
+            // KORREKTUR: Das richtige Dictionary für PlanenIntern ist blockIdx→slotIdx
+            // und belohnt x[blockIdx, slotIdx]. Bei Wst>1 hat der Block mehrere Slots,
+            // also mehrere Einträge – mit unterschiedlichen Keys. Wir nutzen
+            // Dictionary<int,int> mit einem Compound-Key (b * S + s) und passen
+            // die Schleife in PlanenIntern entsprechend an (Key/S = b, Key%S = s).
+            var ausgangsCompound = new Dictionary<int, int>();
+            for (int b = 0; b < B && b < ausgangsplanBelegung.GetLength(0); b++)
+                for (int s = 0; s < S && s < ausgangsplanBelegung.GetLength(1); s++)
+                    if (ausgangsplanBelegung[b, s] == 1)
+                        ausgangsCompound[b * S + s] = s; // Value wird in PlanenIntern nicht gebraucht
+
+            log?.Invoke($"Stabilitätsmodus: {ausgangsCompound.Count} belegte Ausgangsslots als Referenz, " +
+                        $"Gewicht {stabilitaetsGewicht}.");
+
+            var ergebnisse = new List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)>();
+
+            for (int i = 0; i < anzahlLoesungen; i++)
+            {
+                string labelPrefix = "NK"; // NK = Nah-Klon
+                var intern = PlanenIntern(
+                    excelPfad, blocks, slots, fachraumLimit, extraFreieTage,
+                    log, maxLösungen: 1, tauschKey: null,
+                    zeitlimitSekunden: zeitlimitSekunden,
+                    nichtFreieTage: nichtFreieTage,
+                    randomSeed: i + 1,
+                    gewichtFrüh: gewichtFrüh, gewichtSpät: gewichtSpät,
+                    gewichtPäd: gewichtPäd, gewichtFrei: gewichtFrei,
+                    strafeHohl: strafeHohl, strafeDoppelHohl: strafeDoppelHohl,
+                    strafeDreifachHohl: strafeDreifachHohl, strafeStdFolge: strafeStdFolge,
+                    strafeEinzel: strafeEinzel, strafeSpäteLk: strafeSpäteLk,
+                    lehrerStammdaten: lehrerStammdaten,
+                    grossePausen: grossePausen,
+                    verbotSpäteDoppel: verbotSpäteDoppel,
+                    hauptfachSpätAnteilProzent: hauptfachSpätAnteilProzent,
+                    strafeHauptfachSpät: strafeHauptfachSpät,
+                    verbotMinus2Lehrer: verbotMinus2Lehrer,
+                    strafeMinus2Lehrer: strafeMinus2Lehrer,
+                    lehrerFreiTageMinus2: lehrerFreiTageMinus2,
+                    lehrerFreiTageMinus3: lehrerFreiTageMinus3,
+                    ausgangsplan: ausgangsCompound,
+                    stabilitaetsGewicht: stabilitaetsGewicht);
+
+                foreach (var sol in intern)
+                {
+                    string label = $"{labelPrefix}_{i + 1}";
+                    ergebnisse.Add((sol.quality, sol.badUnits, sol.belegung, label, blocks));
+                    log?.Invoke($"  [{label}] Qualität: {sol.quality}, BadUnits: {sol.badUnits}");
+                }
+            }
+
+            if (ergebnisse.Count == 0)
+                debug = "Kein Ergebnis gefunden. Zeitlimit erhöhen oder Stabilitätsgewicht senken.";
+
+            return ergebnisse;
         }
     }
 }

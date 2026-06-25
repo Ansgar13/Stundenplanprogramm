@@ -1694,6 +1694,183 @@ namespace Stundenplan_V2
             }
         }
 
+        // =====================================================
+        // BUTTON 11 – MINIMALE ÄNDERUNGEN (SOLVER)
+        // =====================================================
+        private void BtnMinimalAenderung_Click(object sender, RoutedEventArgs e)
+        {
+            if (input == null)
+            {
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
+                return;
+            }
+            if (letzteSolutions == null || letzteSolutions.Count == 0)
+            {
+                MessageBox.Show("Keine Lösungen verfügbar. Erst Button 3 oder Plan-Editor 'Übernehmen' ausführen.");
+                return;
+            }
+
+            var labels = letzteSolutions.Select(s => s.label).ToList();
+            var dialog = new MinimalAenderungDialog(labels) { Owner = this };
+
+            if (dialog.ShowDialog() != true) return;
+
+            var ausgangsLösung = letzteSolutions.FirstOrDefault(s => s.label == dialog.GewählterAusgangsLabel);
+            if (ausgangsLösung.belegung == null)
+            {
+                MessageBox.Show("Gewählte Ausgangslösung nicht gefunden.");
+                return;
+            }
+
+            Log($"Button 11: Minimale Änderungen basierend auf '{dialog.GewählterAusgangsLabel}' " +
+                $"(Stabilitätsgewicht {dialog.StabilitaetsGewicht}, " +
+                $"Zeitlimit {dialog.ZeitlimitSekunden}s, " +
+                $"{dialog.AnzahlLoesungen} Lösung(en))");
+
+            var statusFenster = new Window
+            {
+                Title = "Bitte warten", Width = 300, Height = 120,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this, ResizeMode = ResizeMode.NoResize,
+                WindowStyle = WindowStyle.ToolWindow, Topmost = true
+            };
+            statusFenster.Content = new System.Windows.Controls.TextBlock
+            {
+                Text = "Solver läuft (Minimale Änderungen)...",
+                FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            statusFenster.Show();
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(
+                System.Windows.Threading.DispatcherPriority.Render, new Action(() => { }));
+
+            try
+            {
+                bool meldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0;
+
+                // Ausgangsplan auf die AKTUELLEN input.Blocks umrechnen (Zuordnung per UNr).
+                // Damit werden:
+                // (a) inzwischen ignorierte Blöcke aus dem Solver ausgeschlossen (verhindert Infeasibility),
+                // (b) neu hinzugekommene Blöcke korrekt frei platziert (keine Stabilitäts-Bindung),
+                // (c) verschobene Block-Indizes nach Neuladen korrekt behandelt.
+                var unrToAltIdx = new Dictionary<int, int>();
+                for (int i = 0; i < ausgangsLösung.blocks.Count; i++)
+                    unrToAltIdx[ausgangsLösung.blocks[i].UNr] = i;
+
+                int currentB = input.Blocks.Count;
+                int currentS = input.Slots.Count;
+                int altS = ausgangsLösung.belegung.GetLength(1);
+                var ausgangsplanMapped = new int[currentB, currentS];
+                for (int newB = 0; newB < currentB; newB++)
+                {
+                    int unr = input.Blocks[newB].UNr;
+                    if (!unrToAltIdx.TryGetValue(unr, out int oldB)) continue;
+                    for (int s = 0; s < currentS && s < altS; s++)
+                        ausgangsplanMapped[newB, s] = ausgangsLösung.belegung[oldB, s];
+                }
+
+                var ergebnisse = StundenplanEngine.PlanenMitStabilitaet(
+                    excelPfad,
+                    input.Blocks,
+                    input.Slots,
+                    input.Fachraeume,
+                    input.ExtraFreieTage,
+                    ausgangsplanMapped,
+                    dialog.StabilitaetsGewicht,
+                    dialog.AnzahlLoesungen,
+                    dialog.ZeitlimitSekunden,
+                    input.NichtFreieTage,
+                    input.GewichtFrüheDoppel,
+                    input.GewichtSpäteDoppel,
+                    input.GewichtSpätePädEinheiten,
+                    input.GewichtFreieTage,
+                    input.StrafeHohlstunde,
+                    input.StrafeDoppelHohlstunde,
+                    input.StrafeDreifachHohlstunde,
+                    input.StrafeStdFolge,
+                    input.StrafeEinzelstunde,
+                    input.StrafeSpäteLkStunden,
+                    input.LehrerStammdaten,
+                    input.GrossePausen,
+                    input.VerbotSpäteDoppel,
+                    input.HauptfachSpätAnteilProzent,
+                    input.StrafeHauptfachSpät,
+                    input.VerbotMinus2Verletzungen,
+                    input.StrafeMinus2Verletzungen,
+                    input.LehrerFreiTageMinus2,
+                    input.LehrerFreiTageMinus3,
+                    Log,
+                    out string debug);
+
+                statusFenster.Close();
+
+                if (ergebnisse.Count == 0)
+                {
+                    MessageBox.Show("Kein Ergebnis gefunden.\n\n" + debug,
+                        "Minimale Änderungen", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                // Neue Lösungen einmischen und in Excel schreiben
+                foreach (var sol in ergebnisse)
+                {
+                    letzteSolutions.RemoveAll(s => s.label == sol.label);
+                    letzteSolutions.Add(sol);
+                }
+                SchreibeInExcel(letzteSolutions);
+                SchreibeRanking(letzteSolutions);
+
+                // Diagnose
+                try
+                {
+                    var diagDaten = ergebnisse
+                        .Select(sol => (sol.label,
+                            LehrerDiagnose.Berechne(
+                                sol.belegung, sol.blocks, input.Slots,
+                                input.LehrerStammdaten,
+                                input.StrafeHohlstunde, input.StrafeDoppelHohlstunde,
+                                input.StrafeDreifachHohlstunde, input.StrafeStdFolge,
+                                meldeMinus2, input.ExtraFreieTage, input.LehrerFreiTageMinus2)))
+                        .ToList();
+                    LehrerDiagnose.Exportiere(excelPfad, diagDaten, vorherLöschen: false, meldeLeherMinus2: meldeMinus2);
+
+                    var dstdFDaten = ergebnisse.Select(sol => (sol.label, sol.belegung, sol.blocks)).ToList();
+                    LehrerDiagnose.ExportiereDstdF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: false);
+                }
+                catch (Exception ex) { Log($"Diagnose-Fehler: {ex.Message}"); }
+
+                // Abweichungsliste
+                if (dialog.ExportiereAbweichungen)
+                {
+                    try
+                    {
+                        var abwDaten = ergebnisse
+                            .Select(sol => (sol.label, sol.belegung, sol.blocks))
+                            .ToList();
+                        AbweichungsExporter.Exportiere(
+                            excelPfad,
+                            dialog.GewählterAusgangsLabel,
+                            ausgangsplanMapped,
+                            abwDaten,
+                            input.Slots,
+                            vorherLöschen: true);
+                        Log("Abweichungsliste in Sheet 'Abw' geschrieben.");
+                    }
+                    catch (Exception ex) { Log($"Abweichungsliste-Fehler: {ex.Message}"); }
+                }
+
+                Log($"Button 11 abgeschlossen: {ergebnisse.Count} Lösung(en) gefunden → " +
+                    string.Join(", ", ergebnisse.Select(s => $"[{s.label}] Q={s.quality}")));
+                TxtStatus.Text = "Minimale Änderungen abgeschlossen.";
+            }
+            catch (Exception ex)
+            {
+                statusFenster.Close();
+                MessageBox.Show("Fehler bei Button 11:\n" + ex.Message);
+                Log($"Button 11 Fehler: {ex.Message}");
+            }
+        }
+
         // Liest nur die Spaltennamen (Header) aus dem Sheet "Gesichert", ohne die
         // Belegung selbst zu parsen — reicht für die Auswahl-Liste im Löschen-Dialog.
         private List<string> LeseGesicherteNamen()
