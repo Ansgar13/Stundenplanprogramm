@@ -17,6 +17,13 @@ namespace Stundenplan_V2
         /// </summary>
         public bool IgnorierenEntfernen { get; private set; } = false;
 
+        /// <summary>
+        /// true  → UND-Verknüpfung: eine Zeile ist nur Treffer, wenn sie JEDE
+        ///          Kategorie erfüllt, in der etwas ausgewählt ist (leere = egal).
+        /// false → ODER-Verknüpfung (bisheriges Verhalten): ein Kriterium reicht.
+        /// </summary>
+        public bool UndVerknüpfung { get; private set; } = false;
+
         public IgnoreDialog(
             List<string> alleKlassen,
             List<string> alleLehrer,
@@ -38,6 +45,7 @@ namespace Stundenplan_V2
             GewählteFächer      = LstFächer.SelectedItems.Cast<string>().ToList();
             GewählteZeilentext2 = LstZeilentext2.SelectedItems.Cast<string>().ToList();
             IgnorierenEntfernen = RbNichtIgnorieren.IsChecked == true;
+            UndVerknüpfung      = RbUnd.IsChecked == true;
 
             if (GewählteKlassen.Count == 0 && GewählteLehrer.Count == 0 &&
                 GewählteFächer.Count == 0 && GewählteZeilentext2.Count == 0)

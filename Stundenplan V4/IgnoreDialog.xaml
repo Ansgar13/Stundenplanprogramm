@@ -7,6 +7,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -14,7 +15,7 @@
         <TextBlock Grid.Row="0"
                    TextWrapping="Wrap"
                    Margin="0,0,0,10"
-                   Text="Filter auswählen (Mehrfachauswahl mit Strg/Shift). Eine Zeile gilt als Treffer, wenn sie in IRGENDEINER der Listen einen Wert hat (ODER-Verknüpfung)."/>
+                   Text="Filter auswählen (Mehrfachauswahl mit Strg/Shift). Verknüpfung ODER: Treffer, sobald ein Wert in IRGENDEINER Liste passt. Verknüpfung UND (Kombination): Treffer nur, wenn JEDE Liste mit Auswahl passt — leere Listen zählen als 'egal'."/>
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,10">
             <TextBlock Text="Aktion:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
@@ -22,7 +23,13 @@
             <RadioButton x:Name="RbNichtIgnorieren" Content="'i' aus Treffern entfernen (nicht ignorieren)" GroupName="Aktion" VerticalAlignment="Center"/>
         </StackPanel>
 
-        <Grid Grid.Row="2">
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,10">
+            <TextBlock Text="Verknüpfung:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <RadioButton x:Name="RbOder" Content="ODER (ein Kriterium reicht)"        GroupName="Verknuepfung" IsChecked="True" VerticalAlignment="Center" Margin="0,0,20,0"/>
+            <RadioButton x:Name="RbUnd"  Content="UND (Kombination — alle Kriterien)" GroupName="Verknuepfung"                  VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <Grid Grid.Row="3">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="*"/>
@@ -47,7 +54,7 @@
             <ListBox  Grid.Column="3" Grid.Row="1" x:Name="LstZeilentext2" SelectionMode="Multiple" Margin="2"/>
         </Grid>
 
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
             <Button x:Name="BtnOk"        Content="Ausführen" Width="100" Margin="0,0,5,0" Click="BtnOk_Click"        IsDefault="True"/>
             <Button x:Name="BtnAbbrechen" Content="Abbrechen" Width="100"                Click="BtnAbbrechen_Click" IsCancel="True"/>
         </StackPanel>

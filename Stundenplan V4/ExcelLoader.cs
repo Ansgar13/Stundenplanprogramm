@@ -15,6 +15,12 @@ namespace Stundenplan_V2
             var extraFreieTage = new Dictionary<string, int>();
             using var workbook = new XLWorkbook(excelPfad);
 
+            // FGR-Präfixe früh lesen: Gruppe (Spalte A) -> Liste der Fach-Präfixe
+            // (Spalte C bis zum letzten Eintrag der Zeile). Die Fach->Fachgruppe-
+            // Zuordnung baut darauf auf; fehlt FGR/eine Präfixliste, greift die
+            // fest verdrahtete Fallback-Regel.
+            var fachgruppenPraefixe = LiesFachgruppenPraefixe(workbook);
+
             // =====================================================
             // TABELLE 1 – UNTERRICHT
             // =====================================================
@@ -63,8 +69,8 @@ namespace Stundenplan_V2
             {
                 if (!int.TryParse(Cell(row, header1, "U-Nr").GetString(), out int uNr))
                     continue;
-                string ignoreWert = GetOptional(row, header1, "Ignore (i)").Trim().ToLower();
-                if (ignoreWert != "i")
+                string ignoreWert = GetOptional(row, header1, "Ignore (i)");
+                if (!IstIgnore(ignoreWert))
                     aktivUNrn.Add(uNr);
                 else
                     ignorierteUNrn.Add(uNr);
@@ -77,14 +83,15 @@ namespace Stundenplan_V2
                 if (!int.TryParse(Cell(row, header1, "U-Nr").GetString(), out int uNr))
                     continue;
 
-                // Ignore-Spalte prüfen: steht "i" drin → nur diese Zeile überspringen
-                // (nicht die gesamte UNr – andere Zeilen der UNr können aktiv bleiben)
-                string ignoreWert = GetOptional(row, header1, "Ignore (i)").Trim().ToLower();
-                if (ignoreWert == "i")
+                // Ignore-Spalte prüfen: steht "i" oder "x" drin → nur diese Zeile
+                // überspringen (nicht die gesamte UNr – andere Zeilen der UNr
+                // können aktiv bleiben)
+                string ignoreWert = GetOptional(row, header1, "Ignore (i)");
+                if (IstIgnore(ignoreWert))
                     continue;
 
                 int wst = Cell(row, header1, "Wst").GetValue<int>();
-                string lehrer = Cell(row, header1, "Lehrer").GetString();
+                string lehrer = Cell(row, header1, "Lehrer").GetString().Trim();
                 string fach = Cell(row, header1, "Fach").GetString();
                 string klassenRaw = Cell(row, header1, "Klasse(n)").GetString();
                 string ltkz = GetOptional(row, header1, "LTKZ");
@@ -113,7 +120,7 @@ namespace Stundenplan_V2
                     Klassen = klassenListe,
                     MinDoppel = minD,
                     MaxDoppel = maxD,
-                    FachGruppe = BestimmeFachgruppe(fach),
+                    FachGruppe = BestimmeFachgruppe(fach, fachgruppenPraefixe),
                     Ltkz = ltkz,
                     DoppelÜberPauseErlaubt = eWert == "x"
                 });
@@ -132,7 +139,7 @@ namespace Stundenplan_V2
                 var ersteAktiveZeile = rows1.FirstOrDefault(r =>
                     int.TryParse(Cell(r, header1, "U-Nr").GetString(), out int val) &&
                     val == uNr &&
-                    GetOptional(r, header1, "Ignore (i)").Trim().ToLower() != "i");
+                    !IstIgnore(GetOptional(r, header1, "Ignore (i)")));
 
                 if (ersteAktiveZeile == null) continue;
 
@@ -235,10 +242,14 @@ namespace Stundenplan_V2
 
             var lehrerFreiTageMinus2 = new HashSet<string>();
             var lehrerFreiTageMinus3 = new HashSet<string>();
+            var ftDiagnose = new List<string>();
 
             // Zusaetzliche freie Tage aus eigener Tabelle "FT" lesen
             if (workbook.Worksheets.Any(ws => ws.Name == "FT"))
-                LeseFreieTageTabelle(workbook.Worksheet("FT"), extraFreieTage, lehrerFreiTageMinus2, lehrerFreiTageMinus3);
+                LeseFreieTageTabelle(workbook.Worksheet("FT"), extraFreieTage,
+                    lehrerFreiTageMinus2, lehrerFreiTageMinus3, ftDiagnose);
+            else
+                ftDiagnose.Add("FT: kein Tabellenblatt 'FT' gefunden - keine zusätzlichen freien Tage.");
 
             // Slot-Zeitwuensche weiterhin aus ZWL (Lehrer) / ZWK (Klassen)
             if (workbook.Worksheets.Any(ws => ws.Name == "ZWL"))
@@ -298,6 +309,7 @@ namespace Stundenplan_V2
             int strafeStdFolge = 5;
             int strafeEinzel = 0;
             int strafeSpäteLk = 0;
+            int grenzeSpäteLk = 2;
             bool verbotSpäteDoppel = false;
             bool verbotMinus2 = false;
             int  strafeMinus2 = 0;
@@ -335,7 +347,19 @@ namespace Stundenplan_V2
                     else if (label.Contains("verbot -2") || label.Contains("verbot minus2"))
                         verbotMinus2 = wert.Trim().ToLower() == "ja";
                     else if (label.Contains("strafe -2") || label.Contains("strafe minus2"))
-                        int.TryParse(wert, out strafeMinus2);
+                    {
+                        // Tolerant: akzeptiert "2", "2,5" und "2.5". Das Solver-Ziel
+                        // ist integer-basiert, daher wird auf die nächste Ganzzahl
+                        // gerundet (z. B. 2,5 -> 3). So fällt der Wert nicht mehr
+                        // still auf 0 zurück (das hätte die -2-Diagnose abgeschaltet).
+                        var wertNorm = wert.Replace(',', '.');
+                        if (double.TryParse(wertNorm,
+                                System.Globalization.NumberStyles.Any,
+                                System.Globalization.CultureInfo.InvariantCulture,
+                                out double dMinus2))
+                            strafeMinus2 = (int)Math.Round(
+                                dMinus2, MidpointRounding.AwayFromZero);
+                    }
                     else if (label.Contains("späte dopp") || label.Contains("strafe späte dopp"))
                         int.TryParse(wert, out gewichtSpät);
                     else if (label.Contains("pädagog") || label.Contains("päd"))
@@ -352,6 +376,9 @@ namespace Stundenplan_V2
                         int.TryParse(wert, out strafeStdFolge);
                     else if (label.Contains("einzelstunde") || label.Contains("einzelstd"))
                         int.TryParse(wert, out strafeEinzel);
+                    else if (label.Contains("grenze") &&
+                             (label.Contains("lk") || label.Contains("späte lk")))
+                        int.TryParse(wert, out grenzeSpäteLk);
                     else if (label.Contains("späte lk") || label.Contains("lk stunden") || label.Contains("zuviele späte"))
                         int.TryParse(wert, out strafeSpäteLk);
                     else if (label.Contains("hauptfach anteil") || label.Contains("hauptfach spät anteil"))
@@ -419,27 +446,6 @@ namespace Stundenplan_V2
 
                     lehrerStammdaten[name] = sd;
                 }
-
-                // ===== TEMPORAERE DIAGNOSE: HohlStd-Werte pruefen =====
-                int mitMax = lehrerStammdaten.Values.Count(s => s.HohlStdMax != null);
-                int mitFolgeCnt = lehrerStammdaten.Values.Count(s => s.StdFolge != null);
-                var probe = new System.Text.StringBuilder();
-                probe.AppendLine($"[StD-DIAGNOSE] Lehrer gesamt: {lehrerStammdaten.Count}, " +
-                                 $"mit HohlStdMax: {mitMax}, mit StdFolge: {mitFolgeCnt}");
-                probe.AppendLine($"  Spalten: Name={colName}, HohlStd={colHohl}, Folge={colFolge}");
-                // Erste 5 geladene HohlStd-Werte zeigen
-                int z = 0;
-                foreach (var kv in lehrerStammdaten)
-                {
-                    if (z >= 5) break;
-                    if (kv.Value.HohlStdMax != null)
-                    {
-                        probe.AppendLine($"    {kv.Key}: min={kv.Value.HohlStdMin}, max={kv.Value.HohlStdMax}");
-                        z++;
-                    }
-                }
-                System.Windows.MessageBox.Show(probe.ToString(), "StD-Diagnose");
-                // ===== ENDE TEMPORAERE DIAGNOSE =====
             }
 
             return new StundenplanInput
@@ -464,6 +470,7 @@ namespace Stundenplan_V2
                 StrafeStdFolge = strafeStdFolge,
                 StrafeEinzelstunde = strafeEinzel,
                 StrafeSpäteLkStunden = strafeSpäteLk,
+                GrenzeSpäteLk = grenzeSpäteLk,
                 VerbotSpäteDoppel = verbotSpäteDoppel,
                 VerbotMinus2Verletzungen = verbotMinus2,
                 StrafeMinus2Verletzungen = strafeMinus2,
@@ -472,6 +479,7 @@ namespace Stundenplan_V2
                 GrossePausen = grossePausen,
                 LehrerFreiTageMinus2 = lehrerFreiTageMinus2,
                 LehrerFreiTageMinus3 = lehrerFreiTageMinus3,
+                FtDiagnose = ftDiagnose,
             };
         }
 
@@ -550,53 +558,86 @@ namespace Stundenplan_V2
             IXLWorksheet sheet,
             Dictionary<string, int> extraFreieTage,
             HashSet<string> lehrerFreiTageMinus2,
-            HashSet<string> lehrerFreiTageMinus3)
+            HashSet<string> lehrerFreiTageMinus3,
+            List<string> log)
         {
-            int row = 2; // Zeile 1 ist Kopfzeile (Name | Anzahl | Gewichtung)
+            // Bis zur letzten benutzten Zeile laufen und Leerzeilen ÜBERSPRINGEN
+            // (nicht abbrechen). Sonst würde eine einzelne Leerzeile mitten in der
+            // Liste alle folgenden Lehrer verschlucken (z.B. alles nach "J", wenn
+            // die Namen alphabetisch sortiert sind und dort eine Lücke steht).
+            int letzteZeile = sheet.LastRowUsed()?.RowNumber() ?? 1;
 
-            while (!sheet.Cell(row, 1).IsEmpty())
+            for (int row = 2; row <= letzteZeile; row++)
             {
+                if (sheet.Cell(row, 1).IsEmpty())
+                    continue; // Leerzeile: überspringen, nicht abbrechen
+
                 string name = sheet.Cell(row, 1).GetString().Trim();
 
                 // Platzhalter-/Leernamen ueberspringen
                 if (string.IsNullOrWhiteSpace(name) || name == "0")
-                {
-                    row++;
                     continue;
-                }
 
-                int extra = 0;
-                var extraCell = sheet.Cell(row, 2);
-                if (!extraCell.IsEmpty())
-                    int.TryParse(extraCell.GetString(), out extra);
+                LiesGanzzahlTolerant(sheet.Cell(row, 2), out int extra);
 
                 // Spalte C: -3 -> zwingend, -2 -> -2-Wunsch, sonst/leer -> ignorieren
-                var markerCell = sheet.Cell(row, 3);
-                int marker = 0;
-                bool hatMarker = !markerCell.IsEmpty() &&
-                                 int.TryParse(markerCell.GetString(), out marker);
+                bool hatMarker = LiesGanzzahlTolerant(sheet.Cell(row, 3), out int marker);
 
                 if (extra > 0 && hatMarker && marker == -3)
                 {
                     if (!extraFreieTage.ContainsKey(name))
                         extraFreieTage[name] = extra;
                     lehrerFreiTageMinus3?.Add(name);
+                    log?.Add($"FT: '{name}' -> {extra} freie(r) Tag(e), -3 (ZWINGEND/hart).");
                 }
                 else if (extra > 0 && hatMarker && marker == -2)
                 {
                     if (!extraFreieTage.ContainsKey(name))
                         extraFreieTage[name] = extra;
                     lehrerFreiTageMinus2?.Add(name);
+                    log?.Add($"FT: '{name}' -> {extra} freie(r) Tag(e), -2 (Wunsch; hart nur bei 'Verbot -2 = ja', sonst Strafe).");
                 }
-                // sonst: unmarkiert oder extra<=0 -> ignorieren
-
-                row++;
+                else
+                {
+                    // Verworfen: mit Grund protokollieren, damit stille Aussetzer sichtbar werden.
+                    string grund;
+                    if (extra <= 0 && !hatMarker)
+                        grund = "keine Anzahl (Spalte B) und keine Gewichtung (Spalte C)";
+                    else if (extra <= 0)
+                        grund = "Anzahl (Spalte B) fehlt oder <= 0";
+                    else if (!hatMarker)
+                        grund = "Gewichtung (Spalte C) fehlt oder ist keine Zahl";
+                    else
+                        grund = $"Gewichtung {marker} ist weder -3 noch -2";
+                    log?.Add($"FT: '{name}' IGNORIERT ({grund}).");
+                }
             }
         }
 
-        // =====================================================
-        // ZEITWUNSCH-TABELLE
-        // =====================================================
+        // Liest eine Ganzzahl robust aus einer FT-Zelle: normalisiert Komma zu
+        // Punkt, interpretiert den Wert als Zahl (auch "-3", "-3,0", "-3.0" oder
+        // numerisch formatierte Zellen) und rundet auf die nächste Ganzzahl.
+        // So verschwinden -3/-2-Markierungen nicht mehr still, nur weil die Zelle
+        // als Dezimalzahl dargestellt wird. Rückgabe: true, wenn eine Zahl gelesen
+        // wurde.
+        private static bool LiesGanzzahlTolerant(IXLCell cell, out int wert)
+        {
+            wert = 0;
+            if (cell == null || cell.IsEmpty()) return false;
+
+            string s = cell.GetString().Trim().Replace(',', '.');
+            if (string.IsNullOrEmpty(s)) return false;
+
+            if (double.TryParse(s,
+                    System.Globalization.NumberStyles.Any,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out double d))
+            {
+                wert = (int)System.Math.Round(d, System.MidpointRounding.AwayFromZero);
+                return true;
+            }
+            return false;
+        }
 
         private static void LeseZeitWunschTabelle(
             IXLWorksheet sheet,
@@ -661,7 +702,82 @@ namespace Stundenplan_V2
             };
         }
 
-        private static string BestimmeFachgruppe(string fach)
+        // Fach -> Fachgruppe. Bevorzugt werden die in FGR (ab Spalte C) je Gruppe
+        // hinterlegten Präfixe; passt keiner, greift die fest verdrahtete
+        // Fallback-Regel. Bei mehreren passenden Präfixen gewinnt der längste
+        // (spezifischste), Groß-/Kleinschreibung wird ignoriert.
+        private static string BestimmeFachgruppe(
+            string fach, Dictionary<string, List<string>> praefixe)
+        {
+            if (string.IsNullOrWhiteSpace(fach))
+                return "";
+
+            string f = fach.Trim();
+
+            if (praefixe != null && praefixe.Count > 0)
+            {
+                string besteGruppe = null;
+                int besteLaenge = -1;
+                foreach (var kv in praefixe)
+                {
+                    foreach (var p in kv.Value)
+                    {
+                        if (string.IsNullOrEmpty(p)) continue;
+                        if (f.StartsWith(p, StringComparison.OrdinalIgnoreCase) &&
+                            p.Length > besteLaenge)
+                        {
+                            besteGruppe = kv.Key;
+                            besteLaenge = p.Length;
+                        }
+                    }
+                }
+                if (besteGruppe != null)
+                    return besteGruppe;
+            }
+
+            return BestimmeFachgruppeHardcoded(f);
+        }
+
+        // Liest aus dem Blatt "FGR" je Zeile die Fachgruppe (Spalte A) und ihre
+        // Präfixe (ab Spalte C bis zur letzten benutzten Zelle der Zeile).
+        // Leere Zellen werden übersprungen, Präfixe getrimmt.
+        private static Dictionary<string, List<string>> LiesFachgruppenPraefixe(
+            IXLWorkbook workbook)
+        {
+            var result = new Dictionary<string, List<string>>();
+
+            if (!workbook.Worksheets.Any(ws => ws.Name == "FGR"))
+                return result;
+
+            var sheet = workbook.Worksheet("FGR");
+            foreach (var row in sheet.RangeUsed().RowsUsed().Skip(1))
+            {
+                string gruppe = row.Cell(1).GetString().Trim();
+                if (string.IsNullOrWhiteSpace(gruppe)) continue;
+
+                int letzteSpalte = row.LastCellUsed()?.Address.ColumnNumber ?? 0;
+                var praefixe = new List<string>();
+                for (int col = 3; col <= letzteSpalte; col++)
+                {
+                    string p = sheet.Cell(row.RowNumber(), col).GetString().Trim();
+                    if (!string.IsNullOrEmpty(p))
+                        praefixe.Add(p);
+                }
+
+                if (praefixe.Count > 0)
+                {
+                    if (result.TryGetValue(gruppe, out var vorhanden))
+                        vorhanden.AddRange(praefixe);
+                    else
+                        result[gruppe] = praefixe;
+                }
+            }
+
+            return result;
+        }
+
+        // Fest verdrahtete Fallback-Zuordnung (falls FGR keine Präfixe liefert).
+        private static string BestimmeFachgruppeHardcoded(string fach)
         {
             if (string.IsNullOrWhiteSpace(fach))
                 return "";
@@ -688,6 +804,15 @@ namespace Stundenplan_V2
             return map.ContainsKey(name)
                 ? row.Cell(map[name]).GetString()
                 : "";
+        }
+
+        // Ignore-Kennzeichen der UV-Spalte "Ignore (i)".
+        // Akzeptiert "i" UND "x" (jeweils case-insensitiv, führende/nachfolgende
+        // Leerzeichen egal). Jeder andere Zellinhalt bedeutet: Zeile ist aktiv.
+        private static bool IstIgnore(string zellwert)
+        {
+            string v = (zellwert ?? string.Empty).Trim().ToLower();
+            return v == "i" || v == "x";
         }
         private static Dictionary<string, int> GetHeaderMap(IXLWorksheet sheet)
         {
@@ -741,6 +866,56 @@ namespace Stundenplan_V2
                 throw new Exception($"Spalte '{name}' nicht gefunden.");
 
             return row.Cell(map[name]);
+        }
+
+        // =====================================================
+        // IGNORIERTE UNTERRICHTE LESEN
+        // Liefert alle UV-Zeilen, die in der Ignore-Spalte "i"/"x"
+        // tragen (also vom Solver NICHT geladen werden). Wird nur für
+        // die Anzeige "Ignorierte anzeigen" im Parkbereich des
+        // Plan-Editors benötigt. Fehlt die Ignore-Spalte, ist das
+        // Ergebnis leer.
+        // =====================================================
+        public static List<IgnorierterUnterricht> LadeIgnorierteUnterrichte(string excelPfad)
+        {
+            var result = new List<IgnorierterUnterricht>();
+
+            using var workbook = new XLWorkbook(excelPfad);
+            if (!workbook.Worksheets.Any(ws => ws.Name == "UV"))
+                return result;
+
+            var sheet = workbook.Worksheet("UV");
+            var header = GetHeaderMap(sheet);
+            if (!header.ContainsKey("Ignore (i)") && !header.ContainsKey("Ignore"))
+                return result;
+
+            string ignoreSpalte = header.ContainsKey("Ignore (i)") ? "Ignore (i)" : "Ignore";
+
+            foreach (var row in sheet.RangeUsed().RowsUsed().Skip(1))
+            {
+                if (!IstIgnore(GetOptional(row, header, ignoreSpalte)))
+                    continue;
+                if (!int.TryParse(GetOptional(row, header, "U-Nr").Trim(), out int uNr))
+                    continue;
+
+                string lehrer = GetOptional(row, header, "Lehrer").Trim();
+                string fach   = GetOptional(row, header, "Fach").Trim();
+                var klassen = GetOptional(row, header, "Klasse(n)")
+                    .Split(',', System.StringSplitOptions.RemoveEmptyEntries)
+                    .Select(k => k.Trim())
+                    .Where(k => k.Length > 0)
+                    .ToList();
+
+                result.Add(new IgnorierterUnterricht
+                {
+                    UNr = uNr,
+                    Lehrer = lehrer,
+                    Fach = fach,
+                    Klassen = klassen
+                });
+            }
+
+            return result;
         }
 
         // =====================================================

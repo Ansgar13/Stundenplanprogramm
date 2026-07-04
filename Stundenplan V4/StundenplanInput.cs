@@ -36,7 +36,8 @@ public class StundenplanInput
     // Lehrer, die neben ihrem Freie-Tage-Wunsch eine -2 eingetragen haben
     public HashSet<string> LehrerFreiTageMinus2 { get; set; } = new();
     public HashSet<string> LehrerFreiTageMinus3 { get; set; } = new();
-
+    // Diagnosezeilen zum Einlesen der FT-Tabelle (welche Einträge registriert/verworfen wurden)
+    public List<string> FtDiagnose { get; set; } = new();
     // Hauptfach-Strafe: Hauptfächer (D,E,M,F) nicht zu oft nach Stunde 4
     public int HauptfachSpätAnteilProzent { get; set; } = 50; // max x% der Stunden nach Stunde 4
     public int StrafeHauptfachSpät { get; set; } = 0;         // Strafe pro Stunde über dem Limit
@@ -48,5 +49,6 @@ public class StundenplanInput
     public int StrafeStdFolge { get; set; } = 5;
     public int StrafeEinzelstunde { get; set; } = 0;
     public int StrafeSpäteLkStunden { get; set; } = 0;
+    public int GrenzeSpäteLk { get; set; } = 2;
 }
 

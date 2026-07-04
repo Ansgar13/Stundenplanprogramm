@@ -75,11 +75,34 @@ namespace Stundenplan_V2
             {
                 excelPfad = dlg.FileName;
                 input = ExcelLoader.Lade(excelPfad);
+
+                // FT-Diagnose ausgeben: welche freien Tage aus Tabelle "FT"
+                // registriert bzw. (mit Grund) verworfen wurden.
+                if (input.FtDiagnose != null)
+                    foreach (var zeile in input.FtDiagnose)
+                        Log(zeile);
                 // In-Memory-Lösungen leeren: nach dem Neuladen gelten nur noch
                 // die Lösungen, die tatsächlich in der Excel-Datei stehen.
                 // Sonst würden zuvor manuell geloeschte Lösungen aus dem Speicher
                 // beim nächsten Übernehmen/Schreiben wieder in die Datei zurückgeschrieben.
                 letzteSolutions = new();
+
+                // Lösungen aus dem "Lös"-Sheet einlesen (die zuletzt geschriebenen
+                // Lauf-Lösungen). Diese sollen nach dem Neuladen weiterhin im
+                // Plan-Editor und Ranking wählbar sein — sie stehen ja in der Datei.
+                try
+                {
+                    var lösLösungen = LadeLösungenAusExcel();
+                    if (lösLösungen.Count > 0)
+                    {
+                        letzteSolutions.AddRange(lösLösungen);
+                        Log($"{lösLösungen.Count} Lösung(en) aus Sheet 'Lös' eingelesen.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"Hinweis: Lösungen aus 'Lös' konnten nicht gelesen werden: {ex.Message}");
+                }
 
                 // Dauerhaft gesicherte Lösungen (Sheet "Gesichert") automatisch
                 // einmischen, damit sie sofort wieder zur Auswahl stehen (z.B. im
@@ -90,10 +113,20 @@ namespace Stundenplan_V2
                 try
                 {
                     var gesicherte = LadeGesicherteLösungen();
-                    if (gesicherte.Count > 0)
+
+                    // Nur ergänzen, was nicht bereits (per Label) aus "Lös" geladen
+                    // wurde: eine früher nach "Lös" gespiegelte gesicherte Lösung
+                    // würde sonst doppelt im Dropdown erscheinen.
+                    var vorhandeneLabels = new HashSet<string>(
+                        letzteSolutions.Select(s => s.label));
+                    var neueGesicherte = gesicherte
+                        .Where(g => !vorhandeneLabels.Contains(g.label))
+                        .ToList();
+
+                    if (neueGesicherte.Count > 0)
                     {
-                        letzteSolutions.AddRange(gesicherte);
-                        Log($"{gesicherte.Count} gesicherte Lösung(en) aus Sheet 'Gesichert' eingelesen.");
+                        letzteSolutions.AddRange(neueGesicherte);
+                        Log($"{neueGesicherte.Count} gesicherte Lösung(en) aus Sheet 'Gesichert' eingelesen.");
                     }
                 }
                 catch (Exception ex)
@@ -381,7 +414,7 @@ namespace Stundenplan_V2
                     input.StrafeSpäteLkStunden,
                     input.StrafeHauptfachSpät,
                     input.HauptfachSpätAnteilProzent,
-                    input.LehrerStammdaten);
+                    input.LehrerStammdaten, input.GrenzeSpäteLk);
 
                 var unrPlan = (bewertung.Quality, bewertung.BadUnits, belegung, "Plan", input.Blocks);
 
@@ -431,7 +464,7 @@ namespace Stundenplan_V2
                     $"BadUnits={bewertung.BadUnits}");
 
                 if (!automatisch)
-                    TxtStatus.Text = "UNr-Plan in Lösungen und SolverRanking eingetragen.";
+                    TxtStatus.Text = "UNr-Plan in Lösungen und Rank eingetragen.";
             }
             catch (Exception ex)
             {
@@ -487,7 +520,9 @@ namespace Stundenplan_V2
                     meldeLeherMinus2: meldeMinus2Verl,
                     extraFreieTage: input.ExtraFreieTage,
                     lehrerFreiTageMinus2: input.LehrerFreiTageMinus2,
-                    lehrerFreiTageMinus3: input.LehrerFreiTageMinus3);
+                    lehrerFreiTageMinus3: input.LehrerFreiTageMinus3,
+                    fachraumLimit: input.Fachraeume,
+                    verbotMinus2Lehrer: input.VerbotMinus2Verletzungen);
 
                 PlanValidator.SchreibeTabelle(excelPfad, verletzungen);
 
@@ -686,112 +721,6 @@ namespace Stundenplan_V2
             }
 
             return belegung;
-        }
-
-        // =====================================================
-        // BUTTON 7 – KLASSE FIXIEREN
-        // Überträgt die Slots einer Klasse aus einer Lösung
-        // in die Tabelle "Fix UNrn" (ohne bestehende zu löschen)
-        // =====================================================
-        private void BtnKlasseFixieren_Click(object sender, RoutedEventArgs e)
-        {
-            if (input == null)
-            {
-                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
-                return;
-            }
-
-            // Lösungen aus Excel lesen falls kein Solver-Lauf vorhanden
-            var verfügbareLösungen = letzteSolutions.Count > 0
-                ? letzteSolutions
-                : LadeLösungenAusExcel();
-
-            if (verfügbareLösungen.Count == 0)
-            {
-                MessageBox.Show("Keine Lösungen verfügbar – bitte zuerst Stundenplan erstellen (Button 3) " +
-                                "oder Lösungen in der Excel-Tabelle vorhanden.");
-                return;
-            }
-
-            // Alle verfügbaren Klassen und Fächer aus den Blöcken extrahieren
-            var alleKlassen = input.Blocks
-                .SelectMany(b => b.Teile.SelectMany(t => t.Klassen))
-                .Distinct().OrderBy(k => k).ToList();
-
-            var alleFächer = input.Blocks
-                .SelectMany(b => b.Teile.Select(t => t.Fach.Trim()))
-                .Where(f => !string.IsNullOrEmpty(f))
-                .Distinct().OrderBy(f => f).ToList();
-
-            var labels = verfügbareLösungen.Select(s => s.label).ToList();
-            var dialog = new KlasseFixierenDialog(labels, alleKlassen, alleFächer)
-                { Owner = this };
-
-            if (dialog.ShowDialog() != true)
-                return;
-
-            var klassen   = dialog.GewählteKlassen;
-            var fächer    = dialog.GewählteFächer;
-            int lösungsNr = dialog.GewählteLösungsIndex;
-
-            var sol      = verfügbareLösungen[lösungsNr];
-            var belegung = sol.belegung;
-            var blocks   = sol.blocks;
-
-            // Blöcke suchen die eine der Klassen ODER eines der Fächer enthalten
-            var trefferBlöcke = new List<int>();
-            for (int b = 0; b < blocks.Count; b++)
-            {
-                bool klassenTreffer = klassen.Count > 0 &&
-                    blocks[b].Teile.Any(t =>
-                        t.Klassen.Any(k => klassen.Contains(k)));
-
-                bool fachTreffer = fächer.Count > 0 &&
-                    blocks[b].Teile.Any(t =>
-                        fächer.Any(f => f.Equals(t.Fach.Trim(),
-                            StringComparison.OrdinalIgnoreCase)));
-
-                if (klassenTreffer || fachTreffer)
-                    trefferBlöcke.Add(b);
-            }
-
-            if (trefferBlöcke.Count == 0)
-            {
-                MessageBox.Show("Keine passenden Blöcke gefunden.");
-                return;
-            }
-
-            // Belegte Slots → UNrn sammeln
-            var fixEinträge = new Dictionary<int, List<int>>();
-            for (int s = 0; s < input.Slots.Count; s++)
-            {
-                foreach (int b in trefferBlöcke)
-                {
-                    if (belegung[b, s] == 1)
-                    {
-                        if (!fixEinträge.ContainsKey(s))
-                            fixEinträge[s] = new List<int>();
-                        fixEinträge[s].Add(blocks[b].UNr);
-                    }
-                }
-            }
-
-            if (fixEinträge.Count == 0)
-            {
-                MessageBox.Show($"Keine belegten Slots in '{sol.label}'.");
-                return;
-            }
-
-            SchreibeFixUNrn(fixEinträge);
-
-            var teile = new List<string>();
-            if (klassen.Count > 0) teile.Add($"Klassen: {string.Join(", ", klassen)}");
-            if (fächer.Count > 0)  teile.Add($"Fächer: {string.Join(", ", fächer)}");
-            string beschreibung = string.Join(" | ", teile);
-
-            TxtStatus.Text = $"{beschreibung} aus '{sol.label}' in Fix UNrn eingetragen.";
-            Log($"Fixiert ({beschreibung}): {fixEinträge.Count} Slots, " +
-                $"{fixEinträge.Values.Sum(v => v.Count)} Einträge.");
         }
 
         // =====================================================
@@ -1056,6 +985,46 @@ namespace Stundenplan_V2
             for (int p = 0; p < solutions.Count; p++)
                 sheet.Cell(qualRow, 3 + p).Value = solutions[p].quality;
 
+            // Vier zusätzliche Kennzahlen als eigene Zeilen unter der Qualität,
+            // pro Lösungsspalte. Werte kommen aus PlanBewertung (wie in "Rank").
+            sheet.Cell(qualRow + 1, 1).Value = "frühe Doppel";
+            sheet.Cell(qualRow + 2, 1).Value = "späte Doppel";
+            sheet.Cell(qualRow + 3, 1).Value = "päd. Einheiten spät";
+            sheet.Cell(qualRow + 4, 1).Value = "späte LK-Stunden";
+
+            for (int p = 0; p < Math.Min(10, solutions.Count); p++)
+            {
+                try
+                {
+                    var bew = PlanBewertung.Berechne(
+                        solutions[p].belegung,
+                        solutions[p].blocks,
+                        input.Slots,
+                        input.GewichtFrüheDoppel,
+                        input.GewichtSpäteDoppel,
+                        input.GewichtSpätePädEinheiten,
+                        input.StrafeHohlstunde,
+                        input.StrafeDoppelHohlstunde,
+                        input.StrafeDreifachHohlstunde,
+                        input.StrafeEinzelstunde,
+                        input.StrafeSpäteLkStunden,
+                        input.StrafeHauptfachSpät,
+                        input.HauptfachSpätAnteilProzent,
+                        input.LehrerStammdaten, input.GrenzeSpäteLk);
+
+                    sheet.Cell(qualRow + 1, 3 + p).Value = bew.Early;          // frühe Doppel
+                    sheet.Cell(qualRow + 2, 3 + p).Value = bew.Late;           // späte Doppel
+                    sheet.Cell(qualRow + 3, 3 + p).Value = bew.BadUnits;       // päd. Einheiten spät
+                    sheet.Cell(qualRow + 4, 3 + p).Value = bew.SpäteLkStunden; // späte LK-Stunden
+                }
+                catch (Exception ex)
+                {
+                    // Eine problematische Lösung darf die übrigen Spalten nicht
+                    // verhindern: Kennzahlen leer lassen, Fehler protokollieren.
+                    Log($"Lös: Kennzahlen für '{solutions[p].label}' nicht berechenbar ({ex.Message}).");
+                }
+            }
+
             workbook.Save();
         }
 
@@ -1064,10 +1033,15 @@ namespace Stundenplan_V2
         {
             using var workbook = new XLWorkbook(excelPfad);
 
+            // Ziel ist das Blatt "Rank". Ein evtl. vorhandenes altes "Rang"
+            // (frühere Schreibweise) wird mit entfernt, damit keine veraltete
+            // Dublette stehen bleibt.
+            if (workbook.Worksheets.Any(ws => ws.Name == "Rank"))
+                workbook.Worksheet("Rank").Delete();
             if (workbook.Worksheets.Any(ws => ws.Name == "Rang"))
                 workbook.Worksheet("Rang").Delete();
 
-            var sheet = workbook.Worksheets.Add("Rang");
+            var sheet = workbook.Worksheets.Add("Rank");
 
             sheet.Cell(1, 1).Value  = "Plan";
             sheet.Cell(1, 2).Value  = "Label";
@@ -1086,36 +1060,59 @@ namespace Stundenplan_V2
 
             for (int p = 0; p < solutions.Count; p++)
             {
-                var bewertung = PlanBewertung.Berechne(
-                    solutions[p].belegung,
-                    solutions[p].blocks,
-                    input.Slots,
-                    input.GewichtFrüheDoppel,
-                    input.GewichtSpäteDoppel,
-                    input.GewichtSpätePädEinheiten,
-                    input.StrafeHohlstunde,
-                    input.StrafeDoppelHohlstunde,
-                    input.StrafeDreifachHohlstunde,
-                    input.StrafeEinzelstunde,
-                    input.StrafeSpäteLkStunden,
-                    input.StrafeHauptfachSpät,
-                    input.HauptfachSpätAnteilProzent,
-                    input.LehrerStammdaten);
+                BewertungsResultat bewertung = null;
+                try
+                {
+                    bewertung = PlanBewertung.Berechne(
+                        solutions[p].belegung,
+                        solutions[p].blocks,
+                        input.Slots,
+                        input.GewichtFrüheDoppel,
+                        input.GewichtSpäteDoppel,
+                        input.GewichtSpätePädEinheiten,
+                        input.StrafeHohlstunde,
+                        input.StrafeDoppelHohlstunde,
+                        input.StrafeDreifachHohlstunde,
+                        input.StrafeEinzelstunde,
+                        input.StrafeSpäteLkStunden,
+                        input.StrafeHauptfachSpät,
+                        input.HauptfachSpätAnteilProzent,
+                        input.LehrerStammdaten, input.GrenzeSpäteLk);
+                }
+                catch (Exception ex)
+                {
+                    // Eine einzelne problematische Lösung (z.B. eine Tauschlösung,
+                    // deren Blockliste nicht exakt zur Belegung passt) darf NICHT
+                    // den ganzen Rang abbrechen. Zeile trotzdem mit den bereits
+                    // bekannten Kennzahlen schreiben und den Fehler protokollieren.
+                    Log($"Rang: Lösung '{solutions[p].label}' konnte nicht neu bewertet werden ({ex.Message}) - verwende gespeicherte Werte.");
+                }
 
                 sheet.Cell(p + 2, 1).Value  = p + 1;
                 sheet.Cell(p + 2, 2).Value  = solutions[p].label;
-                sheet.Cell(p + 2, 3).Value  = bewertung.Quality;
-                sheet.Cell(p + 2, 4).Value  = bewertung.Early;
-                sheet.Cell(p + 2, 5).Value  = bewertung.Late;
-                sheet.Cell(p + 2, 6).Value  = bewertung.BadUnits;
-                sheet.Cell(p + 2, 7).Value  = bewertung.Hohlstunden;
-                sheet.Cell(p + 2, 8).Value  = bewertung.DoppelHohlstunden;
-                sheet.Cell(p + 2, 9).Value  = bewertung.DreifachHohlstunden;
-                sheet.Cell(p + 2, 10).Value = bewertung.Einzelstunden;
-                sheet.Cell(p + 2, 11).Value = bewertung.SpäteLkStunden;
-                sheet.Cell(p + 2, 12).Value = bewertung.HauptfachSpätÜberschuss;
-                sheet.Cell(p + 2, 13).Value = string.Join("\n", bewertung.Details);
-                sheet.Cell(p + 2, 13).Style.Alignment.WrapText = true;
+
+                if (bewertung != null)
+                {
+                    sheet.Cell(p + 2, 3).Value  = bewertung.Quality;
+                    sheet.Cell(p + 2, 4).Value  = bewertung.Early;
+                    sheet.Cell(p + 2, 5).Value  = bewertung.Late;
+                    sheet.Cell(p + 2, 6).Value  = bewertung.BadUnits;
+                    sheet.Cell(p + 2, 7).Value  = bewertung.Hohlstunden;
+                    sheet.Cell(p + 2, 8).Value  = bewertung.DoppelHohlstunden;
+                    sheet.Cell(p + 2, 9).Value  = bewertung.DreifachHohlstunden;
+                    sheet.Cell(p + 2, 10).Value = bewertung.Einzelstunden;
+                    sheet.Cell(p + 2, 11).Value = bewertung.SpäteLkStunden;
+                    sheet.Cell(p + 2, 12).Value = bewertung.HauptfachSpätÜberschuss;
+                    sheet.Cell(p + 2, 13).Value = string.Join("\n", bewertung.Details);
+                    sheet.Cell(p + 2, 13).Style.Alignment.WrapText = true;
+                }
+                else
+                {
+                    // Fallback: gespeicherte Kennzahlen der Lösung
+                    sheet.Cell(p + 2, 3).Value  = solutions[p].quality;
+                    sheet.Cell(p + 2, 6).Value  = solutions[p].badUnits;
+                    sheet.Cell(p + 2, 13).Value = "(Neubewertung fehlgeschlagen - gespeicherte Werte)";
+                }
             }
 
             sheet.Columns().AdjustToContents();
@@ -1198,7 +1195,7 @@ namespace Stundenplan_V2
                 input.StrafeSpäteLkStunden,
                 input.StrafeHauptfachSpät,
                 input.HauptfachSpätAnteilProzent,
-                input.LehrerStammdaten);
+                input.LehrerStammdaten, input.GrenzeSpäteLk);
             return (b.Quality, b.BadUnits, belegung, "Plan", input.Blocks);
         }
 
@@ -1251,7 +1248,7 @@ namespace Stundenplan_V2
                     input.StrafeSpäteLkStunden,
                     input.StrafeHauptfachSpät,
                     input.HauptfachSpätAnteilProzent,
-                    input.LehrerStammdaten);
+                    input.LehrerStammdaten, input.GrenzeSpäteLk);
 
                 // In letzteSolutions ergänzen (bestehende mit gleichem Label ersetzen)
                 letzteSolutions.RemoveAll(s => s.label == neuLabel);
@@ -1306,6 +1303,7 @@ namespace Stundenplan_V2
                 StrafeDreifachHohl = input.StrafeDreifachHohlstunde,
                 StrafeEinzel = input.StrafeEinzelstunde,
                 StrafeSpäteLk = input.StrafeSpäteLkStunden,
+                GrenzeSpäteLk = input.GrenzeSpäteLk,
                 StrafeHauptfachSpät = input.StrafeHauptfachSpät,
                 HauptfachSpätAnteil = input.HauptfachSpätAnteilProzent,
                 StrafeStdFolge = input.StrafeStdFolge,
@@ -1339,6 +1337,19 @@ namespace Stundenplan_V2
                 }
             };
 
+            // Ignorierte UV-Zeilen (i/x) laden — nur für die Anzeige
+            // "Ignorierte anzeigen" im Parkbereich des Plan-Editors.
+            List<IgnorierterUnterricht> ignorierteUnterrichte;
+            try
+            {
+                ignorierteUnterrichte = ExcelLoader.LadeIgnorierteUnterrichte(excelPfad);
+            }
+            catch (Exception ex)
+            {
+                ignorierteUnterrichte = new List<IgnorierterUnterricht>();
+                Log($"Konnte ignorierte Unterrichte nicht laden: {ex.Message}");
+            }
+
             var editor = new PlanEditorDialog(
                 loesungenFürEditor,
                 input.Slots,
@@ -1346,7 +1357,8 @@ namespace Stundenplan_V2
                 input.GrossePausen,
                 uebernehmen,
                 bewParam,
-                aendereFixUNr)
+                aendereFixUNr,
+                ignorierteUnterrichte)
             { Owner = this };
 
             editor.ShowDialog();
@@ -1790,6 +1802,7 @@ namespace Stundenplan_V2
                     input.StrafeStdFolge,
                     input.StrafeEinzelstunde,
                     input.StrafeSpäteLkStunden,
+                    input.GrenzeSpäteLk,
                     input.LehrerStammdaten,
                     input.GrossePausen,
                     input.VerbotSpäteDoppel,
@@ -2102,20 +2115,37 @@ namespace Stundenplan_V2
                         .Where(k => k.Length > 0)
                         .ToList();
 
-                    // ODER zwischen allen Filtern — eine Übereinstimmung reicht.
-                    bool treffer =
-                        klassenInZeile.Any(k => fKlassen.Contains(k)) ||
-                        fLehrer.Contains(lehrer) ||
-                        fFächer.Contains(fach) ||
-                        fZt2.Contains(zt2);
+                    bool treffer;
+                    if (dialog.UndVerknüpfung)
+                    {
+                        // UND (Kombination): jede Kategorie MIT Auswahl muss passen;
+                        // eine Kategorie ohne Auswahl zählt als "egal" (Wildcard).
+                        // Die Klassen-Kategorie gilt als erfüllt, wenn die Zeile
+                        // mindestens eine der gewählten Klassen enthält.
+                        bool kOk = fKlassen.Count == 0 || klassenInZeile.Any(k => fKlassen.Contains(k));
+                        bool lOk = fLehrer.Count  == 0 || fLehrer.Contains(lehrer);
+                        bool fOk = fFächer.Count  == 0 || fFächer.Contains(fach);
+                        bool zOk = fZt2.Count     == 0 || fZt2.Contains(zt2);
+                        treffer = kOk && lOk && fOk && zOk;
+                    }
+                    else
+                    {
+                        // ODER zwischen allen Filtern — eine Übereinstimmung reicht.
+                        treffer =
+                            klassenInZeile.Any(k => fKlassen.Contains(k)) ||
+                            fLehrer.Contains(lehrer) ||
+                            fFächer.Contains(fach) ||
+                            fZt2.Contains(zt2);
+                    }
 
                     if (!treffer) continue;
 
                     if (dialog.IgnorierenEntfernen)
                     {
-                        // "i" aus Treffern entfernen — nur leeren wenn auch wirklich "i" drinsteht
+                        // Ignore-Markierung aus Treffern entfernen — nur leeren wenn
+                        // auch wirklich "i" oder "x" (case-insensitiv) drinsteht
                         string aktuell = row.Cell(colIgnore).GetString().Trim().ToLower();
-                        if (aktuell == "i")
+                        if (aktuell == "i" || aktuell == "x")
                         {
                             row.Cell(colIgnore).Value = "";
                             markiert++;
@@ -2647,250 +2677,291 @@ namespace Stundenplan_V2
         // =====================================================
         // BUTTON 10 – FIX UNRN LÖSCHEN
         // =====================================================
-        private void BtnFixUNrnLoeschen_Click(object sender, RoutedEventArgs e)
+        // ===== Diagnose eines gewählten Plans (Gesichert/Lös) an "Diag" anhängen =====
+        private void BtnDiagAnhaengen_Click(object sender, RoutedEventArgs e)
         {
-            if (input == null)
+            if (input == null || string.IsNullOrEmpty(excelPfad))
             {
                 MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
                 return;
             }
 
-            // Alle Einzelklassen aus den Blöcken sammeln
-            var alleEinzelKlassen = input.Blocks
-                .SelectMany(b => b.Teile.SelectMany(t => t.Klassen))
-                .Distinct()
-                .OrderBy(k => k)
-                .ToList();
+            var q = MessageBox.Show(
+                "Quelle für den Plan wählen:\n\n[Ja] = Gesichert\n[Nein] = Lös\n[Abbrechen]",
+                "Diagnose an Diag anhängen", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            if (q == MessageBoxResult.Cancel) return;
 
-            // Alle Klassenkombinationen (wie sie in der U-Verteilung vorkommen)
-            var alleKombinationen = input.Blocks
-                .SelectMany(b => b.Teile
-                    .Where(t => t.Klassen.Count > 1)
-                    .Select(t => string.Join(", ", t.Klassen.OrderBy(k => k))))
-                .Distinct()
-                .OrderBy(k => k)
-                .ToList();
-
-            // Kombinierte Liste: Einzelklassen + Kombinationen
-            var alleKlassenOptionen = alleEinzelKlassen
-                .Concat(alleKombinationen)
-                .Distinct()
-                .OrderBy(k => k)
-                .ToList();
-
-            // Alle Fächer sammeln
-            var alleFächer = input.Blocks
-                .SelectMany(b => b.Teile.Select(t => t.Fach.Trim()))
-                .Where(f => !string.IsNullOrEmpty(f))
-                .Distinct()
-                .OrderBy(f => f)
-                .ToList();
-
-            // Dialog aufbauen
-            var dlg = new Window
-            {
-                Title = "Fix UNrn löschen",
-                Width = 420,
-                Height = 500,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize
-            };
-
-            var stack = new System.Windows.Controls.StackPanel { Margin = new Thickness(15) };
-
-            // Radiobuttons
-            var rbAlles = new System.Windows.Controls.RadioButton
-            {
-                Content = "Alle Fix UNrn löschen (Spalten WTag/Stunde bleiben)",
-                IsChecked = true,
-                Margin = new Thickness(0, 0, 0, 8)
-            };
-            var rbSelektiv = new System.Windows.Controls.RadioButton
-            {
-                Content = "Nur bestimmte Klassen/Fächer löschen",
-                Margin = new Thickness(0, 0, 0, 12)
-            };
-
-            // Klassen ListBox (Mehrfachauswahl)
-            var lblKlassen = new System.Windows.Controls.TextBlock
-            {
-                Text = "Klassen / Kombinationen (Mehrfachauswahl möglich):",
-                Margin = new Thickness(0, 0, 0, 4)
-            };
-            var lstKlassen = new System.Windows.Controls.ListBox
-            {
-                Height = 100,
-                Margin = new Thickness(0, 0, 0, 8),
-                SelectionMode = System.Windows.Controls.SelectionMode.Multiple
-            };
-            foreach (var k in alleKlassenOptionen)
-                lstKlassen.Items.Add(k);
-
-            // Fächer ListBox (Mehrfachauswahl)
-            var lblFächer = new System.Windows.Controls.TextBlock
-            {
-                Text = "Fächer (Mehrfachauswahl möglich):",
-                Margin = new Thickness(0, 0, 0, 4)
-            };
-            var lstFächer = new System.Windows.Controls.ListBox
-            {
-                Height = 100,
-                Margin = new Thickness(0, 0, 0, 12),
-                SelectionMode = System.Windows.Controls.SelectionMode.Multiple
-            };
-            foreach (var f in alleFächer)
-                lstFächer.Items.Add(f);
-
-            // Listen nur aktiv wenn selektiv
-            rbSelektiv.Checked += (s, ev) => { lstKlassen.IsEnabled = true; lstFächer.IsEnabled = true; };
-            rbAlles.Checked    += (s, ev) => { lstKlassen.IsEnabled = false; lstFächer.IsEnabled = false; };
-            lstKlassen.IsEnabled = false;
-            lstFächer.IsEnabled  = false;
-
-            // Buttons
-            var btnPanel = new System.Windows.Controls.StackPanel
-            {
-                Orientation = System.Windows.Controls.Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right
-            };
-            var btnOk = new System.Windows.Controls.Button
-            {
-                Content = "Löschen",
-                Width = 80,
-                Margin = new Thickness(0, 0, 8, 0)
-            };
-            var btnAbbrechen = new System.Windows.Controls.Button
-            {
-                Content = "Abbrechen",
-                Width = 80
-            };
-
-            bool bestätigt = false;
-            btnOk.Click        += (s, ev) => { bestätigt = true; dlg.Close(); };
-            btnAbbrechen.Click += (s, ev) => dlg.Close();
-
-            btnPanel.Children.Add(btnOk);
-            btnPanel.Children.Add(btnAbbrechen);
-
-            stack.Children.Add(rbAlles);
-            stack.Children.Add(rbSelektiv);
-            stack.Children.Add(lblKlassen);
-            stack.Children.Add(lstKlassen);
-            stack.Children.Add(lblFächer);
-            stack.Children.Add(lstFächer);
-            stack.Children.Add(btnPanel);
-            dlg.Content = stack;
-            dlg.ShowDialog();
-
-            if (!bestätigt) return;
-
-            bool allesLöschen = rbAlles.IsChecked == true;
-
-            var gewählteKlassen = lstKlassen.SelectedItems.Cast<string>().ToHashSet();
-            var gewählteFächer  = lstFächer.SelectedItems.Cast<string>()
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
+            string quelleName = q == MessageBoxResult.Yes ? "Gesichert" : "Lös";
+            List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> quelle;
             try
             {
-                using var wb = new XLWorkbook(excelPfad);
-
-                if (!wb.Worksheets.Any(ws => ws.Name == "Fix UNrn"))
-                {
-                    MessageBox.Show("Tabelle 'Fix UNrn' nicht gefunden.");
-                    return;
-                }
-
-                var sheet = wb.Worksheet("Fix UNrn");
-                var letzteZeile = sheet.LastRowUsed()?.RowNumber() ?? 1;
-
-                if (allesLöschen)
-                {
-                    // Nur UNr-Spalten (ab Spalte 3) löschen, WTag/Stunde behalten
-                    for (int row = 2; row <= letzteZeile; row++)
-                    {
-                        var xlRow = sheet.Row(row);
-                        int lastCol = xlRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
-                        for (int col = 3; col <= lastCol; col++)
-                            xlRow.Cell(col).Clear();
-                    }
-
-                    wb.Save();
-                    Log("Fix UNrn: alle UNrn gelöscht, WTag/Stunde-Spalten erhalten.");
-                    TxtStatus.Text = "Alle Fix UNrn gelöscht.";
-                    return;
-                }
-
-                // Selektiv: Lookup UNr → Block
-                var unrZuBlock = new Dictionary<int, UnterrichtsBlock>();
-                foreach (var block in input.Blocks)
-                    unrZuBlock[block.UNr] = block;
-
-                int gelöscht = 0;
-
-                for (int row = 2; row <= letzteZeile; row++)
-                {
-                    var xlRow  = sheet.Row(row);
-                    int lastCol = xlRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
-
-                    var verbleibende = new List<int>();
-
-                    for (int col = 3; col <= lastCol; col++)
-                    {
-                        if (!int.TryParse(xlRow.Cell(col).GetString(), out int unr))
-                            continue;
-
-                        if (!unrZuBlock.TryGetValue(unr, out var block))
-                        {
-                            verbleibende.Add(unr);
-                            continue;
-                        }
-
-                        bool klassenTreffer = false;
-                        if (gewählteKlassen.Count > 0)
-                        {
-                            klassenTreffer = block.Teile.Any(t =>
-                            {
-                                string kombi = string.Join(", ", t.Klassen.OrderBy(k => k));
-                                return gewählteKlassen.Contains(kombi) ||
-                                       t.Klassen.Any(k => gewählteKlassen.Contains(k));
-                            });
-                        }
-
-                        bool fachTreffer = gewählteFächer.Count > 0 &&
-                            block.Teile.Any(t =>
-                                gewählteFächer.Contains(t.Fach.Trim()));
-
-                        // Löschen wenn Klasse ODER Fach passt
-                        bool löschen = klassenTreffer || fachTreffer;
-
-                        if (löschen)
-                            gelöscht++;
-                        else
-                            verbleibende.Add(unr);
-                    }
-
-                    // Zeile neu schreiben
-                    for (int col = 3; col <= lastCol; col++)
-                        xlRow.Cell(col).Clear();
-
-                    for (int i = 0; i < verbleibende.Count; i++)
-                        xlRow.Cell(3 + i).Value = verbleibende[i];
-                }
-
-                wb.Save();
-
-                string beschreibung = "";
-                if (gewählteKlassen.Count > 0) beschreibung += $"Klassen: {string.Join(", ", gewählteKlassen)} ";
-                if (gewählteFächer.Count > 0)  beschreibung += $"Fächer: {string.Join(", ", gewählteFächer)}";
-
-                Log($"Fix UNrn gelöscht ({gelöscht} Einträge): {beschreibung.Trim()}");
-                TxtStatus.Text = $"Fix UNrn gelöscht: {beschreibung.Trim()}";
+                quelle = q == MessageBoxResult.Yes ? LadeGesicherteLösungen() : LadeLösungenAusExcel();
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Fehler:\n" + ex.Message);
+                MessageBox.Show($"Lesen aus '{quelleName}' fehlgeschlagen: {ex.Message}");
+                return;
             }
+
+            if (quelle == null || quelle.Count == 0)
+            {
+                MessageBox.Show($"In '{quelleName}' wurden keine Pläne gefunden.");
+                return;
+            }
+
+            string gewählt = WähleAusListe("Plan wählen",
+                $"Plan aus '{quelleName}' für die Diagnose:", quelle.Select(s => s.label).ToList());
+            if (gewählt == null) return;
+
+            var sol = quelle.First(s => s.label == gewählt);
+
+            try
+            {
+                bool meldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0;
+
+                int vorher = LiesDiagLetzteSpalte();
+
+                var diagnosen = LehrerDiagnose.Berechne(
+                    sol.belegung,
+                    sol.blocks ?? input.Blocks,
+                    input.Slots,
+                    input.LehrerStammdaten,
+                    input.StrafeHohlstunde,
+                    input.StrafeDoppelHohlstunde,
+                    input.StrafeDreifachHohlstunde,
+                    input.StrafeStdFolge,
+                    meldeMinus2,
+                    input.ExtraFreieTage,
+                    input.LehrerFreiTageMinus2);
+
+                LehrerDiagnose.Exportiere(
+                    excelPfad,
+                    new List<(string, List<LehrerDiagnoseErgebnis>)> { (sol.label, diagnosen) },
+                    vorherLöschen: false,
+                    meldeLeherMinus2: meldeMinus2);
+
+                int nachher = LiesDiagLetzteSpalte();
+                if (nachher > vorher && vorher >= 1)
+                {
+                    // Die leere Trennspalte vor dem neuen Block 2 Zeichen breit machen.
+                    SetzeDiagSpaltenbreite(vorher + 1, 2);
+                    Log($"Diagnose für '{sol.label}' an 'Diag' angehängt.");
+                    TxtStatus.Text = $"Diagnose '{sol.label}' an Diag angehängt.";
+                }
+                else if (nachher > vorher)
+                {
+                    Log($"Diagnose für '{sol.label}' in 'Diag' geschrieben.");
+                    TxtStatus.Text = $"Diagnose '{sol.label}' in Diag geschrieben.";
+                }
+                else
+                {
+                    Log($"'{sol.label}' war bereits in 'Diag' — nicht erneut angehängt.");
+                    MessageBox.Show($"Für '{sol.label}' steht bereits eine Diagnose in 'Diag'. " +
+                        "Es wurde nichts erneut angehängt.",
+                        "Diag", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Anhängen fehlgeschlagen: " + ex.Message +
+                    "\n\n(Ist die Excel-Datei evtl. in Excel geöffnet?)",
+                    "Fehler", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private int LiesDiagLetzteSpalte()
+        {
+            try
+            {
+                using var wb = new XLWorkbook(excelPfad);
+                if (!wb.Worksheets.Any(ws => ws.Name == "Diag")) return 0;
+                return wb.Worksheet("Diag").LastColumnUsed()?.ColumnNumber() ?? 0;
+            }
+            catch { return 0; }
+        }
+
+        private void SetzeDiagSpaltenbreite(int col, double breite)
+        {
+            try
+            {
+                using var wb = new XLWorkbook(excelPfad);
+                if (!wb.Worksheets.Any(ws => ws.Name == "Diag")) return;
+                wb.Worksheet("Diag").Column(col).Width = breite;
+                wb.Save();
+            }
+            catch { }
+        }
+
+        // Einfacher Listen-Auswahldialog (im Code aufgebaut, ohne eigenes XAML).
+        private string WähleAusListe(string titel, string prompt, List<string> optionen)
+        {
+            var win = new Window
+            {
+                Title = titel,
+                Width = 420,
+                Height = 460,
+                WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                Owner = this
+            };
+
+            var grid = new System.Windows.Controls.Grid { Margin = new Thickness(12) };
+            grid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            grid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            grid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+
+            var tb = new System.Windows.Controls.TextBlock
+            {
+                Text = prompt,
+                Margin = new Thickness(0, 0, 0, 8),
+                TextWrapping = TextWrapping.Wrap
+            };
+            System.Windows.Controls.Grid.SetRow(tb, 0);
+            grid.Children.Add(tb);
+
+            var list = new System.Windows.Controls.ListBox();
+            foreach (var o in optionen) list.Items.Add(o);
+            if (list.Items.Count > 0) list.SelectedIndex = 0;
+            System.Windows.Controls.Grid.SetRow(list, 1);
+            grid.Children.Add(list);
+
+            var panel = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 10, 0, 0)
+            };
+            var ok = new System.Windows.Controls.Button
+            { Content = "OK", Width = 90, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+            var cancel = new System.Windows.Controls.Button
+            { Content = "Abbrechen", Width = 90, IsCancel = true };
+            panel.Children.Add(ok);
+            panel.Children.Add(cancel);
+            System.Windows.Controls.Grid.SetRow(panel, 2);
+            grid.Children.Add(panel);
+
+            win.Content = grid;
+
+            string result = null;
+            ok.Click += (s, ev) => { result = list.SelectedItem as string; win.DialogResult = true; };
+            list.MouseDoubleClick += (s, ev) =>
+            {
+                if (list.SelectedItem != null) { result = list.SelectedItem as string; win.DialogResult = true; }
+            };
+
+            return win.ShowDialog() == true ? result : null;
+        }
+
+        // Exportiert die aktuellen Fixierungen (FixUNrn je Slot) als Plan –
+        // nur die fixierten Stunden – wahlweise als Spalte "Fix" ins Blatt "Lös"
+        // oder ins Blatt "Plan".
+        private void BtnFixExport_Click(object sender, RoutedEventArgs e)
+        {
+            if (input == null || string.IsNullOrEmpty(excelPfad))
+            {
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
+                return;
+            }
+
+            int anzFix = input.Slots.Sum(s => s.FixUNrn?.Count ?? 0);
+            if (anzFix == 0)
+            {
+                MessageBox.Show("Es sind keine Stunden fixiert (FixUNrn ist leer).",
+                    "FixUnr exportieren", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var ziel = MessageBox.Show(
+                "FixUnr als Plan exportieren – Ziel wählen:\n\n" +
+                "[Ja] = Spalte 'Fix' im Blatt 'Lös' (neu/aktualisiert)\n" +
+                "[Nein] = Blatt 'Plan'\n" +
+                "[Abbrechen] = nicht exportieren",
+                "FixUnr exportieren", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+
+            try
+            {
+                if (ziel == MessageBoxResult.Yes)
+                {
+                    var w = MessageBox.Show(
+                        "Eine evtl. vorhandene Spalte 'Fix' im Blatt 'Lös' wird überschrieben. Fortfahren?",
+                        "Überschreiben?", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+                    if (w != MessageBoxResult.OK) return;
+                    ExportiereFixNachLös();
+                    Log($"FixUnr als Spalte 'Fix' ins Blatt 'Lös' geschrieben ({anzFix} fixierte Stunde(n)).");
+                    TxtStatus.Text = "FixUnr nach 'Lös' exportiert.";
+                }
+                else if (ziel == MessageBoxResult.No)
+                {
+                    var w = MessageBox.Show(
+                        "Das Blatt 'Plan' wird vollständig überschrieben. Fortfahren?",
+                        "Überschreiben?", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+                    if (w != MessageBoxResult.OK) return;
+                    ExportiereFixNachPlan();
+                    Log($"FixUnr ins Blatt 'Plan' geschrieben ({anzFix} fixierte Stunde(n)).");
+                    TxtStatus.Text = "FixUnr nach 'Plan' exportiert.";
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Export fehlgeschlagen: " + ex.Message +
+                    "\n\n(Ist die Excel-Datei evtl. in Excel geöffnet?)",
+                    "Fehler", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // Schreibt die fixierten Stunden als Spalte "Fix" ins Blatt "Lös"
+        // (Format wie andere Lösungsspalten: pro Slot komma-getrennte UNrn).
+        private void ExportiereFixNachLös()
+        {
+            using var wb = new XLWorkbook(excelPfad);
+            var sheet = wb.Worksheet("Lös");
+
+            int lastCol = sheet.LastColumnUsed()?.ColumnNumber() ?? 2;
+            int fixCol = -1;
+            for (int c = 3; c <= lastCol; c++)
+                if (sheet.Cell(1, c).GetString().Trim() == "Fix") { fixCol = c; break; }
+            if (fixCol < 0) fixCol = Math.Max(3, lastCol + 1);
+
+            sheet.Cell(1, 1).Value = "WTag";
+            sheet.Cell(1, 2).Value = "Stunde";
+            sheet.Cell(1, fixCol).Value = "Fix";
+
+            for (int s = 0; s < input.Slots.Count; s++)
+            {
+                sheet.Cell(s + 2, 1).Value = input.Slots[s].WTag;
+                sheet.Cell(s + 2, 2).Value = input.Slots[s].Stunde;
+                sheet.Cell(s + 2, fixCol).Value =
+                    string.Join(", ", input.Slots[s].FixUNrn ?? new List<int>());
+            }
+
+            wb.Save();
+        }
+
+        // Schreibt die fixierten Stunden ins Blatt "Plan" (Format wie von
+        // LadeUnrPlanAusExcel erwartet: WTag | Stunde | UNr | UNr | ...).
+        private void ExportiereFixNachPlan()
+        {
+            using var wb = new XLWorkbook(excelPfad);
+            var sheet = wb.Worksheets.Any(ws => ws.Name == "Plan")
+                ? wb.Worksheet("Plan")
+                : wb.Worksheets.Add("Plan");
+
+            sheet.Clear(XLClearOptions.All); // vollständig überschreiben
+
+            sheet.Cell(1, 1).Value = "WTag";
+            sheet.Cell(1, 2).Value = "Stunde";
+            sheet.Cell(1, 3).Value = "Fix-UNrn";
+
+            for (int s = 0; s < input.Slots.Count; s++)
+            {
+                sheet.Cell(s + 2, 1).Value = input.Slots[s].WTag;
+                sheet.Cell(s + 2, 2).Value = input.Slots[s].Stunde;
+
+                int col = 3;
+                foreach (int unr in input.Slots[s].FixUNrn ?? new List<int>())
+                    sheet.Cell(s + 2, col++).Value = unr;
+            }
+
+            wb.Save();
         }
 
         // =====================================================

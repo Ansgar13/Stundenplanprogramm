@@ -41,5 +41,16 @@ namespace Stundenplan_V2
         public bool DoppelÜberPauseErlaubt { get; set; } = false; // (E)-Spalte
     }
 
+    // Ein in der UV mit "i"/"x" ignorierter (Teil-)Unterricht.
+    // Diese Zeilen werden vom Solver nicht geladen; sie dienen nur der
+    // Anzeige im Parkbereich des Plan-Editors ("Ignorierte anzeigen").
+    public class IgnorierterUnterricht
+    {
+        public int UNr { get; set; }
+        public string Lehrer { get; set; } = "";
+        public string Fach { get; set; } = "";
+        public List<string> Klassen { get; set; } = new();
+    }
+
 
 }

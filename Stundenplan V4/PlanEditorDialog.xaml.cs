@@ -64,6 +64,7 @@ namespace Stundenplan_V2
             public int StrafeDreifachHohl = 0;
             public int StrafeEinzel = 0;
             public int StrafeSpäteLk = 0;
+            public int GrenzeSpäteLk = 2;
             public int StrafeHauptfachSpät = 0;
             public int HauptfachSpätAnteil = 50;
             public int StrafeStdFolge = 0;
@@ -77,6 +78,15 @@ namespace Stundenplan_V2
 
         private readonly BewertungsParameter _bewParam;
 
+        // Ignorierte UV-Zeilen (i/x) — nur zur optionalen Anzeige im
+        // Parkbereich ("Ignorierte anzeigen"). Nicht ziehbar, nicht editierbar.
+        private readonly List<IgnorierterUnterricht> _ignorierteUnterrichte;
+
+        // Kontext für die Anzeige der ignorierten Unterrichte im Parkbereich:
+        // true  = zuletzt in eine Lehrer-Zelle geklickt  -> ignorierte des Lehrers
+        // false = zuletzt in eine Klassen-Zelle geklickt -> ignorierte der Klasse
+        private bool _parkKontextLehrer = true;
+
         public PlanEditorDialog(
             List<(string label, int[,] belegung, List<UnterrichtsBlock> blocks)> loesungen,
             List<ZeitSlot> slots,
@@ -84,7 +94,8 @@ namespace Stundenplan_V2
             List<(int stundeVor, int stundeNach)> grossePausen,
             Action<string, int[,], List<UnterrichtsBlock>> uebernehmenCallback,
             BewertungsParameter bewParam = null,
-            Action<int, int, bool> aendereFixUNrCallback = null)
+            Action<int, int, bool> aendereFixUNrCallback = null,
+            List<IgnorierterUnterricht> ignorierteUnterrichte = null)
         {
             InitializeComponent();
 
@@ -95,6 +106,7 @@ namespace Stundenplan_V2
             _uebernehmenCallback = uebernehmenCallback;
             _aendereFixUNrCallback = aendereFixUNrCallback;
             _bewParam = bewParam ?? new BewertungsParameter();
+            _ignorierteUnterrichte = ignorierteUnterrichte ?? new List<IgnorierterUnterricht>();
 
             // Tage in Eingabereihenfolge, Stunden sortiert
             _tage = _slots.Select(z => z.WTag).Distinct().ToList();
@@ -158,6 +170,7 @@ namespace Stundenplan_V2
             SpiegeleAuswahlInVm(CboLehrer, CboVmLehrer);
             if (_vergleichsModus) { ZeichneVergleichsModus(); return; }
             ZeichneLehrerGrid();
+            ZeichneParkbereich();
             // Bei aktiver Fixierung den Lehrerpfeil fuer den neuen Lehrer neu zeichnen
             var kette = _fixierteKette;
             if (kette != null)
@@ -174,6 +187,7 @@ namespace Stundenplan_V2
             SpiegeleAuswahlInVm(CboKlasse, CboVmKlasse);
             if (_vergleichsModus) { ZeichneVergleichsModus(); return; }
             ZeichneKlasseGrid();
+            ZeichneParkbereich();
             // Bei aktiver Fixierung die Klassenpfeile neu zeichnen
             var kette = _fixierteKette;
             if (kette != null)
@@ -191,6 +205,13 @@ namespace Stundenplan_V2
             if (!_initialisiert || _belegung == null) return;
             AktualisiereSpaetePaedEinheiten();
             ZeichneBeideGrids();
+        }
+
+        // Checkbox "Ignorierte anzeigen" — nur den Parkbereich neu zeichnen.
+        private void ChkIgnorierteZeigen_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_initialisiert || _belegung == null) return;
+            ZeichneParkbereich();
         }
 
         // Springt zum nächsten Eintrag im Lösungs-Dropdown (mit Umlauf)
@@ -356,9 +377,9 @@ namespace Stundenplan_V2
             // Vergleichsmodus alle 11 Stunden durch Vergrößern des Fensters
             // sichtbar gemacht werden können.
             if (RowDetail != null)
-                RowDetail.Height = sichtbar ? new GridLength(1.2, GridUnitType.Star) : new GridLength(0);
+                RowDetail.Height = sichtbar ? new GridLength(0.8, GridUnitType.Star) : new GridLength(0);
             if (RowPlaene != null)
-                RowPlaene.Height = sichtbar ? new GridLength(2, GridUnitType.Star) : new GridLength(1, GridUnitType.Star);
+                RowPlaene.Height = sichtbar ? new GridLength(3, GridUnitType.Star) : new GridLength(1, GridUnitType.Star);
         }
 
         private void CboVglLoesung2_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -767,6 +788,18 @@ namespace Stundenplan_V2
                 border.DragOver += Zelle_DragOver;
             }
             border.Tag = slotIdx;
+
+            // Klick in eine Zelle setzt den Kontext für die ignorierten
+            // Unterrichte (Lehrer- vs. Klassen-Grid). PreviewMouseLeftButtonDown,
+            // damit es auch auf leeren Zellen und unabhängig von Drag&Drop /
+            // Teil-Klick greift (kein e.Handled, Ablauf bleibt unverändert).
+            bool istLehrerGrid = lehrerAnsicht;
+            border.PreviewMouseLeftButtonDown += (s, e) =>
+            {
+                _parkKontextLehrer = istLehrerGrid;
+                if (_initialisiert && _belegung != null && ChkIgnorierteZeigen?.IsChecked == true)
+                    ZeichneParkbereich();
+            };
 
             if (slotIdx < 0)
             {
@@ -1262,6 +1295,80 @@ namespace Stundenplan_V2
             }
         }
 
+        // Prüft, ob die neue (Ketten-)Belegung fixierte Blöcke verschiebt.
+        // Falls ja: EINE Sammelrückfrage; bei "Nein" -> false (Kette abbrechen),
+        // bei "Ja" werden die Fixierungen mitgezogen (alte fixierte Slots
+        // entfixieren, neue Slots fixieren) und true zurückgegeben.
+        // Keine betroffene Fixierung -> true (einfach anwenden).
+        private bool BehandleFixierungenBeiKette(int[,] alteBelegung, int[,] neueBelegung)
+        {
+            if (_aendereFixUNrCallback == null) return true;
+
+            int B = _blocks.Count, S = _slots.Count;
+            var betroffen = new List<(int block, List<int> alteFix, List<int> alteSlots, List<int> neueSlots)>();
+            int anzFix = 0;
+
+            for (int b = 0; b < B; b++)
+            {
+                var alteSlots = new List<int>();
+                var neueSlots = new List<int>();
+                bool geaendert = false;
+                for (int s = 0; s < S; s++)
+                {
+                    if (alteBelegung[b, s] == 1) alteSlots.Add(s);
+                    if (neueBelegung[b, s] == 1) neueSlots.Add(s);
+                    if (alteBelegung[b, s] != neueBelegung[b, s]) geaendert = true;
+                }
+                if (!geaendert) continue;
+
+                int unr = _blocks[b].UNr;
+                var alteFix = alteSlots.Where(s => _slots[s].FixUNrn.Contains(unr)).ToList();
+                if (alteFix.Count == 0) continue;
+
+                betroffen.Add((b, alteFix, alteSlots, neueSlots));
+                anzFix += alteFix.Count;
+            }
+
+            if (anzFix == 0) return true;
+
+            var antwort = MessageBox.Show(
+                $"Die Verschiebung betrifft {anzFix} fixierte Stunde(n).\n\n" +
+                "Fixierungen mitverschieben (auch in Tabelle 'Fix UNrn')?",
+                "Fixierte Stunden verschieben",
+                MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (antwort != MessageBoxResult.Yes)
+                return false;
+
+            foreach (var (b, alteFix, alteSlots, neueSlots) in betroffen)
+            {
+                int unr = _blocks[b].UNr;
+
+                // Alte fixierte Slots entfixieren.
+                foreach (int s in alteFix)
+                    _aendereFixUNrCallback?.Invoke(s, unr, false);
+
+                // Neue Slots fixieren.
+                if (neueSlots.Count == alteSlots.Count)
+                {
+                    // Slotweise Zuordnung (beide sortiert): fixierte Positionen mitnehmen.
+                    var alteSort = alteSlots.OrderBy(x => x).ToList();
+                    var neueSort = neueSlots.OrderBy(x => x).ToList();
+                    var fixSet = new HashSet<int>(alteFix);
+                    for (int i = 0; i < alteSort.Count; i++)
+                        if (fixSet.Contains(alteSort[i]))
+                            _aendereFixUNrCallback?.Invoke(neueSort[i], unr, true);
+                }
+                else
+                {
+                    // Fallback (andere Slotanzahl): alle neuen belegten Slots fixieren.
+                    foreach (int s in neueSlots)
+                        _aendereFixUNrCallback?.Invoke(s, unr, true);
+                }
+            }
+
+            return true;
+        }
+
         // Führt eine Tauschkette aus (übernimmt die Probe-Belegung).
         private void FuehreKetteAus(Tauschkette kette)
         {
@@ -1279,6 +1386,9 @@ namespace Stundenplan_V2
                 else
                     zielKlasse = ausgangsBlock.Teile.SelectMany(t => t.Klassen).FirstOrDefault();
             }
+
+            // Fixierte Blöcke der Kette behandeln (Sammelrückfrage + mitziehen).
+            if (!BehandleFixierungenBeiKette(_belegung, kette.ProbeBelegung)) return;
 
             _belegung = (int[,])kette.ProbeBelegung.Clone();
             LeereTauschvorschlaege();
@@ -2719,6 +2829,8 @@ namespace Stundenplan_V2
         private void FuehreVerschiebungAus(VerschiebungMitAusweich v)
         {
             if (v.ProbeBelegung == null) return;
+            // Fixierte Blöcke der Ausweich-Verschiebung behandeln.
+            if (!BehandleFixierungenBeiKette(_belegung, v.ProbeBelegung)) return;
             _belegung = (int[,])v.ProbeBelegung.Clone();
             LeereTauschvorschlaege();   // raeumt auch Lehrervergleich + Pfeile auf
             LeereVerschiebungen();
@@ -3140,11 +3252,11 @@ namespace Stundenplan_V2
             var bewVor = PlanBewertung.Berechne(_belegung, _blocks, _slots,
                 p.GewichtFrüh, p.GewichtSpät, p.GewichtPäd, p.StrafeHohl, p.StrafeDoppelHohl,
                 p.StrafeDreifachHohl, p.StrafeEinzel, p.StrafeSpäteLk, p.StrafeHauptfachSpät, p.HauptfachSpätAnteil,
-                p.LehrerStammdaten);
+                p.LehrerStammdaten, p.GrenzeSpäteLk);
             var bewNach = PlanBewertung.Berechne(probeBelegung, _blocks, _slots,
                 p.GewichtFrüh, p.GewichtSpät, p.GewichtPäd, p.StrafeHohl, p.StrafeDoppelHohl,
                 p.StrafeDreifachHohl, p.StrafeEinzel, p.StrafeSpäteLk, p.StrafeHauptfachSpät, p.HauptfachSpätAnteil,
-                p.LehrerStammdaten);
+                p.LehrerStammdaten, p.GrenzeSpäteLk);
 
             Zeile("Plan-Summen (Lehrer gesamt + Klassen-Doppel):");
             var summe = new List<string>();
@@ -3522,8 +3634,38 @@ namespace Stundenplan_V2
                 return;
             }
 
+            // Fixierte Quell-Slots dieses Blocks ermitteln (parallel zu quellSlots).
+            int unr = _blocks[blockIdx].UNr;
+            var fixIdx = new List<int>();
+            for (int i = 0; i < quellSlots.Count; i++)
+                if (_slots[quellSlots[i]].FixUNrn.Contains(unr))
+                    fixIdx.Add(i);
+
+            if (fixIdx.Count > 0)
+            {
+                var antwort = MessageBox.Show(
+                    $"UNr {unr} ist in {fixIdx.Count} Stunde(n) fixiert.\n\n" +
+                    "Fixierung mitverschieben (auch in Tabelle 'Fix UNrn')?",
+                    "Fixierten Block verschieben",
+                    MessageBoxButton.YesNo, MessageBoxImage.Question);
+                if (antwort != MessageBoxResult.Yes)
+                {
+                    SetStatus("Verschieben abgebrochen — Block ist fixiert.", false);
+                    return;
+                }
+            }
+
             _belegung = probe;
-            SetStatus("Verschoben: UNr " + _blocks[blockIdx].UNr + ".", false);
+
+            // Fixierung mitziehen: alte fixierte Slots entfixieren, Ziel-Slots fixieren.
+            foreach (int i in fixIdx)
+            {
+                _aendereFixUNrCallback?.Invoke(quellSlots[i], unr, false);
+                _aendereFixUNrCallback?.Invoke(zielSlots[i], unr, true);
+            }
+
+            SetStatus("Verschoben: UNr " + _blocks[blockIdx].UNr
+                      + (fixIdx.Count > 0 ? " (inkl. Fixierung)." : "."), false);
             ZeichneBeideGrids();
             ZeichneParkbereich();
             PruefeUndZeigeWarnungen();
@@ -3547,8 +3689,45 @@ namespace Stundenplan_V2
                 return;
             }
 
+            // Fixierte Slots der beiden Blöcke ermitteln (slotsA/slotsB sind gleich lang).
+            int unrA = _blocks[blockA].UNr, unrB = _blocks[blockB].UNr;
+            var fixA = new List<int>();
+            for (int i = 0; i < slotsA.Count; i++)
+                if (_slots[slotsA[i]].FixUNrn.Contains(unrA)) fixA.Add(i);
+            var fixB = new List<int>();
+            for (int i = 0; i < slotsB.Count; i++)
+                if (_slots[slotsB[i]].FixUNrn.Contains(unrB)) fixB.Add(i);
+
+            if (fixA.Count > 0 || fixB.Count > 0)
+            {
+                var antwort = MessageBox.Show(
+                    "Mindestens einer der zu tauschenden Blöcke ist fixiert.\n\n" +
+                    "Fixierungen mittauschen (auch in Tabelle 'Fix UNrn')?",
+                    "Fixierten Block tauschen",
+                    MessageBoxButton.YesNo, MessageBoxImage.Question);
+                if (antwort != MessageBoxResult.Yes)
+                {
+                    SetStatus("Tausch abgebrochen — Block ist fixiert.", false);
+                    return;
+                }
+            }
+
             _belegung = probe;
-            SetStatus("Getauscht: UNr " + _blocks[blockA].UNr + " <-> UNr " + _blocks[blockB].UNr + ".", false);
+
+            // Fixierungen mittauschen: A wandert slotsA -> slotsB, B wandert slotsB -> slotsA.
+            foreach (int i in fixA)
+            {
+                _aendereFixUNrCallback?.Invoke(slotsA[i], unrA, false);
+                _aendereFixUNrCallback?.Invoke(slotsB[i], unrA, true);
+            }
+            foreach (int i in fixB)
+            {
+                _aendereFixUNrCallback?.Invoke(slotsB[i], unrB, false);
+                _aendereFixUNrCallback?.Invoke(slotsA[i], unrB, true);
+            }
+
+            SetStatus("Getauscht: UNr " + _blocks[blockA].UNr + " <-> UNr " + _blocks[blockB].UNr
+                      + (fixA.Count + fixB.Count > 0 ? " (inkl. Fixierung)." : "."), false);
             ZeichneBeideGrids();
             ZeichneParkbereich();
             PruefeUndZeigeWarnungen();
@@ -3695,6 +3874,12 @@ namespace Stundenplan_V2
         {
             ParkPanel.Children.Clear();
 
+            // Aktuell angezeigter Lehrer / Klasse (leere Auswahl = null).
+            string aktLehrer = CboLehrer.SelectedItem as string;
+            string aktKlasse = CboKlasse.SelectedItem as string;
+            if (string.IsNullOrWhiteSpace(aktLehrer)) aktLehrer = null;
+            if (string.IsNullOrWhiteSpace(aktKlasse)) aktKlasse = null;
+
             for (int b = 0; b < _blocks.Count; b++)
             {
                 int ist = 0;
@@ -3705,6 +3890,16 @@ namespace Stundenplan_V2
                 if (ist >= soll) continue; // vollständig verplant -> nicht im Parkbereich
 
                 var block = _blocks[b];
+
+                // Klick-Kontext-Filter (wie bei den ignorierten):
+                // Lehrer-Kontext  -> nur Blöcke des aktuellen Lehrers,
+                // Klassen-Kontext -> nur Blöcke der aktuellen Klasse.
+                bool betrifft = _parkKontextLehrer
+                    ? (aktLehrer != null && block.Teile.Any(t => t.Lehrer == aktLehrer))
+                    : (aktKlasse != null && block.Teile.Any(t => t.Klassen.Contains(aktKlasse)));
+                if (!betrifft)
+                    continue;
+
                 var bd = new Border
                 {
                     Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xE8, 0xCC)),
@@ -3717,12 +3912,14 @@ namespace Stundenplan_V2
                 string faecher = string.Join(",", block.Teile.Select(t => t.Fach).Distinct());
                 string lehrer = string.Join(",", block.Teile.Select(t => t.Lehrer)
                     .Where(l => !string.IsNullOrWhiteSpace(l)).Distinct());
+
+                // Einheitliche Anzeige: immer Fach, Klasse, Lehrer und UNr.
+                string zeile2 = "Fach: " + faecher + "  |  Kl: " + klassen + "  |  L: " + lehrer;
+
                 var tb = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 11 };
                 tb.Inlines.Add(new System.Windows.Documents.Run("UNr " + block.UNr + "  ") { FontWeight = FontWeights.Bold });
                 tb.Inlines.Add(new System.Windows.Documents.Run("(" + ist + "/" + soll + ")\n") { Foreground = Brushes.Red });
-                tb.Inlines.Add(new System.Windows.Documents.Run(klassen + " " + faecher));
-                if (!string.IsNullOrEmpty(lehrer))
-                    tb.Inlines.Add(new System.Windows.Documents.Run("\n" + lehrer) { Foreground = Brushes.DimGray });
+                tb.Inlines.Add(new System.Windows.Documents.Run(zeile2));
                 bd.Child = tb;
 
                 int blockIdxLokal = b;
@@ -3763,11 +3960,60 @@ namespace Stundenplan_V2
                 ParkPanel.Children.Add(bd);
             }
 
+            // Optional: ignorierte Unterrichte — kontextabhängig gefiltert.
+            // Nach Klick in eine Lehrer-Zelle nur die des aktuellen Lehrers,
+            // nach Klick in eine Klassen-Zelle nur die der aktuellen Klasse.
+            // Nur Anzeige (grau/kursiv), nicht ziehbar, nicht anklickbar.
+            if (ChkIgnorierteZeigen?.IsChecked == true)
+            {
+                foreach (var iu in _ignorierteUnterrichte)
+                {
+                    bool passt = _parkKontextLehrer
+                        ? (aktLehrer != null && iu.Lehrer == aktLehrer)
+                        : (aktKlasse != null && iu.Klassen.Contains(aktKlasse));
+                    if (!passt) continue;
+
+                    string iKlassen = string.Join(",", iu.Klassen);
+                    string iZeile2 = "Fach: " + iu.Fach + "  |  Kl: " + iKlassen + "  |  L: " + iu.Lehrer;
+
+                    var bd = new Border
+                    {
+                        Background = new SolidColorBrush(Color.FromRgb(0xEE, 0xEE, 0xEE)),
+                        BorderBrush = Brushes.DarkGray,
+                        BorderThickness = new Thickness(1),
+                        Margin = new Thickness(2),
+                        Padding = new Thickness(4)
+                    };
+                    var tb = new TextBlock
+                    {
+                        TextWrapping = TextWrapping.Wrap,
+                        FontSize = 11,
+                        FontStyle = FontStyles.Italic,
+                        Foreground = Brushes.Gray
+                    };
+                    tb.Inlines.Add(new System.Windows.Documents.Run("UNr " + iu.UNr + "  ") { FontWeight = FontWeights.Bold });
+                    tb.Inlines.Add(new System.Windows.Documents.Run("(ignoriert)\n"));
+                    tb.Inlines.Add(new System.Windows.Documents.Run(iZeile2));
+                    bd.Child = tb;
+                    ParkPanel.Children.Add(bd);
+                }
+            }
+
             if (ParkPanel.Children.Count == 0)
             {
+                string leerText;
+                if (_parkKontextLehrer)
+                    leerText = aktLehrer == null
+                        ? "(kein Lehrer gewählt)"
+                        : "(nichts für Lehrer " + aktLehrer + ")";
+                else
+                    leerText = aktKlasse == null
+                        ? "(keine Klasse gewählt)"
+                        : "(nichts für Klasse " + aktKlasse + ")";
+
                 ParkPanel.Children.Add(new TextBlock
                 {
-                    Text = "(alles verplant)",
+                    Text = leerText,
                     Foreground = Brushes.Gray,
                     Margin = new Thickness(4)
                 });
@@ -3884,7 +4130,9 @@ namespace Stundenplan_V2
                 // Lokale Lösungsliste ergänzen, damit man weiter editieren kann
                 _loesungen.Add((neuLabel, (int[,])_belegung.Clone(), _blocks));
                 CboLoesung.Items.Add(neuLabel);
-                SetStatus("Uebernommen als '" + neuLabel + "' (Lös + Diag aktualisiert).", false);
+                // Direkt auf die neue Lösung umschalten: lädt _belegung neu und zeichnet.
+                CboLoesung.SelectedItem = neuLabel;
+                SetStatus("Uebernommen als '" + neuLabel + "' und geladen (Lös + Diag aktualisiert).", false);
             }
             catch (Exception ex)
             {

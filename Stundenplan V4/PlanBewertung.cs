@@ -26,6 +26,29 @@ namespace Stundenplan_V2
             new HashSet<string> { "D", "E", "M", "F" };
 
         // -------------------------------------------------
+        // EINHEITLICHE LK-ERKENNUNG
+        // Ein Block gilt als LK-Block, wenn sein Zeilentext "LK"
+        // enthält (LK01/LK1/LK02/LK2 …) ODER ein Fach auf "L1"/"L2"
+        // endet. Diese Regel deckt sich mit dem KlassenplanGenerator
+        // (Rotfärbung) und wird zentral hier gehalten, damit Solver,
+        // Bewertung und Anzeige NIE wieder auseinanderlaufen.
+        // -------------------------------------------------
+        public static bool IstLkBlock(UnterrichtsBlock block)
+        {
+            if (block == null) return false;
+
+            if ((block.Zeilentext ?? "").IndexOf(
+                    "LK", StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+
+            return block.Teile.Any(t =>
+            {
+                string f = (t.Fach ?? "").Trim().ToUpperInvariant();
+                return f.EndsWith("L1") || f.EndsWith("L2");
+            });
+        }
+
+        // -------------------------------------------------
         // Bewertung eines fertigen Plans – vollständig
         // -------------------------------------------------
         public static BewertungsResultat Berechne(
@@ -42,7 +65,8 @@ namespace Stundenplan_V2
             int strafeSpäteLk = 0,
             int strafeHauptfachSpät = 0,
             int hauptfachSpätAnteilProzent = 50,
-            Dictionary<string, LehrerStammdaten> lehrerStammdaten = null)
+            Dictionary<string, LehrerStammdaten> lehrerStammdaten = null,
+            int grenzeSpäteLk = 2)
         {
             var result = new BewertungsResultat();
             int B = blocks.Count;
@@ -193,9 +217,7 @@ namespace Stundenplan_V2
             if (strafeSpäteLk != 0)
             {
                 var lkBlöcke = Enumerable.Range(0, B)
-                    .Where(b => blocks[b].Teile.Any(t =>
-                        t.Fach.Trim().ToUpper().EndsWith("L1") ||
-                        t.Fach.Trim().ToUpper().EndsWith("L2")))
+                    .Where(b => IstLkBlock(blocks[b]))
                     .ToList();
 
                 foreach (var tag in tage)
@@ -210,8 +232,8 @@ namespace Stundenplan_V2
                             if (belegung[b, s] == 1)
                                 späteLkDieserTag++;
 
-                    if (späteLkDieserTag > 2)
-                        result.SpäteLkStunden += späteLkDieserTag - 2;
+                    if (späteLkDieserTag > grenzeSpäteLk)
+                        result.SpäteLkStunden += späteLkDieserTag - grenzeSpäteLk;
                 }
             }
 

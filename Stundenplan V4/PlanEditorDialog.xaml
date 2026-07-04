@@ -7,10 +7,9 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="2*" MinHeight="200" x:Name="RowPlaene"/>
+            <RowDefinition Height="3*" MinHeight="240" x:Name="RowPlaene"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="1.2*" MinHeight="80" x:Name="RowDetail"/>
+            <RowDefinition Height="0.8*" MinHeight="70" x:Name="RowDetail"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -53,7 +52,15 @@
                    Text="Links Lehrerplan, rechts Klassenplan. Klick auf eine Zelle zeigt im anderen Plan die zugehoerige Klasse bzw. den Lehrer. Ziehen: leere Zelle = verschieben, belegte Zelle gleicher Stundenzahl = tauschen, Parkbereich = entplanen. Ressourcenkonflikte werden hart gesperrt; Qualitaetsprobleme gelb gewarnt."/>
 
         <!-- Hauptbereich: Lehrerplan | Klassenplan | Vergleich-Vorher | Vergleich-Nachher | KlVgl-Vorher | KlVgl-Nachher -->
-        <ScrollViewer x:Name="ScrollEditAnsicht" Grid.Row="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+        <!-- Stundenplan UND Parkbereich gemeinsam in RowPlaene. Der Splitter
+             darunter zieht damit direkt RowPlaene gegen RowDetail. -->
+        <Grid Grid.Row="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+        <ScrollViewer x:Name="ScrollEditAnsicht" Grid.Row="0" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>
@@ -188,7 +195,7 @@
         </ScrollViewer>
 
         <!-- VERGLEICHSMODUS: 1x4 (Lehrer A | Lehrer B | Klasse A | Klasse B nebeneinander) -->
-        <ScrollViewer x:Name="ScrollVergleichsModus" Grid.Row="2" Visibility="Collapsed"
+        <ScrollViewer x:Name="ScrollVergleichsModus" Grid.Row="0" Visibility="Collapsed"
                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
                       HorizontalAlignment="Left">
         <DockPanel>
@@ -268,29 +275,35 @@
         </ScrollViewer>
 
         <!-- Parkbereich (waagerecht unter den Plaenen) -->
-        <Border x:Name="BrdParkbereich" Grid.Row="3" BorderBrush="#CCC" BorderThickness="1" Margin="0,8,0,0"
+        <Border x:Name="BrdParkbereich" Grid.Row="1" BorderBrush="#CCC" BorderThickness="1" Margin="0,8,0,0"
                 Background="#FAFAFA" AllowDrop="True" Drop="Parkbereich_Drop" DragOver="Zelle_DragOver"
                 Height="90">
             <DockPanel>
-                <TextBlock DockPanel.Dock="Top" Text="Parkbereich (nicht verplant) - hierher ziehen zum Entplanen"
-                           FontWeight="Bold" Margin="6,4,6,2"/>
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="6,4,6,2">
+                    <TextBlock Text="Parkbereich (nicht verplant) - hierher ziehen zum Entplanen"
+                               FontWeight="Bold" VerticalAlignment="Center"/>
+                    <CheckBox x:Name="ChkIgnorierteZeigen" Content="Ignorierte anzeigen"
+                              VerticalAlignment="Center" Margin="20,0,0,0"
+                              Checked="ChkIgnorierteZeigen_Changed" Unchecked="ChkIgnorierteZeigen_Changed"/>
+                </StackPanel>
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
                     <StackPanel x:Name="ParkPanel" Orientation="Horizontal" Margin="4"/>
                 </ScrollViewer>
             </DockPanel>
         </Border>
+        </Grid>
 
-        <!-- Verschiebbarer Trenner: Stundenplan/Parkbereich <-> Diagnose.
-             Resized Row 2 (Pläne) gegen Row 5 (Detailbereich): nach unten ziehen
+        <!-- Verschiebbarer Trenner: Stundenplan+Parkbereich <-> Diagnose.
+             Resized RowPlaene (Row 2) gegen RowDetail (Row 4): nach unten ziehen
              vergrößert die Pläne, nach oben den Detailbereich. -->
-        <GridSplitter x:Name="SplitterDetail" Grid.Row="4" Height="6" HorizontalAlignment="Stretch"
+        <GridSplitter x:Name="SplitterDetail" Grid.Row="3" Height="6" HorizontalAlignment="Stretch"
                       VerticalAlignment="Center" Background="#999"
                       ResizeBehavior="PreviousAndNext" ResizeDirection="Rows"
                       Margin="0,4,0,0" Cursor="SizeNS"/>
 
         <!-- Detail-Bereich: links Tauschliste, daneben Verschiebung, daneben Details/Diagnose.
              Spalten sind über GridSplitter verschiebbar; Min-Breiten verhindern Verschwinden. -->
-        <Border x:Name="BrdDetailBereich" Grid.Row="5" BorderBrush="#DDD" BorderThickness="1" Margin="0,8,0,0" Padding="6"
+        <Border x:Name="BrdDetailBereich" Grid.Row="4" BorderBrush="#DDD" BorderThickness="1" Margin="0,8,0,0" Padding="6"
                 Background="#F7F7F7">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -336,7 +349,7 @@
         </Border>
 
         <!-- Statuszeile + Buttons (linksbuendig) -->
-        <Grid Grid.Row="6" Margin="0,8,0,0">
+        <Grid Grid.Row="5" Margin="0,8,0,0">
             <StackPanel Orientation="Horizontal">
                 <Button x:Name="BtnReset"       Content="Zuruecksetzen" Width="120" Margin="0,0,6,0" Click="BtnReset_Click"/>
                 <Button x:Name="BtnUebernehmen" Content="Uebernehmen"   Width="180" Margin="0,0,6,0" Click="BtnUebernehmen_Click"/>

@@ -35,6 +35,7 @@ public class OrToolsSolver : ISolver
             input.StrafeStdFolge,
             input.StrafeEinzelstunde,
             input.StrafeSpäteLkStunden,
+            input.GrenzeSpäteLk,
             input.LehrerStammdaten,
             input.GrossePausen,
             input.VerbotSpäteDoppel,

@@ -386,8 +386,9 @@ namespace Stundenplan_V2
             // Klassenregel
             ClassConstraint.Add(model, x, blocks, S);
 
-            // Sperrslots
-            TimeConstraint.AddBlockedSlots(model, x, blocks, slots, B, S);
+            // Sperrslots (-3 immer, -2 wenn Verbot aktiv)
+            TimeConstraint.AddBlockedSlots(model, x, blocks, slots, B, S,
+                input.VerbotMinus2Verletzungen);
 
             // Tagesregel
             var tage = slots.Select(z => z.WTag).Distinct();
@@ -404,6 +405,73 @@ namespace Stundenplan_V2
                     int limit = (maxD == 0 && blocks[b].Wst >= 2) ? 1 : 2;
                     model.Add(LinearExpr.Sum(daySlots.Select(s => x[b, s])) <= limit);
                 }
+            }
+
+            // Große Pausen: Doppelstunde über große Pause verbieten (außer erlaubt)
+            if (input.GrossePausen != null && input.GrossePausen.Count > 0)
+            {
+                for (int b = 0; b < B; b++)
+                {
+                    if (blocks[b].DoppelÜberPauseErlaubt) continue;
+                    for (int s = 0; s < S - 1; s++)
+                    {
+                        if (slots[s].WTag != slots[s + 1].WTag) continue;
+                        bool istPause = input.GrossePausen.Any(p =>
+                            p.stundeVor == slots[s].Stunde &&
+                            p.stundeNach == slots[s + 1].Stunde);
+                        if (istPause)
+                            model.Add(x[b, s] + x[b, s + 1] <= 1);
+                    }
+                }
+            }
+
+            // Freie Tage (FT) – HART für -3 sowie -2 mit aktivem Verbot
+            // (analog PlanenIntern; -2 ohne Verbot bleibt weich über die Zielbewertung).
+            if (input.ExtraFreieTage != null && input.ExtraFreieTage.Count > 0)
+            {
+                var lehrerListeFt = blocks.SelectMany(b => b.Teile.Select(t => t.Lehrer))
+                    .Distinct().ToList();
+                var tageListeFt = slots.Select(z => z.WTag).Distinct().ToList();
+
+                var free = new BoolVar[lehrerListeFt.Count, tageListeFt.Count];
+                for (int l = 0; l < lehrerListeFt.Count; l++)
+                    for (int day = 0; day < tageListeFt.Count; day++)
+                        free[l, day] = model.NewBoolVar($"lns_free_{l}_{day}");
+
+                for (int l = 0; l < lehrerListeFt.Count; l++)
+                {
+                    string name = lehrerListeFt[l];
+                    if (!input.ExtraFreieTage.TryGetValue(name, out int gewünscht) || gewünscht <= 0)
+                        continue;
+
+                    bool hatMinus3 = input.LehrerFreiTageMinus3 != null
+                                     && input.LehrerFreiTageMinus3.Contains(name);
+                    bool hatMinus2 = input.LehrerFreiTageMinus2 != null
+                                     && input.LehrerFreiTageMinus2.Contains(name);
+
+                    if (hatMinus3 || (hatMinus2 && input.VerbotMinus2Verletzungen))
+                        model.Add(LinearExpr.Sum(
+                            Enumerable.Range(0, tageListeFt.Count).Select(day => free[l, day]))
+                            >= gewünscht);
+                }
+
+                // Vollständig -3-gesperrte Tage zählen nicht als "frei" (analog PlanenIntern)
+                for (int l = 0; l < lehrerListeFt.Count; l++)
+                {
+                    string lehrer = lehrerListeFt[l];
+                    for (int day = 0; day < tageListeFt.Count; day++)
+                    {
+                        string tag = tageListeFt[day];
+                        bool istFixFrei = slots
+                            .Where(z => z.WTag == tag)
+                            .All(z => z.LehrerWunsch.TryGetValue(lehrer, out int lw) && lw == -3);
+                        if (istFixFrei)
+                            model.Add(free[l, day] == 0);
+                    }
+                }
+
+                FreeDayConstraint.Add(model, x, free, blocks, slots,
+                    lehrerListeFt, tageListeFt, B);
             }
 
             // Zielfunktion – Hohlstunden und Doppelstunden minimieren
@@ -674,6 +742,42 @@ namespace Stundenplan_V2
                 }
             }
 
+            // Freie Tage (FT): geforderte Anzahl ganz freier Tage je Lehrer.
+            // HART für -3 sowie -2 mit aktivem Verbot (analog PlanenIntern).
+            // -2 ohne Verbot bleibt weich (über BerechneMinus2Strafe).
+            if (input.ExtraFreieTage != null && input.ExtraFreieTage.Count > 0)
+            {
+                var tageListeFt = slots.Select(z => z.WTag).Distinct().ToList();
+
+                // Belegte (Lehrer, Tag)-Kombinationen einmal sammeln
+                var belegtLehrerTag = new HashSet<(string lehrer, string tag)>();
+                for (int b = 0; b < B; b++)
+                    for (int s = 0; s < S; s++)
+                    {
+                        if (belegung[b, s] != 1) continue;
+                        string tag = slots[s].WTag;
+                        foreach (var t in blocks[b].Teile)
+                            belegtLehrerTag.Add((t.Lehrer, tag));
+                    }
+
+                foreach (var kv in input.ExtraFreieTage)
+                {
+                    int gefordert = kv.Value;
+                    if (gefordert <= 0) continue;
+                    string name = kv.Key;
+
+                    bool hatMinus3 = input.LehrerFreiTageMinus3 != null
+                                     && input.LehrerFreiTageMinus3.Contains(name);
+                    bool hatMinus2 = input.LehrerFreiTageMinus2 != null
+                                     && input.LehrerFreiTageMinus2.Contains(name);
+                    bool hart = hatMinus3 || (hatMinus2 && input.VerbotMinus2Verletzungen);
+                    if (!hart) continue;
+
+                    int freieTage = tageListeFt.Count(tag => !belegtLehrerTag.Contains((name, tag)));
+                    if (freieTage < gefordert) return false;
+                }
+            }
+
             return true;
         }
 
@@ -697,7 +801,8 @@ namespace Stundenplan_V2
                         input.StrafeEinzelstunde,
                         input.StrafeSpäteLkStunden,
                         input.StrafeHauptfachSpät,
-                        input.HauptfachSpätAnteilProzent).Quality
+                        input.HauptfachSpätAnteilProzent,
+                        grenzeSpäteLk: input.GrenzeSpäteLk).Quality
                         - BerechneMinus2Strafe(belegung, blocks, slots, input);
 
                 case VerbesserungsZiel.SpäteDoppelstunden:

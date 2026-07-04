@@ -14,9 +14,7 @@ namespace Stundenplan_V2
         {
             using var workbook = new XLWorkbook(excelPfad);
 
-            string sheetName = "LP_" + suffix;
-            if (sheetName.Length > 31)
-                sheetName = sheetName.Substring(0, 31);
+            string sheetName = BereinigeBlattname("LP_" + suffix);
 
             if (workbook.Worksheets.Any(ws => ws.Name == sheetName))
                 workbook.Worksheet(sheetName).Delete();
@@ -228,6 +226,21 @@ namespace Stundenplan_V2
                 case 2: cell.Style.Fill.BackgroundColor = XLColor.Green; break;
                 case 3: cell.Style.Fill.BackgroundColor = XLColor.DarkGreen; break;
             }
+        }
+
+        // Excel-Tabellenblattnamen dürfen [ ] : * ? / \ nicht enthalten,
+        // nicht leer sein und max. 31 Zeichen lang sein. Plannamen wie
+        // "[Gesichert] V56_fix_spät" werden hier sauber umgewandelt.
+        private static string BereinigeBlattname(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return "Blatt";
+            foreach (char c in new[] { '[', ']', ':', '*', '?', '/', '\\' })
+                name = name.Replace(c, '_');
+            name = name.Trim('\'', ' ');
+            if (name.Length > 31)
+                name = name.Substring(0, 31);
+            return string.IsNullOrWhiteSpace(name) ? "Blatt" : name;
         }
     }
 }

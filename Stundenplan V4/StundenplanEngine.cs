@@ -34,6 +34,9 @@ namespace Stundenplan_V2
             Dictionary<string, int> extraFreieTage, bool mitFreeDay,
             List<(int stundeVor, int stundeNach)> grossePausen, bool verbotSpäteDoppel, bool mitDoppelstunden,
             bool mitFachProKlasseProTag,
+            bool mitKeine3InFolge = true,
+            bool mitTagesregel = true,
+            bool verbotMinus2Lehrer = false,
             int timeoutSekunden = 5)
         {
             var model = new CpModel();
@@ -101,31 +104,38 @@ namespace Stundenplan_V2
                 for (int s = 0; s < S; s++)
                     foreach (var t in blocks[b].Teile)
                         if (!ignoriereSperrenDieserLehrer.Contains(t.Lehrer) &&
-                            slots[s].LehrerWunsch.TryGetValue(t.Lehrer, out int lw) && lw == -3)
+                            slots[s].LehrerWunsch.TryGetValue(t.Lehrer, out int lw) &&
+                            (lw == -3 || (verbotMinus2Lehrer && lw == -2)))
                             model.Add(x[b, s] == 0);
 
             // Keine 3 in Folge
-            for (int b = 0; b < B; b++)
-                for (int s = 0; s < S - 2; s++)
-                    if (slots[s].WTag == slots[s + 1].WTag &&
-                        slots[s].WTag == slots[s + 2].WTag &&
-                        slots[s].Stunde + 1 == slots[s + 1].Stunde &&
-                        slots[s].Stunde + 2 == slots[s + 2].Stunde)
-                        model.Add(x[b, s] + x[b, s + 1] + x[b, s + 2] <= 2);
+            if (mitKeine3InFolge)
+                for (int b = 0; b < B; b++)
+                    for (int s = 0; s < S - 2; s++)
+                        if (slots[s].WTag == slots[s + 1].WTag &&
+                            slots[s].WTag == slots[s + 2].WTag &&
+                            slots[s].Stunde + 1 == slots[s + 1].Stunde &&
+                            slots[s].Stunde + 2 == slots[s + 2].Stunde)
+                            model.Add(x[b, s] + x[b, s + 1] + x[b, s + 2] <= 2);
+
+            // Tagestage-Liste (wird auch von 'Fach pro Klasse pro Tag' benötigt)
+            var tage = slots.Select(z => z.WTag).Distinct().ToList();
 
             // Tagesregel
-            var tage = slots.Select(z => z.WTag).Distinct().ToList();
-            foreach (var tag in tage)
+            if (mitTagesregel)
             {
-                var daySlots = slots
-                    .Select((z, i) => new { z, i })
-                    .Where(z => z.z.WTag == tag)
-                    .ToList();
-                for (int b = 0; b < B; b++)
+                foreach (var tag in tage)
                 {
-                    int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
-                    int limit = (maxD == 0 && blocks[b].Wst >= 2) ? 1 : 2;
-                    model.Add(LinearExpr.Sum(daySlots.Select(z => x[b, z.i])) <= limit);
+                    var daySlots = slots
+                        .Select((z, i) => new { z, i })
+                        .Where(z => z.z.WTag == tag)
+                        .ToList();
+                    for (int b = 0; b < B; b++)
+                    {
+                        int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
+                        int limit = (maxD == 0 && blocks[b].Wst >= 2) ? 1 : 2;
+                        model.Add(LinearExpr.Sum(daySlots.Select(z => x[b, z.i])) <= limit);
+                    }
                 }
             }
 
@@ -257,9 +267,29 @@ namespace Stundenplan_V2
                 {
                     string name = lehrerListeD[l];
                     if (!extraFreieTage.ContainsKey(name)) continue;
+                    // Mindestens N freie Tage (identisch zu PlanenIntern; die harte
+                    // Auswahl der Lehrer erfolgt bereits über extraFreieTageHart).
                     model.Add(LinearExpr.Sum(
                         Enumerable.Range(0, tageListeD.Count).Select(day => free[l, day])
-                    ) == extraFreieTage[name]);
+                    ) >= extraFreieTage[name]);
+                }
+
+                // Fix-freie Tage: an Tagen, an denen der Lehrer per ZWL an ALLEN
+                // Stunden -3-gesperrt ist, zählt der (ohnehin leere) Tag NICHT als
+                // gewählter freier Tag -> free=0. Identisch zu PlanenIntern; ZWK
+                // bleibt bewusst außen vor.
+                for (int l = 0; l < lehrerListeD.Count; l++)
+                {
+                    string lehrer = lehrerListeD[l];
+                    for (int day = 0; day < tageListeD.Count; day++)
+                    {
+                        string tag = tageListeD[day];
+                        bool istFixFrei = slots
+                            .Where(s => s.WTag == tag)
+                            .All(s => s.LehrerWunsch.TryGetValue(lehrer, out int lw) && lw == -3);
+                        if (istFixFrei)
+                            model.Add(free[l, day] == 0);
+                    }
                 }
 
                 FreeDayConstraint.Add(model, x, free, blocks, slots, lehrerListeD, tageListeD, B);
@@ -312,6 +342,234 @@ namespace Stundenplan_V2
                 extraFreieTage: null, mitFreeDay: false,
                 grossePausen: null, verbotSpäteDoppel: false, mitDoppelstunden: false,
                 mitFachProKlasseProTag: false);
+        }
+
+        // =====================================================
+        // Einzel-Infeasible-Diagnose (nur bei INFEASIBLE der Hauptsuche):
+        // Testet für jede einzelne nicht-ignorierte Klasse und für jede
+        // Zeilentext2-Gruppe, ob deren Blöcke – zusammen mit den stets
+        // mitgeführten FixUNr-Blöcken – schon allein infeasible sind.
+        // Verwendet denselben harten Constraint-Satz wie der echte Solver
+        // (Endstufe der Sequenzdiagnose). Gibt true zurück, wenn mindestens
+        // eine Klasse/Gruppe allein infeasible ist – dann kann die Tauschphase
+        // entfallen. Timeouts liefern 'Unknown' (nicht Infeasible) und werden
+        // daher konservativ NICHT als Ursache gemeldet.
+        // =====================================================
+        private static bool DiagnoseEinzelInfeasible(
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            Dictionary<string, int> fachraumLimit,
+            Dictionary<string, int> extraFreieTage,
+            List<(int stundeVor, int stundeNach)> grossePausen,
+            bool verbotSpäteDoppel,
+            bool verbotMinus2Lehrer,
+            HashSet<string> lehrerFreiTageMinus2,
+            HashSet<string> lehrerFreiTageMinus3,
+            int zeitlimitSekunden,
+            Action<string> log)
+        {
+            int S = slots.Count;
+
+            // FixUNr-Blöcke: bleiben bei jedem Test hart im Spiel (mit ihren Fix-Slots).
+            var fixUNrn = new HashSet<int>();
+            foreach (var s in slots)
+                foreach (var unr in s.FixUNrn)
+                    fixUNrn.Add(unr);
+            var fixBlöcke = blocks.Where(b => fixUNrn.Contains(b.UNr)).ToList();
+
+            // Nur die HART erzwungenen freien Tage berücksichtigen (analog Sequenzdiagnose):
+            // -3 immer, -2 nur bei aktivem Verbot. Sonst entstünden False-Positives.
+            Dictionary<string, int> extraFreieTageHart = null;
+            if (extraFreieTage != null && extraFreieTage.Count > 0)
+            {
+                extraFreieTageHart = new Dictionary<string, int>();
+                foreach (var kv in extraFreieTage)
+                {
+                    bool hart = (lehrerFreiTageMinus3 != null && lehrerFreiTageMinus3.Contains(kv.Key))
+                             || (verbotMinus2Lehrer && lehrerFreiTageMinus2 != null && lehrerFreiTageMinus2.Contains(kv.Key));
+                    if (hart) extraFreieTageHart[kv.Key] = kv.Value;
+                }
+                if (extraFreieTageHart.Count == 0) extraFreieTageHart = null;
+            }
+
+            int proTestLimit = Math.Max(3, Math.Min(zeitlimitSekunden, 10));
+
+            // Löst die Teilmenge (Kandidat + FixUNr) mit den angegebenen Constraints.
+            CpSolverStatus StatusMit(
+                List<UnterrichtsBlock> subset,
+                bool mitFreeDay, bool mitRäume, bool mitFachProKlasse, bool mitDoppel,
+                Dictionary<string, int> freieTageHart,
+                bool mitKeine3 = true, bool mitTagesregel = true)
+            {
+                if (subset.Count == 0) return CpSolverStatus.Unknown;
+                return LöseModellMitFlags(
+                    subset, slots, subset.Count, S,
+                    new HashSet<string>(),
+                    mitKlassenSperren: true,
+                    fachraumLimit: mitRäume ? fachraumLimit : null,
+                    mitRäume: mitRäume && fachraumLimit != null,
+                    extraFreieTage: mitFreeDay ? freieTageHart : null,
+                    mitFreeDay: mitFreeDay && freieTageHart != null,
+                    grossePausen: mitDoppel ? grossePausen : null,
+                    verbotSpäteDoppel: mitDoppel && verbotSpäteDoppel,
+                    mitDoppelstunden: mitDoppel,
+                    mitFachProKlasseProTag: mitFachProKlasse,
+                    mitKeine3InFolge: mitKeine3,
+                    mitTagesregel: mitTagesregel,
+                    verbotMinus2Lehrer: verbotMinus2Lehrer,
+                    timeoutSekunden: proTestLimit);
+            }
+
+            CpSolverStatus KandidatStatus(List<UnterrichtsBlock> teilmenge)
+            {
+                var subset = teilmenge.Concat(fixBlöcke).Distinct().ToList();
+                return StatusMit(subset, true, true, true, true, extraFreieTageHart);
+            }
+
+            // Für einen bereits als infeasible erkannten Kandidaten: schaltet die
+            // harten Constraints einzeln ab und meldet, welcher die Unlösbarkeit
+            // auflöst (also (mit-)ursächlich ist). Bei 'freie Tage' zusätzlich den
+            // konkreten Lehrer pinpointen.
+            void BreakdownUrsache(List<UnterrichtsBlock> teilmenge)
+            {
+                var subset = teilmenge.Concat(fixBlöcke).Distinct().ToList();
+                var ursachen = new List<string>();
+
+                // Konflikt mit den FixUNr-Unterrichten? Kandidat OHNE Fix-Blöcke testen.
+                if (teilmenge.Count > 0 && fixBlöcke.Count > 0 &&
+                    StatusMit(teilmenge.Distinct().ToList(), true, true, true, true, extraFreieTageHart)
+                        != CpSolverStatus.Infeasible)
+                    ursachen.Add("Konflikt mit den FixUNr-Unterrichten");
+
+                if (extraFreieTageHart != null &&
+                    StatusMit(subset, false, true, true, true, extraFreieTageHart) != CpSolverStatus.Infeasible)
+                    ursachen.Add("freie Tage");
+                if (fachraumLimit != null &&
+                    StatusMit(subset, true, false, true, true, extraFreieTageHart) != CpSolverStatus.Infeasible)
+                    ursachen.Add("Räume (FGR)");
+                if (StatusMit(subset, true, true, false, true, extraFreieTageHart) != CpSolverStatus.Infeasible)
+                    ursachen.Add("Fach pro Klasse pro Tag");
+                if (StatusMit(subset, true, true, true, false, extraFreieTageHart) != CpSolverStatus.Infeasible)
+                    ursachen.Add("Doppelstunden/große Pausen");
+                if (StatusMit(subset, true, true, true, true, extraFreieTageHart, mitKeine3: false) != CpSolverStatus.Infeasible)
+                    ursachen.Add("keine 3 in Folge");
+                if (StatusMit(subset, true, true, true, true, extraFreieTageHart, mitTagesregel: false) != CpSolverStatus.Infeasible)
+                    ursachen.Add("Tagesregel");
+
+                if (ursachen.Count == 0)
+                {
+                    log("       Ursache: kein einzelner Constraint löst es allein auf – " +
+                        "echte Kombination mehrerer Constraints oder Wochenstunden/Lehrer-/Klassenregel.");
+                    return;
+                }
+
+                log($"       Ursache(n): {string.Join(", ", ursachen)}.");
+
+                // Bei 'freie Tage': welcher Lehrer?
+                if (ursachen.Contains("freie Tage") && extraFreieTageHart != null)
+                {
+                    var lehrerImSubset = new HashSet<string>(
+                        subset.SelectMany(b => b.Teile.Select(t => t.Lehrer)));
+
+                    foreach (var kv in extraFreieTageHart)
+                    {
+                        if (!lehrerImSubset.Contains(kv.Key)) continue;
+
+                        var ohneDenLehrer = extraFreieTageHart
+                            .Where(p => p.Key != kv.Key)
+                            .ToDictionary(p => p.Key, p => p.Value);
+                        var freieTageTest = ohneDenLehrer.Count > 0 ? ohneDenLehrer : null;
+
+                        if (StatusMit(subset, freieTageTest != null, true, true, true, freieTageTest) != CpSolverStatus.Infeasible)
+                            log($"          → freier Tag von Lehrer '{kv.Key}' (gefordert: {kv.Value}) ist (mit-)ursächlich.");
+                    }
+                }
+            }
+
+            // Gibt true zurück, wenn der Kandidat BEWIESEN infeasible ist.
+            // Feasible -> lösbar; Unknown -> Timeout (konservativ nicht als Ursache).
+            bool LogUndPrüfe(string art, string name, List<UnterrichtsBlock> teilmenge)
+            {
+                var status = KandidatStatus(teilmenge);
+                string info = $"{art} '{name}' ({teilmenge.Count} Unterrichte + {fixBlöcke.Count} FixUNr)";
+                if (status == CpSolverStatus.Infeasible)
+                {
+                    log($"  ❌ INFEASIBLE allein: {info}");
+                    BreakdownUrsache(teilmenge);
+                    return true;
+                }
+                if (status == CpSolverStatus.Optimal || status == CpSolverStatus.Feasible)
+                    log($"  ✓ lösbar: {info}");
+                else
+                    log($"  ? unklar (Timeout, {proTestLimit}s): {info}");
+                return false;
+            }
+
+            bool gefunden = false;
+            int anzKlassenInfeasible = 0;
+            int anzGruppenInfeasible = 0;
+
+            // 0) FixUNr-Unterrichte zuerst ALLEIN testen. Sind sie schon für sich
+            //    infeasible, ist das die eigentliche Wurzel – die Klassen-Meldungen
+            //    wären dann nur Folgeerscheinungen (jeder Test enthält ja die Fix-Blöcke).
+            if (fixBlöcke.Count > 0)
+            {
+                var fixStatus = StatusMit(fixBlöcke, true, true, true, true, extraFreieTageHart);
+                if (fixStatus == CpSolverStatus.Infeasible)
+                {
+                    log($"  ❗ Die {fixBlöcke.Count} FixUNr-Unterrichte sind bereits ALLEIN infeasible – das ist die eigentliche Ursache.");
+                    BreakdownUrsache(new List<UnterrichtsBlock>()); // Ursache der Fix-Blöcke aufschlüsseln
+                    log("     (Die folgenden Klassen-/Gruppentests enthalten diese Fix-Blöcke und sind daher ebenfalls infeasible.)");
+                    return true;
+                }
+                log($"  ✓ FixUNr-Unterrichte allein sind lösbar ({fixBlöcke.Count} Blöcke).");
+            }
+
+            // 1) Pro nicht-ignorierter Klasse (ignorierte i-Unterrichte sind gar
+            //    nicht in 'blocks'). Gekoppelte Blöcke zählen zu jeder ihrer Klassen.
+            var klassen = blocks
+                .SelectMany(b => b.Teile.SelectMany(t => t.Klassen))
+                .Select(k => (k ?? "").Trim())
+                .Where(k => k.Length > 0)
+                .Distinct()
+                .OrderBy(k => k)
+                .ToList();
+
+            log($"  Prüfe {klassen.Count} Klassen einzeln (jeweils inkl. {fixBlöcke.Count} FixUNr-Unterrichte)...");
+            foreach (var klasse in klassen)
+            {
+                var klassenBlöcke = blocks
+                    .Where(b => b.Teile.Any(t => t.Klassen.Contains(klasse)))
+                    .ToList();
+                if (klassenBlöcke.Count == 0) continue;
+
+                if (LogUndPrüfe("Klasse", klasse, klassenBlöcke))
+                {
+                    gefunden = true;
+                    anzKlassenInfeasible++;
+                }
+            }
+
+            // 2) Pro Zeilentext2-Gruppe (leeres Zeilentext2 wird übersprungen)
+            var zt2Gruppen = blocks
+                .Where(b => !string.IsNullOrWhiteSpace(b.Zeilentext2))
+                .GroupBy(b => b.Zeilentext2.Trim())
+                .ToList();
+
+            log($"  Prüfe {zt2Gruppen.Count} Zeilentext2-Gruppen einzeln...");
+            foreach (var g in zt2Gruppen)
+            {
+                if (LogUndPrüfe("Zeilentext2", g.Key, g.ToList()))
+                {
+                    gefunden = true;
+                    anzGruppenInfeasible++;
+                }
+            }
+
+            log($"  Zusammenfassung: {anzKlassenInfeasible} von {klassen.Count} Klassen und " +
+                $"{anzGruppenInfeasible} von {zt2Gruppen.Count} Zeilentext2-Gruppen sind allein infeasible.");
+
+            return gefunden;
         }
 
         // =====================================================
@@ -550,6 +808,7 @@ namespace Stundenplan_V2
             int strafeStdFolge,
             int strafeEinzel,
             int strafeSpäteLk,
+            int grenzeSpäteLk,
             Dictionary<string, LehrerStammdaten> lehrerStammdaten,
             List<(int stundeVor, int stundeNach)> grossePausen,
             bool verbotSpäteDoppel,
@@ -616,7 +875,7 @@ namespace Stundenplan_V2
                 gewichtPäd: gewichtPäd, gewichtFrei: gewichtFrei,
                 strafeHohl: strafeHohl, strafeDoppelHohl: strafeDoppelHohl,
                 strafeDreifachHohl: strafeDreifachHohl, strafeStdFolge: strafeStdFolge,
-                strafeEinzel: strafeEinzel, strafeSpäteLk: strafeSpäteLk,
+                strafeEinzel: strafeEinzel, strafeSpäteLk: strafeSpäteLk, grenzeSpäteLk: grenzeSpäteLk,
                 lehrerStammdaten: lehrerStammdaten,
                 grossePausen: grossePausen,
                 verbotSpäteDoppel: verbotSpäteDoppel,
@@ -633,6 +892,27 @@ namespace Stundenplan_V2
                     : " – KEINE LÖSUNG OHNE TAUSCH, starte trotzdem Phase 2..."));
 
             // --------------------------------------------------
+            // DIAGNOSE bei INFEASIBLE: welche einzelne Klasse / Zeilentext2-
+            // Gruppe verursacht (zusammen mit den FixUNr) schon allein die
+            // Unlösbarkeit? Dann sind Tauschversuche zwecklos → Phase 2 entfällt.
+            // --------------------------------------------------
+            bool einzelInfeasible = false;
+            if (ohneLösungen.Count == 0)
+            {
+                log("Diagnose: prüfe einzelne Klassen / Zeilentext2-Gruppen auf Einzel-Infeasibilität...");
+                einzelInfeasible = DiagnoseEinzelInfeasible(
+                    blocks, slots, fachraumLimit, extraFreieTage, grossePausen,
+                    verbotSpäteDoppel, verbotMinus2Lehrer,
+                    lehrerFreiTageMinus2, lehrerFreiTageMinus3,
+                    zeitlimitSekunden, log);
+
+                if (einzelInfeasible)
+                    log("→ Mindestens eine Klasse/Zeilentext2-Gruppe ist allein infeasible. Tauschversuche werden übersprungen.");
+                else
+                    log("→ Keine einzelne Klasse/Gruppe allein infeasible – die Ursache liegt in der Kombination. Phase 2 läuft wie gewohnt.");
+            }
+
+            // --------------------------------------------------
             // PHASE 2: Die 5 aussichtsreichsten Tausch-Kombinationen
             // --------------------------------------------------
 
@@ -642,7 +922,7 @@ namespace Stundenplan_V2
             var mitTauschLösungen = new List<(int quality, int badUnits, int[,] belegung, string tauschLabel, List<UnterrichtsBlock> blocks)>();
             var mitTauschDiagnose = new List<string>(); // für Export
 
-            if (alleEinzelPaare.Count > 0 && anzahlLösungenMit > 0)
+            if (alleEinzelPaare.Count > 0 && anzahlLösungenMit > 0 && !einzelInfeasible)
             {
                 log("Bestimme aussichtsreichste Tausch-Kombinationen...");
 
@@ -692,7 +972,7 @@ namespace Stundenplan_V2
                             gewichtPäd: gewichtPäd, gewichtFrei: gewichtFrei,
                             strafeHohl: strafeHohl, strafeDoppelHohl: strafeDoppelHohl,
                             strafeDreifachHohl: strafeDreifachHohl, strafeStdFolge: strafeStdFolge,
-                            strafeEinzel: strafeEinzel, strafeSpäteLk: strafeSpäteLk,
+                            strafeEinzel: strafeEinzel, strafeSpäteLk: strafeSpäteLk, grenzeSpäteLk: grenzeSpäteLk,
                             lehrerStammdaten: lehrerStammdaten,
                             grossePausen: grossePausen,
                             verbotSpäteDoppel: verbotSpäteDoppel,
@@ -827,6 +1107,7 @@ namespace Stundenplan_V2
             int strafeStdFolge = 5,
             int strafeEinzel = 0,
             int strafeSpäteLk = 0,
+            int grenzeSpäteLk = 2,
             Dictionary<string, LehrerStammdaten> lehrerStammdaten = null,
             List<(int stundeVor, int stundeNach)> grossePausen = null,
             bool verbotSpäteDoppel = false,
@@ -1394,39 +1675,50 @@ namespace Stundenplan_V2
             }
 
             // =====================================================
-            // SPÄTE LK-STUNDEN
-            // LK-Blöcke (ZeilenText enthält "LK") dürfen max 2 Stunden
-            // nach Stunde 5 haben. Jede weitere wird bestraft.
+            // SPÄTE LK-STUNDEN  (pro TAG, nicht pro Block!)
+            // Pro Tag dürfen über ALLE LK-Blöcke zusammen max
+            // 'grenzeSpäteLk' Stunden nach Stunde 5 liegen (aus PM,
+            // Default 2). Jede weitere späte LK-Stunde an diesem Tag
+            // wird bestraft. LK-Erkennung einheitlich über
+            // PlanBewertung.IstLkBlock (Zeilentext "LK" ODER Fach L1/L2),
+            // damit Solver und Bewertung exakt denselben Fall zählen.
             // =====================================================
             var späteLkVars = new List<BoolVar>();
             if (strafeSpäteLk != 0)
             {
-                for (int b = 0; b < B; b++)
+                var lkBlöcke = Enumerable.Range(0, B)
+                    .Where(b => PlanBewertung.IstLkBlock(blocks[b]))
+                    .ToList();
+
+                if (lkBlöcke.Count > 0)
                 {
-                    // LK-Block erkennen: Zeilentext enthält "LK"
-                    if (!blocks[b].Zeilentext.Contains("LK",
-                        StringComparison.OrdinalIgnoreCase)) continue;
-
-                    // Slots nach Stunde 5 für diesen Block
-                    var spätSlots = Enumerable.Range(0, S)
-                        .Where(s => slots[s].Stunde > 5)
-                        .ToList();
-
-                    if (spätSlots.Count == 0) continue;
-
-                    // Summe der späten Stunden für diesen Block
-                    var spätSum = model.NewIntVar(0, spätSlots.Count,
-                        $"lkspät_b{b}");
-                    model.Add(spätSum == LinearExpr.Sum(
-                        spätSlots.Select(s => x[b, s])));
-
-                    // Für jede Stunde über 2 → eine Strafe-Variable
-                    for (int k = 3; k <= blocks[b].Wst; k++)
+                    foreach (var tag in tageListe)
                     {
-                        var strafVar = model.NewBoolVar($"lkstraf_b{b}_k{k}");
-                        model.Add(spätSum >= k).OnlyEnforceIf(strafVar);
-                        model.Add(spätSum < k).OnlyEnforceIf(strafVar.Not());
-                        späteLkVars.Add(strafVar);
+                        // Späte Slots dieses Tages (nach Stunde 5)
+                        var spätSlots = Enumerable.Range(0, S)
+                            .Where(s => slots[s].WTag == tag && slots[s].Stunde > 5)
+                            .ToList();
+                        if (spätSlots.Count == 0) continue;
+
+                        // Obergrenze: jeder LK-Block kann höchstens
+                        // min(Wst, #späteSlots) späte Stunden beitragen
+                        int maxSpät = lkBlöcke.Sum(b =>
+                            Math.Min(blocks[b].Wst, spätSlots.Count));
+                        if (maxSpät <= grenzeSpäteLk) continue; // kann nie > Grenze werden
+
+                        // Summe ALLER späten LK-Stunden an diesem Tag
+                        var spätSum = model.NewIntVar(0, maxSpät, $"lkspät_{tag}");
+                        model.Add(spätSum == LinearExpr.Sum(
+                            lkBlöcke.SelectMany(b => spätSlots.Select(s => x[b, s]))));
+
+                        // Jede Stunde über der Grenze → eine Strafe-Variable
+                        for (int k = grenzeSpäteLk + 1; k <= maxSpät; k++)
+                        {
+                            var strafVar = model.NewBoolVar($"lkstraf_{tag}_k{k}");
+                            model.Add(spätSum >= k).OnlyEnforceIf(strafVar);
+                            model.Add(spätSum < k).OnlyEnforceIf(strafVar.Not());
+                            späteLkVars.Add(strafVar);
+                        }
                     }
                 }
             }
@@ -2363,8 +2655,11 @@ namespace Stundenplan_V2
                 UNr = b.UNr,
                 Wst = b.Wst,
                 Zeilentext = b.Zeilentext,
+                Zeilentext2 = b.Zeilentext2,
                 WochenDoppelstunden = b.WochenDoppelstunden,
                 DoppelÜberPauseErlaubt = b.DoppelÜberPauseErlaubt,
+                KKK = b.KKK,
+                WochenGruppe = b.WochenGruppe,
                 TagesDoppelstunden = new Dictionary<string, int>(b.TagesDoppelstunden),
                 Teile = b.Teile.Select(t => new TeilUnterricht
                 {
@@ -2376,7 +2671,8 @@ namespace Stundenplan_V2
                     MaxDoppel = t.MaxDoppel,
                     FachGruppe = t.FachGruppe,
                     AktuelleDoppelstunden = t.AktuelleDoppelstunden,
-                    Ltkz = t.Ltkz
+                    Ltkz = t.Ltkz,
+                    DoppelÜberPauseErlaubt = t.DoppelÜberPauseErlaubt
                 }).ToList()
             }).ToList();
 
@@ -2565,6 +2861,7 @@ namespace Stundenplan_V2
             int strafeStdFolge,
             int strafeEinzel,
             int strafeSpäteLk,
+            int grenzeSpäteLk,
             Dictionary<string, LehrerStammdaten> lehrerStammdaten,
             List<(int stundeVor, int stundeNach)> grossePausen,
             bool verbotSpäteDoppel,
@@ -2641,7 +2938,7 @@ namespace Stundenplan_V2
                     gewichtPäd: gewichtPäd, gewichtFrei: gewichtFrei,
                     strafeHohl: strafeHohl, strafeDoppelHohl: strafeDoppelHohl,
                     strafeDreifachHohl: strafeDreifachHohl, strafeStdFolge: strafeStdFolge,
-                    strafeEinzel: strafeEinzel, strafeSpäteLk: strafeSpäteLk,
+                    strafeEinzel: strafeEinzel, strafeSpäteLk: strafeSpäteLk, grenzeSpäteLk: grenzeSpäteLk,
                     lehrerStammdaten: lehrerStammdaten,
                     grossePausen: grossePausen,
                     verbotSpäteDoppel: verbotSpäteDoppel,

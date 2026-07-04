@@ -24,7 +24,9 @@ namespace Stundenplan_V2
             bool meldeLeherMinus2 = false,
             Dictionary<string, int> extraFreieTage = null,
             HashSet<string> lehrerFreiTageMinus2 = null,
-            HashSet<string> lehrerFreiTageMinus3 = null)
+            HashSet<string> lehrerFreiTageMinus3 = null,
+            Dictionary<string, int> fachraumLimit = null,
+            bool verbotMinus2Lehrer = false)
         {
             int B = blocks.Count;
             int S = slots.Count;
@@ -317,20 +319,75 @@ namespace Stundenplan_V2
             }
 
             // =====================================================
-            // 8. FACHRAUM-LIMIT: zu viele Blöcke einer Fachgruppe gleichzeitig
+            // 8. FACHRAUM-LIMIT: pro Slot max 'limit' Blöcke je Fachgruppe
             // =====================================================
-            // (wird über fachraumLimit-Dictionary geprüft – hier vereinfacht)
+            if (fachraumLimit != null && fachraumLimit.Count > 0)
+            {
+                for (int s = 0; s < S; s++)
+                    foreach (var kv in fachraumLimit)
+                    {
+                        int anzahl = 0;
+                        for (int b = 0; b < B; b++)
+                            if (belegung[b, s] == 1 && blocks[b].Teile.Any(t => t.FachGruppe == kv.Key))
+                                anzahl++;
+                        if (anzahl > kv.Value)
+                            verletzungen.Add(new Verletzung(
+                                "Fachraum-Limit", slots[s].WTag, slots[s].Stunde, 0,
+                                "", kv.Key,
+                                $"{anzahl} Blöcke der Fachgruppe '{kv.Key}' gleichzeitig in {TagStunde(s)} (max {kv.Value})"));
+                    }
+            }
 
             // =====================================================
-            // 9. FREIE-TAGE-VERLETZUNG: Lehrer mit -2-Markierung
-            //    bekommen nicht die gewünschte Anzahl freier Tage
+            // 8b. KEINE 3 IN FOLGE: ein Block an 3 aufeinanderfolgenden Stunden desselben Tages
             // =====================================================
-            if (meldeLeherMinus2 &&
-                extraFreieTage != null && extraFreieTage.Count > 0 &&
-                ((lehrerFreiTageMinus2 != null && lehrerFreiTageMinus2.Count > 0) ||
-                 (lehrerFreiTageMinus3 != null && lehrerFreiTageMinus3.Count > 0)))
+            for (int b = 0; b < B; b++)
+                for (int s = 0; s < S - 2; s++)
+                    if (slots[s].WTag == slots[s + 1].WTag && slots[s].WTag == slots[s + 2].WTag &&
+                        slots[s].Stunde + 1 == slots[s + 1].Stunde && slots[s].Stunde + 2 == slots[s + 2].Stunde &&
+                        belegung[b, s] == 1 && belegung[b, s + 1] == 1 && belegung[b, s + 2] == 1)
+                    {
+                        verletzungen.Add(new Verletzung(
+                            "Keine 3 in Folge", slots[s].WTag, slots[s].Stunde, blocks[b].UNr,
+                            string.Join(", ", blocks[b].Teile.Select(t => t.Lehrer).Distinct()),
+                            blocks[b].Zeilentext,
+                            $"3 Stunden in Folge an {slots[s].WTag} (Std {slots[s].Stunde}-{slots[s + 2].Stunde})"));
+                        break; // eine Meldung pro Block genügt
+                    }
+
+            // =====================================================
+            // 8c. FACH PRO KLASSE PRO TAG: max 2 Stunden desselben Fachs je Klasse und Tag
+            // =====================================================
             {
-                // Alle Lehrer und Tage aus den Slots ermitteln
+                var fachZähler = new Dictionary<(string klasse, string tag, string fach), int>();
+                for (int b = 0; b < B; b++)
+                    for (int s = 0; s < S; s++)
+                    {
+                        if (belegung[b, s] != 1) continue;
+                        string tag = slots[s].WTag;
+                        foreach (var t in blocks[b].Teile)
+                            foreach (var k in t.Klassen)
+                            {
+                                var key = (k, tag, t.Fach);
+                                fachZähler[key] = fachZähler.TryGetValue(key, out int c) ? c + 1 : 1;
+                            }
+                    }
+                foreach (var kv in fachZähler)
+                    if (kv.Value > 2)
+                        verletzungen.Add(new Verletzung(
+                            "Fach pro Klasse pro Tag", kv.Key.tag, 0, 0,
+                            "", kv.Key.fach,
+                            $"Klasse {kv.Key.klasse}: {kv.Value}x {kv.Key.fach} an {kv.Key.tag} (max 2)"));
+            }
+
+            // =====================================================
+            // =====================================================
+            // 9. FREIE TAGE: harte Prüfung für -3 (und -2 mit Verbot),
+            //    -2 ohne Verbot als Hinweis. istFixFrei wie im Solver:
+            //    ein per ZWL komplett gesperrter Tag zählt NICHT als freier Tag.
+            // =====================================================
+            if (extraFreieTage != null && extraFreieTage.Count > 0)
+            {
                 var alleLehrern = blocks
                     .SelectMany(b => b.Teile.Select(t => t.Lehrer))
                     .Distinct().ToList();
@@ -343,10 +400,19 @@ namespace Stundenplan_V2
                     if (!istMinus2 && !istMinus3) continue;
                     if (!extraFreieTage.TryGetValue(lehrer, out int gewünscht) || gewünscht <= 0) continue;
 
-                    // Freie Tage zählen: Tag ist frei wenn kein Block dieses Lehrers dort belegt ist
-                    int freieTageTatsächlich = 0;
+                    bool hart = istMinus3 || (istMinus2 && verbotMinus2Lehrer);
+                    // Weichen -2-Wunsch nur melden, wenn ausdrücklich gewünscht.
+                    if (!hart && !meldeLeherMinus2) continue;
+
+                    int freieTage = 0;
                     foreach (var tag in alleTage)
                     {
+                        // Tag komplett per ZWL (-3) gesperrt? -> zählt nicht als freier Tag.
+                        bool istFixFrei = slots
+                            .Where(s => s.WTag == tag)
+                            .All(s => s.LehrerWunsch.TryGetValue(lehrer, out int lw) && lw == -3);
+                        if (istFixFrei) continue;
+
                         bool hatUnterricht = false;
                         for (int b = 0; b < B && !hatUnterricht; b++)
                         {
@@ -355,15 +421,22 @@ namespace Stundenplan_V2
                                 if (slots[s].WTag == tag && belegung[b, s] == 1)
                                     hatUnterricht = true;
                         }
-                        if (!hatUnterricht) freieTageTatsächlich++;
+                        if (!hatUnterricht) freieTage++;
                     }
 
-                    int fehlend = gewünscht - freieTageTatsächlich;
-                    if (fehlend > 0)
+                    int fehlend = gewünscht - freieTage;
+                    if (fehlend <= 0) continue;
+
+                    if (hart)
                         verletzungen.Add(new Verletzung(
-                            istMinus3 ? "Zeitwunsch Lehrer -3" : "Zeitwunsch Lehrer -2",
+                            istMinus3 ? "Freie Tage -3" : "Freie Tage -2 (Verbot)",
                             "", 0, 0, lehrer, "",
-                            $"Freie Tage: gewünscht {gewünscht}, tatsächlich {freieTageTatsächlich} (−{fehlend})"));
+                            $"Freie Tage: gefordert {gewünscht}, vorhanden {freieTage} (−{fehlend}); komplett ZWL-gesperrte Tage zählen nicht."));
+                    else
+                        verletzungen.Add(new Verletzung(
+                            "Hinweis: freie Tage -2 (weich)",
+                            "", 0, 0, lehrer, "",
+                            $"Wunsch: {gewünscht} freie Tage, vorhanden {freieTage} (−{fehlend}). Im Solver nur weiche Strafe."));
                 }
             }
 
