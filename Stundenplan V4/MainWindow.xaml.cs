@@ -1358,7 +1358,8 @@ namespace Stundenplan_V2
                 uebernehmen,
                 bewParam,
                 aendereFixUNr,
-                ignorierteUnterrichte)
+                ignorierteUnterrichte,
+                excelPfad)
             { Owner = this };
 
             editor.ShowDialog();

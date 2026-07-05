@@ -23,6 +23,10 @@
             <Button x:Name="BtnNaechsteLoesung" Content="&#9654;" Width="28" VerticalAlignment="Center"
                     Margin="0,0,30,0" ToolTip="Naechste Loesung" Click="BtnNaechsteLoesung_Click"/>
 
+            <Button x:Name="BtnDiagWerte" Content="Diag-Werte" VerticalAlignment="Center" Margin="0,0,30,0"
+                    Padding="8,2" ToolTip="Diag-Zeile des aktuellen Lehrers (und Summe) in eigenem Fenster anzeigen"
+                    Click="BtnDiagWerte_Click"/>
+
             <TextBlock Text="Modus:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
             <RadioButton x:Name="RbBlock"  Content="Block (ganzer Tag)" GroupName="Modus"
                          VerticalAlignment="Center" Margin="0,0,10,0"/>

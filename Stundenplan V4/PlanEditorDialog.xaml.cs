@@ -87,6 +87,11 @@ namespace Stundenplan_V2
         // false = zuletzt in eine Klassen-Zelle geklickt -> ignorierte der Klasse
         private bool _parkKontextLehrer = true;
 
+        // Pfad zur Excel-Datei (für die Diag-Werte-Anzeige, nur lesend).
+        private readonly string _excelPfad;
+        // Modeless Fenster mit den Diag-Zeilen des aktuellen Lehrers.
+        private DiagAnzeigeWindow _diagFenster;
+
         public PlanEditorDialog(
             List<(string label, int[,] belegung, List<UnterrichtsBlock> blocks)> loesungen,
             List<ZeitSlot> slots,
@@ -95,7 +100,8 @@ namespace Stundenplan_V2
             Action<string, int[,], List<UnterrichtsBlock>> uebernehmenCallback,
             BewertungsParameter bewParam = null,
             Action<int, int, bool> aendereFixUNrCallback = null,
-            List<IgnorierterUnterricht> ignorierteUnterrichte = null)
+            List<IgnorierterUnterricht> ignorierteUnterrichte = null,
+            string excelPfad = null)
         {
             InitializeComponent();
 
@@ -107,6 +113,7 @@ namespace Stundenplan_V2
             _aendereFixUNrCallback = aendereFixUNrCallback;
             _bewParam = bewParam ?? new BewertungsParameter();
             _ignorierteUnterrichte = ignorierteUnterrichte ?? new List<IgnorierterUnterricht>();
+            _excelPfad = excelPfad;
 
             // Tage in Eingabereihenfolge, Stunden sortiert
             _tage = _slots.Select(z => z.WTag).Distinct().ToList();
@@ -162,12 +169,14 @@ namespace Stundenplan_V2
             else ZeichneBeideGrids();
             ZeichneParkbereich();
             SetStatus("Lösung '" + label + "' geladen.", false);
+            AktualisiereDiagFenster();
         }
 
         private void CboLehrer_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (!_initialisiert || _belegung == null) return;
             SpiegeleAuswahlInVm(CboLehrer, CboVmLehrer);
+            AktualisiereDiagFenster();
             if (_vergleichsModus) { ZeichneVergleichsModus(); return; }
             ZeichneLehrerGrid();
             ZeichneParkbereich();
@@ -212,6 +221,47 @@ namespace Stundenplan_V2
         {
             if (!_initialisiert || _belegung == null) return;
             ZeichneParkbereich();
+        }
+
+        // ---- Diag-Werte-Fenster ------------------------------------------
+
+        // Der aktuell relevante Lehrer für die Diag-Anzeige: im Vergleichsmodus
+        // aus dem VM-Lehrer-Dropdown, sonst aus dem normalen Lehrer-Dropdown.
+        private string AktuellerDiagLehrer()
+            => _vergleichsModus
+                ? (CboVmLehrer?.SelectedItem as string)
+                : (CboLehrer?.SelectedItem as string);
+
+        // Öffnet (oder fokussiert) das modeless Diag-Fenster.
+        private void BtnDiagWerte_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(_excelPfad))
+            {
+                MessageBox.Show("Kein Excel-Pfad verfügbar – die Diag-Werte können nicht gelesen werden.",
+                    "Diag-Werte", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (_diagFenster == null)
+            {
+                _diagFenster = new DiagAnzeigeWindow(_excelPfad) { Owner = this };
+                _diagFenster.Closed += (s, ev) => _diagFenster = null;
+                _diagFenster.Show();
+            }
+            else
+            {
+                _diagFenster.Activate();
+            }
+            AktualisiereDiagFenster();
+        }
+
+        // Aktualisiert das offene Diag-Fenster auf die aktuelle Auswahl.
+        private void AktualisiereDiagFenster()
+        {
+            if (_diagFenster == null) return;
+            string label1 = CboLoesung?.SelectedItem as string;
+            string label2 = _vergleichsModus ? (CboVglLoesung2?.SelectedItem as string) : null;
+            _diagFenster.Zeige(label1, label2, AktuellerDiagLehrer(), _vergleichsModus);
         }
 
         // Springt zum nächsten Eintrag im Lösungs-Dropdown (mit Umlauf)
@@ -267,6 +317,7 @@ namespace Stundenplan_V2
             int idx = CboLehrer.Items.IndexOf(sel);
             if (idx >= 0 && idx != CboLehrer.SelectedIndex) CboLehrer.SelectedIndex = idx;
             else if (_vergleichsModus) ZeichneVergleichsModus();
+            AktualisiereDiagFenster();
         }
 
         private void CboVmKlasse_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -361,6 +412,7 @@ namespace Stundenplan_V2
                 SetzeUnterbereicheSichtbar(true);
                 ZeichneBeideGrids();
             }
+            AktualisiereDiagFenster();
         }
 
         // Blendet Parkbereich, Trenner und Detail-/Tauschbereich ein/aus.
@@ -387,6 +439,7 @@ namespace Stundenplan_V2
             if (!_initialisiert) return;
             LadeVglLoesung2(CboVglLoesung2.SelectedItem as string);
             if (_vergleichsModus) ZeichneVergleichsModus();
+            AktualisiereDiagFenster();
         }
 
         private void LadeVglLoesung2(string label)
