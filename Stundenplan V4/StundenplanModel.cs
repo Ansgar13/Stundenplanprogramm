@@ -50,6 +50,7 @@ namespace Stundenplan_V2
         public string Lehrer { get; set; } = "";
         public string Fach { get; set; } = "";
         public List<string> Klassen { get; set; } = new();
+        public int Wst { get; set; }
     }
 
 

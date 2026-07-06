@@ -3966,13 +3966,13 @@ namespace Stundenplan_V2
                 string lehrer = string.Join(",", block.Teile.Select(t => t.Lehrer)
                     .Where(l => !string.IsNullOrWhiteSpace(l)).Distinct());
 
-                // Einheitliche Anzeige: immer Fach, Klasse, Lehrer und UNr.
-                string zeile2 = "Fach: " + faecher + "  |  Kl: " + klassen + "  |  L: " + lehrer;
+                // Einheitliche Anzeige: immer Fach, Klasse, Lehrer, Wst und UNr.
+                string zeile2 = "Fach: " + faecher + "  |  Kl: " + klassen + "  |  L: " + lehrer + "  |  Wst: " + soll;
 
-                var tb = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 11 };
+                var tb = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
                 tb.Inlines.Add(new System.Windows.Documents.Run("UNr " + block.UNr + "  ") { FontWeight = FontWeights.Bold });
                 tb.Inlines.Add(new System.Windows.Documents.Run("(" + ist + "/" + soll + ")\n") { Foreground = Brushes.Red });
-                tb.Inlines.Add(new System.Windows.Documents.Run(zeile2));
+                tb.Inlines.Add(new System.Windows.Documents.Run(zeile2) { FontWeight = FontWeights.Bold });
                 bd.Child = tb;
 
                 int blockIdxLokal = b;
@@ -4027,7 +4027,7 @@ namespace Stundenplan_V2
                     if (!passt) continue;
 
                     string iKlassen = string.Join(",", iu.Klassen);
-                    string iZeile2 = "Fach: " + iu.Fach + "  |  Kl: " + iKlassen + "  |  L: " + iu.Lehrer;
+                    string iZeile2 = "Fach: " + iu.Fach + "  |  Kl: " + iKlassen + "  |  L: " + iu.Lehrer + "  |  Wst: " + iu.Wst;
 
                     var bd = new Border
                     {
@@ -4040,13 +4040,13 @@ namespace Stundenplan_V2
                     var tb = new TextBlock
                     {
                         TextWrapping = TextWrapping.Wrap,
-                        FontSize = 11,
+                        FontSize = 12,
                         FontStyle = FontStyles.Italic,
-                        Foreground = Brushes.Gray
+                        Foreground = Brushes.DimGray
                     };
                     tb.Inlines.Add(new System.Windows.Documents.Run("UNr " + iu.UNr + "  ") { FontWeight = FontWeights.Bold });
                     tb.Inlines.Add(new System.Windows.Documents.Run("(ignoriert)\n"));
-                    tb.Inlines.Add(new System.Windows.Documents.Run(iZeile2));
+                    tb.Inlines.Add(new System.Windows.Documents.Run(iZeile2) { FontWeight = FontWeights.Bold });
                     bd.Child = tb;
                     ParkPanel.Children.Add(bd);
                 }

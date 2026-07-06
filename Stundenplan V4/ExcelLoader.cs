@@ -905,13 +905,15 @@ namespace Stundenplan_V2
                     .Select(k => k.Trim())
                     .Where(k => k.Length > 0)
                     .ToList();
+                int.TryParse(GetOptional(row, header, "Wst").Trim(), out int wst);
 
                 result.Add(new IgnorierterUnterricht
                 {
                     UNr = uNr,
                     Lehrer = lehrer,
                     Fach = fach,
-                    Klassen = klassen
+                    Klassen = klassen,
+                    Wst = wst
                 });
             }
 
