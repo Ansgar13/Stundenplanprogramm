@@ -13,6 +13,96 @@ namespace Stundenplan_V2
         // =====================================================
         private static List<string> _infeasibleDetails = new List<string>();
 
+        // =====================================================
+        // Fortschritts-Reporter für die Live-Suchanzeige.
+        // Sammelt Phase, besten Zielwert der laufenden Phase, verstrichene
+        // Zeit und Anzahl gefundener Lösungen; meldet gedrosselt an die UI.
+        // Thread-sicher, da OR-Tools-Callbacks aus Worker-Threads kommen.
+        // =====================================================
+        internal class FortschrittReporter
+        {
+            private readonly Action<SolverFortschritt> _sink;
+            private readonly System.Diagnostics.Stopwatch _sw = System.Diagnostics.Stopwatch.StartNew();
+            private readonly object _lock = new object();
+            private DateTime _lastEmit = DateTime.MinValue;
+
+            private string _phase = "Start";
+            private int _gefunden = 0;
+            private double _bester = 0;
+            private bool _hatZielwert = false;
+
+            public FortschrittReporter(Action<SolverFortschritt> sink) { _sink = sink; }
+
+            // Neue Phase: Zielwert der letzten Phase verwerfen.
+            public void SetzePhase(string phase)
+            {
+                lock (_lock) { _phase = phase; _hatZielwert = false; }
+                Emit(force: true);
+            }
+
+            public void MeldeZielwert(double z)
+            {
+                lock (_lock)
+                {
+                    if (!_hatZielwert || z > _bester) { _bester = z; _hatZielwert = true; }
+                }
+                Emit(force: false);
+            }
+
+            public void AddGefunden(int n)
+            {
+                if (n == 0) return;
+                lock (_lock) { _gefunden += n; }
+                Emit(force: true);
+            }
+
+            private void Emit(bool force)
+            {
+                if (_sink == null) return;
+                var now = DateTime.UtcNow;
+                lock (_lock)
+                {
+                    if (!force && (now - _lastEmit).TotalMilliseconds < 150) return;
+                    _lastEmit = now;
+                }
+                SolverFortschritt f;
+                lock (_lock)
+                {
+                    f = new SolverFortschritt
+                    {
+                        Phase = _phase,
+                        HatZielwert = _hatZielwert,
+                        BesterZielwert = _bester,
+                        Zeit = _sw.Elapsed,
+                        GefundeneLösungen = _gefunden
+                    };
+                }
+                try { _sink(f); } catch { /* UI-Fehler dürfen die Suche nicht stören */ }
+            }
+        }
+
+        // OR-Tools-Callback: meldet je Zwischenlösung den Zielwert und bricht
+        // die Suche ab, sobald das Abbruch-Token gesetzt ist.
+        internal class FortschrittCallback : CpSolverSolutionCallback
+        {
+            private readonly FortschrittReporter _rep;
+            private readonly System.Threading.CancellationToken _tok;
+
+            public FortschrittCallback(FortschrittReporter rep, System.Threading.CancellationToken tok)
+            {
+                _rep = rep;
+                _tok = tok;
+            }
+
+            public override void OnSolutionCallback()
+            {
+                _rep?.MeldeZielwert(ObjectiveValue());
+                if (_tok.IsCancellationRequested)
+                    StopSearch();
+            }
+        }
+
+
         private static void DiagLog(Action<string> log, string text)
         {
             log(text);
@@ -819,10 +909,14 @@ namespace Stundenplan_V2
             HashSet<string> lehrerFreiTageMinus2,
             HashSet<string> lehrerFreiTageMinus3,
             Action<string> log,
-            out string debug)
+            out string debug,
+            Action<SolverFortschritt> fortschritt = null,
+            System.Threading.CancellationToken abbruch = default)
         {
             // Diagnose-Buffer für aktuellen Lauf zurücksetzen
             _infeasibleDetails.Clear();
+
+            var reporter = fortschritt != null ? new FortschrittReporter(fortschritt) : null;
 
             // --------------------------------------------------
             // Checkup FixUNrn: vorab alle Konflikte in den
@@ -865,6 +959,7 @@ namespace Stundenplan_V2
             // PHASE 1: Ohne Tausch – 2 beste Lösungen
             // --------------------------------------------------
             log("Phase 1: Ohne Tausch...");
+            reporter?.SetzePhase("Phase 1: ohne Tausch");
             var ohneBlöcke = blocks; // Original-Blöcke
             var ohneLösungen = PlanenIntern(
                 excelPfad, blocks, slots, fachraumLimit, extraFreieTage,
@@ -884,7 +979,9 @@ namespace Stundenplan_V2
                 verbotMinus2Lehrer: verbotMinus2Lehrer,
                 strafeMinus2Lehrer: strafeMinus2Lehrer,
                 lehrerFreiTageMinus2: lehrerFreiTageMinus2,
-                lehrerFreiTageMinus3: lehrerFreiTageMinus3);
+                lehrerFreiTageMinus3: lehrerFreiTageMinus3,
+                reporter: reporter, abbruch: abbruch);
+            reporter?.AddGefunden(ohneLösungen.Count);
 
             log($"  Ohne Tausch: {ohneLösungen.Count} Lösungen" +
                 (ohneLösungen.Count > 0
@@ -947,6 +1044,11 @@ namespace Stundenplan_V2
 
                 for (int versuch = 0; versuch < alleZuTesten.Count; versuch++)
                 {
+                    if (abbruch.IsCancellationRequested)
+                    {
+                        log("Abbruch angefordert – Phase 2 wird beendet.");
+                        break;
+                    }
                     var paare = alleZuTesten[versuch];
                     string tauschKey = KombiKey(paare);
 
@@ -954,6 +1056,7 @@ namespace Stundenplan_V2
 
                     string art = versuch < top5Kombinationen.Count ? "Top-Kombination" : "Einzelpaar";
                     log($"Phase 2 Versuch {versuch + 1}/{alleZuTesten.Count} ({art}): Tausche [{tauschKey}]...");
+                    reporter?.SetzePhase($"Phase 2 {versuch + 1}/{alleZuTesten.Count}: Tausch [{tauschKey}]");
 
                     var (getauschteBlöcke, getauschteSlots, getauschteFreieTage) = WendeTauschAn(blocks, slots, extraFreieTage, paare);
 
@@ -981,7 +1084,8 @@ namespace Stundenplan_V2
                             verbotMinus2Lehrer: verbotMinus2Lehrer,
                             strafeMinus2Lehrer: strafeMinus2Lehrer,
                             lehrerFreiTageMinus2: lehrerFreiTageMinus2,
-                            lehrerFreiTageMinus3: lehrerFreiTageMinus3);
+                            lehrerFreiTageMinus3: lehrerFreiTageMinus3,
+                            reporter: reporter, abbruch: abbruch);
                         if (lösungen.Count > 0)
                         {
                             log($"  Lösung gefunden mit Seed {seed}.");
@@ -989,6 +1093,7 @@ namespace Stundenplan_V2
                         }
                         log($"  Seed {seed}: keine Lösung, versuche nächsten...");
                     }
+                    reporter?.AddGefunden(lösungen.Count);
 
                     if (lösungen.Count == 0)
                     {
@@ -1121,7 +1226,9 @@ namespace Stundenplan_V2
             // ausgangsplan  = blockIdx → slotIdx der Referenzlösung
             // stabilitaetsGewicht > 0 aktiviert Belohnung für beibehaltene Slots
             Dictionary<int, int> ausgangsplan = null,
-            int stabilitaetsGewicht = 0)
+            int stabilitaetsGewicht = 0,
+            FortschrittReporter reporter = null,
+            System.Threading.CancellationToken abbruch = default)
         {
             var model = new CpModel();
             int B = blocks.Count;
@@ -1908,8 +2015,11 @@ namespace Stundenplan_V2
                 ? "oT"
                 : "T_" + tauschKey;
 
+            // Fortschritts-/Abbruch-Callback (nur wenn ein Reporter vorliegt).
+            var progressCb = reporter != null ? new FortschrittCallback(reporter, abbruch) : null;
+
             // Phase 1: Beste Lösung
-            var status = solver.Solve(model);
+            var status = progressCb != null ? solver.Solve(model, progressCb) : solver.Solve(model);
 
             if (status != CpSolverStatus.Optimal && status != CpSolverStatus.Feasible)
             {
@@ -2277,7 +2387,7 @@ namespace Stundenplan_V2
 
                 model.AddBoolOr(forbid);
 
-                status = solver.Solve(model);
+                status = progressCb != null ? solver.Solve(model, progressCb) : solver.Solve(model);
 
                 if (status != CpSolverStatus.Optimal && status != CpSolverStatus.Feasible)
                     break;

@@ -141,7 +141,7 @@ namespace Stundenplan_V2
         // =====================================================
         // BUTTON 3 – STUNDENPLANERSTELLUNG
         // =====================================================
-        private void BtnSchritt2_Click(object sender, RoutedEventArgs e)
+        private async void BtnSchritt2_Click(object sender, RoutedEventArgs e)
         {
             if (input == null)
             {
@@ -149,43 +149,33 @@ namespace Stundenplan_V2
                 return;
             }
 
-            var statusFenster = new Window
-            {
-                Title = "Bitte warten",
-                Width = 300,
-                Height = 120,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                WindowStyle = WindowStyle.ToolWindow,
-                Topmost = true
-            };
-
-            var txt = new System.Windows.Controls.TextBlock
-            {
-                Text = "Engine sucht ...",
-                FontSize = 16,
-                FontWeight = FontWeights.SemiBold,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
-            statusFenster.Content = txt;
-            statusFenster.Show();
-
-            // UI sofort rendern, bevor der Solver den Thread blockiert
-            System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(
-                System.Windows.Threading.DispatcherPriority.Render,
-                new Action(() => { }));
+            var fenster = new SucheStatusFenster { Owner = this };
+            var cts = new System.Threading.CancellationTokenSource();
+            fenster.AbbruchGewuenscht += () => { cts.Cancel(); fenster.MarkiereAbbrechend(); };
+            fenster.Show();
 
             Log("Starte Solver...");
 
-            var solutions = service.Generate(input, Log, out string debug);
+            // Log- und Fortschrittsmeldungen kommen vom Hintergrund-Thread und
+            // werden auf den UI-Thread marshallt.
+            Action<string> logUi = s => Dispatcher.BeginInvoke(new Action(() => Log(s)));
+            Action<SolverFortschritt> prog = f => Dispatcher.BeginInvoke(new Action(() => fenster.Aktualisiere(f)));
 
-            statusFenster.Close();
+            string debug = "";
+            List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> solutions = null;
+            try
+            {
+                await System.Threading.Tasks.Task.Run(
+                    () => { solutions = service.Generate(input, logUi, out debug, prog, cts.Token); });
+            }
+            finally
+            {
+                fenster.Close();
+                cts.Dispose();
+            }
 
 
-            if (solutions.Count == 0)
+            if (solutions == null || solutions.Count == 0)
             {
                 MessageBox.Show("Keine Lösung gefunden – weder mit noch ohne Tausch.\n\n" + debug);
                 TxtStatus.Text = "Planung fehlgeschlagen.";

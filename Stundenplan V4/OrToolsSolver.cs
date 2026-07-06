@@ -5,7 +5,9 @@ public interface ISolver
     List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> Solve(
         StundenplanInput input,
         Action<string> log,
-        out string debug);
+        out string debug,
+        Action<SolverFortschritt> fortschritt = null,
+        System.Threading.CancellationToken abbruch = default);
 }
 
 public class OrToolsSolver : ISolver
@@ -13,7 +15,9 @@ public class OrToolsSolver : ISolver
     public List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> Solve(
         StundenplanInput input,
         Action<string> log,
-        out string debug)
+        out string debug,
+        Action<SolverFortschritt> fortschritt = null,
+        System.Threading.CancellationToken abbruch = default)
     {
         return StundenplanEngine.Planen(
             input.ExcelPfad,
@@ -46,7 +50,9 @@ public class OrToolsSolver : ISolver
             input.LehrerFreiTageMinus2,
             input.LehrerFreiTageMinus3,
             log,
-            out debug
+            out debug,
+            fortschritt,
+            abbruch
         );
     }
 }

@@ -15,9 +15,11 @@ namespace Stundenplan_V2
         public List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> Generate(
             StundenplanInput input,
             Action<string> log,
-            out string debug)
+            out string debug,
+            Action<SolverFortschritt> fortschritt = null,
+            System.Threading.CancellationToken abbruch = default)
         {
-            return solver.Solve(input, log, out debug);
+            return solver.Solve(input, log, out debug, fortschritt, abbruch);
         }
     }
 }
