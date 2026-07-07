@@ -3593,8 +3593,11 @@ namespace Stundenplan_V2
                 return;
             }
 
-            // Was liegt im Ziel (für Swap)? Blöcke des gleichen Blocks ignorieren.
-            var zielBeleger = FindeBelegerInSlots(zielSlots, blockIdx);
+            // Was liegt im Ziel und kollidiert HART (gleiche Klasse/gleicher Lehrer)?
+            // Fremde Unterrichte (andere Klasse + anderer Lehrer) zählen nicht —
+            // dann ist das Feld für diesen Block frei und es wird ko-platziert
+            // (gleiches Verhalten wie beim Einplanen über den Parkbereich).
+            var zielBeleger = FindeKonfligierendeBeleger(blockIdx, zielSlots);
 
             // Aktion bestimmen
             bool zielLeer = zielBeleger.Count == 0;
@@ -4131,6 +4134,49 @@ namespace Stundenplan_V2
                     if (b == ignorierterBlock) continue;
                     if (_belegung[b, s] == 1)
                         liste.Add((b, s));
+                }
+            return liste;
+        }
+
+        // Finde nur die Beleger in den Zielslots, die mit dem gezogenen Block
+        // tatsächlich HART kollidieren (gleicher Lehrer oder gleiche Klasse),
+        // unter Beachtung derselben Ausnahmen wie FindeHartenKonflikt
+        // (A/B-Wochen, gleiches KKK, gleiche UNr). Fremde Unterrichte in anderer
+        // Klasse mit anderem Lehrer zählen NICHT als Beleger — auf ein in der
+        // Ansicht leeres Feld darf ko-platziert werden (wie über den Parkbereich).
+        private List<(int b, int s)> FindeKonfligierendeBeleger(int blockIdx, List<int> zielSlots)
+        {
+            var block = _blocks[blockIdx];
+            string wg = (block.WochenGruppe ?? "").Trim();
+            string kkk = (block.KKK ?? "").Trim();
+            var lehrerSet = new HashSet<string>(
+                block.Teile.Select(t => t.Lehrer).Where(l => !string.IsNullOrWhiteSpace(l)));
+            var klassenSet = new HashSet<string>(block.Teile.SelectMany(t => t.Klassen));
+
+            var liste = new List<(int, int)>();
+            foreach (int s in zielSlots)
+                for (int b2 = 0; b2 < _blocks.Count; b2++)
+                {
+                    if (b2 == blockIdx) continue;
+                    if (_belegung[b2, s] != 1) continue;
+
+                    string wg2 = (_blocks[b2].WochenGruppe ?? "").Trim();
+                    if ((wg == "A" && wg2 == "B") || (wg == "B" && wg2 == "A"))
+                        continue; // A/B-Wochen kollidieren nie
+
+                    bool lehrerKonflikt = _blocks[b2].Teile.Any(t => lehrerSet.Contains(t.Lehrer));
+
+                    bool klassenKonflikt = false;
+                    if (_blocks[b2].UNr != block.UNr)
+                    {
+                        string kkk2 = (_blocks[b2].KKK ?? "").Trim();
+                        bool gleichesKkk = !string.IsNullOrEmpty(kkk) && kkk == kkk2;
+                        if (!gleichesKkk)
+                            klassenKonflikt = _blocks[b2].Teile.Any(t => t.Klassen.Any(k => klassenSet.Contains(k)));
+                    }
+
+                    if (lehrerKonflikt || klassenKonflikt)
+                        liste.Add((b2, s));
                 }
             return liste;
         }
