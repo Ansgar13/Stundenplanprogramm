@@ -60,8 +60,9 @@
              darunter zieht damit direkt RowPlaene gegen RowDetail. -->
         <Grid Grid.Row="2">
             <Grid.RowDefinitions>
-                <RowDefinition Height="*"/>
+                <RowDefinition Height="*" MinHeight="150"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="140" MinHeight="70" x:Name="RowPark"/>
             </Grid.RowDefinitions>
 
         <ScrollViewer x:Name="ScrollEditAnsicht" Grid.Row="0" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
@@ -278,10 +279,14 @@
         </DockPanel>
         </ScrollViewer>
 
-        <!-- Parkbereich (waagerecht unter den Plaenen) -->
-        <Border x:Name="BrdParkbereich" Grid.Row="1" BorderBrush="#CCC" BorderThickness="1" Margin="0,8,0,0"
-                Background="#FAFAFA" AllowDrop="True" Drop="Parkbereich_Drop" DragOver="Zelle_DragOver"
-                Height="90">
+        <!-- Verschiebbarer Trenner: Plaene <-> Parkbereich -->
+        <GridSplitter x:Name="SplitterPark" Grid.Row="1" Height="6" HorizontalAlignment="Stretch"
+                      VerticalAlignment="Center" Background="#999"
+                      ResizeBehavior="PreviousAndNext" ResizeDirection="Rows"/>
+
+        <!-- Parkbereich (waagerecht unter den Plaenen), Hoehe ueber RowPark/Splitter verstellbar -->
+        <Border x:Name="BrdParkbereich" Grid.Row="2" BorderBrush="#CCC" BorderThickness="1" Margin="0,4,0,0"
+                Background="#FAFAFA" AllowDrop="True" Drop="Parkbereich_Drop" DragOver="Zelle_DragOver">
             <DockPanel>
                 <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="6,4,6,2">
                     <TextBlock Text="Parkbereich (nicht verplant) - hierher ziehen zum Entplanen"
@@ -290,8 +295,8 @@
                               VerticalAlignment="Center" Margin="20,0,0,0"
                               Checked="ChkIgnorierteZeigen_Changed" Unchecked="ChkIgnorierteZeigen_Changed"/>
                 </StackPanel>
-                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-                    <StackPanel x:Name="ParkPanel" Orientation="Horizontal" Margin="4"/>
+                <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                    <WrapPanel x:Name="ParkPanel" Orientation="Horizontal" Margin="4"/>
                 </ScrollViewer>
             </DockPanel>
         </Border>
