@@ -364,8 +364,11 @@ namespace Stundenplan_V2
             // am selben Tag sind damit eine Verletzung.
             // =====================================================
             {
-                // (Klasse, Fach) -> Liste der (block, slotIndex) mit Belegung
-                var platz = new Dictionary<(string klasse, string fach), List<(int b, int s)>>();
+                // (Klasse, Fach) -> Menge der (block, slotIndex) mit Belegung.
+                // HashSet, damit zwei Teile desselben UNr/Blocks mit gleichem
+                // (Klasse, Fach) aber verschiedenem Lehrer (Team-Teaching) nur
+                // EINMAL zählen — konsistent zum Solver (fachKlasseMap als HashSet).
+                var platz = new Dictionary<(string klasse, string fach), HashSet<(int b, int s)>>();
                 for (int b = 0; b < B; b++)
                     for (int s = 0; s < S; s++)
                     {
@@ -374,9 +377,9 @@ namespace Stundenplan_V2
                             foreach (var k in t.Klassen)
                             {
                                 var key = (k, t.Fach);
-                                if (!platz.TryGetValue(key, out var lst))
-                                    platz[key] = lst = new List<(int, int)>();
-                                lst.Add((b, s));
+                                if (!platz.TryGetValue(key, out var set))
+                                    platz[key] = set = new HashSet<(int, int)>();
+                                set.Add((b, s));
                             }
                     }
 
