@@ -14,7 +14,8 @@ namespace Stundenplan_V2
             int UNr,
             string Lehrer,
             string Fach,
-            string Details);
+            string Details,
+            string Klasse = "");
 
         public static List<Verletzung> Prüfe(
             int[,] belegung,
@@ -356,28 +357,55 @@ namespace Stundenplan_V2
                     }
 
             // =====================================================
-            // 8c. FACH PRO KLASSE PRO TAG: max 2 Stunden desselben Fachs je Klasse und Tag
+            // 8c. FACH PRO KLASSE PRO TAG (wie im Solver: Sum(x) <= 1 + hatDoppel)
+            // Pro Tag höchstens EINE Stunde desselben Fachs je Klasse — außer es ist
+            // eine echte Doppelstunde EINER einzelnen UNr (zwei aufeinanderfolgende
+            // Stunden desselben Blocks). Zwei verschiedene UNrn desselben (Klasse,Fach)
+            // am selben Tag sind damit eine Verletzung.
             // =====================================================
             {
-                var fachZähler = new Dictionary<(string klasse, string tag, string fach), int>();
+                // (Klasse, Fach) -> Liste der (block, slotIndex) mit Belegung
+                var platz = new Dictionary<(string klasse, string fach), List<(int b, int s)>>();
                 for (int b = 0; b < B; b++)
                     for (int s = 0; s < S; s++)
                     {
                         if (belegung[b, s] != 1) continue;
-                        string tag = slots[s].WTag;
                         foreach (var t in blocks[b].Teile)
                             foreach (var k in t.Klassen)
                             {
-                                var key = (k, tag, t.Fach);
-                                fachZähler[key] = fachZähler.TryGetValue(key, out int c) ? c + 1 : 1;
+                                var key = (k, t.Fach);
+                                if (!platz.TryGetValue(key, out var lst))
+                                    platz[key] = lst = new List<(int, int)>();
+                                lst.Add((b, s));
                             }
                     }
-                foreach (var kv in fachZähler)
-                    if (kv.Value > 2)
-                        verletzungen.Add(new Verletzung(
-                            "Fach pro Klasse pro Tag", kv.Key.tag, 0, 0,
-                            "", kv.Key.fach,
-                            $"Klasse {kv.Key.klasse}: {kv.Value}x {kv.Key.fach} an {kv.Key.tag} (max 2)"));
+
+                foreach (var kv in platz)
+                    foreach (var g in kv.Value.GroupBy(p => slots[p.s].WTag))
+                    {
+                        string tag = g.Key;
+                        int total = g.Count();
+                        if (total <= 1) continue;
+
+                        // Echte Doppelstunde EINER UNr? (ein Block mit zwei
+                        // aufeinanderfolgenden Stunden am selben Tag)
+                        bool hatDoppel = false;
+                        foreach (var blockGrp in g.GroupBy(p => p.b))
+                        {
+                            var stunden = blockGrp.Select(p => slots[p.s].Stunde).OrderBy(x => x).ToList();
+                            for (int i = 0; i + 1 < stunden.Count; i++)
+                                if (stunden[i + 1] == stunden[i] + 1) { hatDoppel = true; break; }
+                            if (hatDoppel) break;
+                        }
+
+                        int erlaubt = 1 + (hatDoppel ? 1 : 0);
+                        if (total > erlaubt)
+                            verletzungen.Add(new Verletzung(
+                                "Fach pro Klasse pro Tag", tag, 0, 0, "", kv.Key.fach,
+                                $"Klasse {kv.Key.klasse}: {total}x {kv.Key.fach} an {tag} " +
+                                $"(erlaubt: {erlaubt} — max. 1, außer echte Doppelstunde einer UNr)",
+                                kv.Key.klasse));
+                    }
             }
 
             // =====================================================

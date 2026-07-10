@@ -3711,6 +3711,12 @@ namespace Stundenplan_V2
                 }
             }
 
+            // Diagnostische Folgen der Verschiebung (vorher -> nachher) anzeigen,
+            // analog zur Tausch-Diagnose. Muss VOR dem Anwenden erfolgen, damit
+            // _belegung noch den Ausgangszustand enthält.
+            var betroffeneLehrerV = ErmittleGeaenderteLehrer(_belegung, probe);
+            ZeigeDiagnoseDiffKern(probe, betroffeneLehrerV);
+
             _belegung = probe;
 
             // Fixierung mitziehen: alte fixierte Slots entfixieren, Ziel-Slots fixieren.
@@ -3918,9 +3924,20 @@ namespace Stundenplan_V2
             int stunde = _slots[slotIdx].Stunde;
 
             return _aktuelleVerletzungen.Any(v =>
-                v.UNr == block.UNr &&
-                (v.Tag == "" || v.Tag == tag) &&
-                (v.Stunde == 0 || v.Stunde == stunde));
+            {
+                // Nicht an eine einzelne UNr gebundene Verletzung (UNr = 0),
+                // z.B. "Fach pro Klasse pro Tag": über Fach + Klasse + Tag zuordnen,
+                // damit sie auch bei Aufteilung auf mehrere UNrn markiert wird.
+                if (v.UNr == 0 && v.Kategorie == "Fach pro Klasse pro Tag")
+                    return v.Tag == tag
+                        && block.Teile.Any(t => t.Fach == v.Fach
+                                                && t.Klassen.Contains(v.Klasse));
+
+                // An eine konkrete UNr gebundene Verletzungen wie bisher.
+                return v.UNr == block.UNr
+                    && (v.Tag == "" || v.Tag == tag)
+                    && (v.Stunde == 0 || v.Stunde == stunde);
+            });
         }
 
         // =====================================================
