@@ -12,5 +12,9 @@ namespace Stundenplan_V2
         public double BesterZielwert { get; set; }
         public System.TimeSpan Zeit { get; set; }
         public int GefundeneLösungen { get; set; }
+
+        // Bisher gefundene Lösungen (vorläufiges Label, Solver-Zielwert, BadUnits).
+        public System.Collections.Generic.List<(string label, int quality, int badUnits)> Lösungen { get; set; }
+            = new System.Collections.Generic.List<(string label, int quality, int badUnits)>();
     }
 }

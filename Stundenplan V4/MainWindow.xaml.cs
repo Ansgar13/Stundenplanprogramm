@@ -76,6 +76,10 @@ namespace Stundenplan_V2
                 excelPfad = dlg.FileName;
                 input = ExcelLoader.Lade(excelPfad);
 
+                // Namen der eingelesenen Datei im Hauptfenster anzeigen
+                TxtDatei.Text = "Datei: " + System.IO.Path.GetFileName(excelPfad);
+                Title = "Stundenplan V2 – " + System.IO.Path.GetFileName(excelPfad);
+
                 // FT-Diagnose ausgeben: welche freien Tage aus Tabelle "FT"
                 // registriert bzw. (mit Grund) verworfen wurden.
                 if (input.FtDiagnose != null)
@@ -134,7 +138,8 @@ namespace Stundenplan_V2
                     Log($"Hinweis: Gesicherte Lösungen konnten nicht gelesen werden: {ex.Message}");
                 }
 
-                TxtStatus.Text = "Excel erfolgreich eingelesen.";
+                TxtStatus.Text = $"Excel erfolgreich eingelesen um {DateTime.Now:HH:mm:ss} Uhr.";
+                Log($"Excel-Datei '{System.IO.Path.GetFileName(excelPfad)}' eingelesen um {DateTime.Now:HH:mm:ss} Uhr.");
             }
         }
 

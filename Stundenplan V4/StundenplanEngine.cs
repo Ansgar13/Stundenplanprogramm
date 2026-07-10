@@ -30,6 +30,7 @@ namespace Stundenplan_V2
             private int _gefunden = 0;
             private double _bester = 0;
             private bool _hatZielwert = false;
+            private readonly List<(string label, int quality, int badUnits)> _lösungen = new();
 
             public FortschrittReporter(Action<SolverFortschritt> sink) { _sink = sink; }
 
@@ -56,6 +57,17 @@ namespace Stundenplan_V2
                 Emit(force: true);
             }
 
+            // Eine fertige Lösung melden (vorläufiges Label, Solver-Zielwert, BadUnits).
+            public void MeldeGefundeneLösung(string label, int quality, int badUnits)
+            {
+                lock (_lock)
+                {
+                    _lösungen.Add((label, quality, badUnits));
+                    _gefunden = _lösungen.Count;
+                }
+                Emit(force: true);
+            }
+
             private void Emit(bool force)
             {
                 if (_sink == null) return;
@@ -74,7 +86,8 @@ namespace Stundenplan_V2
                         HatZielwert = _hatZielwert,
                         BesterZielwert = _bester,
                         Zeit = _sw.Elapsed,
-                        GefundeneLösungen = _gefunden
+                        GefundeneLösungen = _gefunden,
+                        Lösungen = new List<(string, int, int)>(_lösungen)
                     };
                 }
                 try { _sink(f); } catch { /* UI-Fehler dürfen die Suche nicht stören */ }
@@ -234,9 +247,10 @@ namespace Stundenplan_V2
                 RoomConstraint.Add(model, x, blocks, fachraumLimit, S);
 
             // === OPTIONAL: Doppelstunden ===
+            BoolVar[,] d = null;
             if (mitDoppelstunden)
             {
-                var d = new BoolVar[B, S];
+                d = new BoolVar[B, S];
                 for (int b = 0; b < B; b++)
                     for (int s = 0; s < S - 1; s++)
                         if (slots[s].WTag == slots[s + 1].WTag &&
@@ -404,13 +418,47 @@ namespace Stundenplan_V2
                         .Where(z => z.z.WTag == tag)
                         .Select(z => z.i)
                         .ToList();
+                    var daySlotsSet = new HashSet<int>(daySlots);
                     foreach (var kv in fachKlasseMap)
                     {
                         var vars = new List<IntVar>();
                         foreach (var b in kv.Value)
                             foreach (var s in daySlots)
                                 vars.Add(x[b, s]);
-                        model.Add(LinearExpr.Sum(vars) <= 2);
+
+                        if (d != null)
+                        {
+                            // Exakt wie im echten Solver: Sum(x) <= 1 + hatDoppel.
+                            // hatDoppel zählt nur eine Doppelstunde INNERHALB einer UNr;
+                            // zwei verschiedene UNrn desselben (Klasse,Fach) können daher
+                            // pro Tag nicht gemeinsam liegen.
+                            var doppelVars = new List<BoolVar>();
+                            foreach (var b in kv.Value)
+                                foreach (var s in daySlots)
+                                {
+                                    if (s + 1 >= S) continue;
+                                    if (!daySlotsSet.Contains(s + 1)) continue;
+                                    if (d[b, s] == null) continue;
+                                    doppelVars.Add(d[b, s]);
+                                }
+                            var hatDoppel = model.NewBoolVar("diag_hatDoppel");
+                            if (doppelVars.Count > 0)
+                            {
+                                foreach (var dv in doppelVars)
+                                    model.Add(hatDoppel >= dv);
+                                model.Add(hatDoppel <= LinearExpr.Sum(doppelVars));
+                            }
+                            else
+                            {
+                                model.Add(hatDoppel == 0);
+                            }
+                            model.Add(LinearExpr.Sum(vars) <= 1 + hatDoppel);
+                        }
+                        else
+                        {
+                            // Ohne modellierte Doppelstunden (frühe Diagnose-Stufe): loser <= 2.
+                            model.Add(LinearExpr.Sum(vars) <= 2);
+                        }
                     }
                 }
             }
@@ -981,7 +1029,9 @@ namespace Stundenplan_V2
                 lehrerFreiTageMinus2: lehrerFreiTageMinus2,
                 lehrerFreiTageMinus3: lehrerFreiTageMinus3,
                 reporter: reporter, abbruch: abbruch);
-            reporter?.AddGefunden(ohneLösungen.Count);
+            if (reporter != null)
+                foreach (var l in ohneLösungen)
+                    reporter.MeldeGefundeneLösung(l.label, l.quality, l.badUnits);
 
             log($"  Ohne Tausch: {ohneLösungen.Count} Lösungen" +
                 (ohneLösungen.Count > 0
@@ -1067,7 +1117,7 @@ namespace Stundenplan_V2
                     {
                         lösungen = PlanenIntern(
                             excelPfad, getauschteBlöcke, getauschteSlots, fachraumLimit, getauschteFreieTage,
-                            log, maxLösungen: anzahlLösungenMit, tauschKey: tauschKey,
+                            log, maxLösungen: 1, tauschKey: tauschKey,
                             zeitlimitSekunden: zeitlimitSekunden,
                             nichtFreieTage: nichtFreieTage,
                             randomSeed: seed,
@@ -1093,7 +1143,9 @@ namespace Stundenplan_V2
                         }
                         log($"  Seed {seed}: keine Lösung, versuche nächsten...");
                     }
-                    reporter?.AddGefunden(lösungen.Count);
+                    if (reporter != null)
+                        foreach (var l in lösungen)
+                            reporter.MeldeGefundeneLösung(l.label, l.quality, l.badUnits);
 
                     if (lösungen.Count == 0)
                     {
@@ -1136,7 +1188,22 @@ namespace Stundenplan_V2
                 ergebnis.Add((l.quality, l.badUnits, l.belegung, neuesLabel, blocks));
             }
 
+            // Nach Belegung deduplizieren (identische Stundenpläne aus verschiedenen
+            // Kombinationen zusammenfassen, jeweils die beste Qualität behalten),
+            // dann die N besten insgesamt nehmen.
+            string BelegungSig(int[,] bel)
+            {
+                var sb = new System.Text.StringBuilder();
+                int rows = bel.GetLength(0), cols = bel.GetLength(1);
+                for (int i = 0; i < rows; i++)
+                    for (int j = 0; j < cols; j++)
+                        if (bel[i, j] == 1) { sb.Append(i); sb.Append(':'); sb.Append(j); sb.Append(';'); }
+                return sb.ToString();
+            }
+
             var topNMitTausch = mitTauschLösungen
+                .GroupBy(l => BelegungSig(l.belegung))
+                .Select(g => g.OrderByDescending(l => l.quality).First())
                 .OrderByDescending(l => l.quality)
                 .Take(anzahlLösungenMit)
                 .ToList();
@@ -2556,6 +2623,17 @@ namespace Stundenplan_V2
             grund = null;
             var blockByUnr = getauschteBlöcke.ToDictionary(b => b.UNr);
 
+            // Kurzbeschreibung einer UNr für aussagekräftige Meldungen.
+            string Beschr(UnterrichtsBlock b)
+            {
+                string faecher = string.Join("/", b.Teile.Select(t => t.Fach)
+                    .Where(f => !string.IsNullOrWhiteSpace(f)).Distinct());
+                string klassen = string.Join(",", b.Teile.SelectMany(t => t.Klassen).Distinct());
+                if (faecher.Length == 0) faecher = "?";
+                if (klassen.Length == 0) klassen = "?";
+                return $"Fach {faecher}, Kl {klassen}";
+            }
+
             // (1) Fix-Slot-Konflikte prüfen
             foreach (var slot in slots)
             {
@@ -2569,24 +2647,48 @@ namespace Stundenplan_V2
                     {
                         if (slot.LehrerWunsch.TryGetValue(t.Lehrer, out int lw) && lw == -3)
                         {
-                            grund = $"Lehrer {t.Lehrer} ist in Fix-Slot {slot.WTag} Std.{slot.Stunde} gesperrt (UNr {unr})";
+                            grund = $"Lehrer {t.Lehrer} ist in Fix-Slot {slot.WTag} Std.{slot.Stunde} gesperrt (-3) — " +
+                                    $"UNr {unr} ({Beschr(block)})";
                             return true;
                         }
                     }
                 }
 
-                // (1b) Zwei Fix-Blöcke mit gleichem Lehrer im selben Slot
+                // (1b) Zwei Fix-Blöcke mit gleichem Lehrer im selben Slot.
+                // A/B-Wochen-bewusst: ein Paar A↔B kollidiert NICHT (Lehrer
+                // unterrichtet den einen in A-, den anderen in B-Wochen).
                 if (slot.FixUNrn.Count < 2) continue;
-                var lehrerImSlot = new HashSet<string>();
+                var lehrerImSlot = new Dictionary<string, List<(int unr, string wg)>>();
                 foreach (var unr in slot.FixUNrn)
                 {
                     if (!blockByUnr.TryGetValue(unr, out var block)) continue;
+                    string wg = (block.WochenGruppe ?? "").Trim();
                     foreach (var t in block.Teile)
-                        if (!lehrerImSlot.Add(t.Lehrer))
+                    {
+                        if (string.IsNullOrWhiteSpace(t.Lehrer)) continue;
+
+                        if (lehrerImSlot.TryGetValue(t.Lehrer, out var vorhandene))
                         {
-                            grund = $"Fix-Slot-Konflikt: {t.Lehrer} in {slot.WTag} Std.{slot.Stunde}";
-                            return true;
+                            foreach (var (unr1, wg1) in vorhandene)
+                            {
+                                if (unr1 == unr) continue; // gleicher Block
+                                bool abGetrennt = (wg1 == "A" && wg == "B") || (wg1 == "B" && wg == "A");
+                                if (abGetrennt) continue;   // A/B kollidiert nie
+
+                                var b1 = blockByUnr[unr1];
+                                grund = $"Fix-Slot-Konflikt: Lehrer {t.Lehrer} müsste nach dem Tausch die fixierten " +
+                                        $"UNr {unr1} ({Beschr(b1)}) und UNr {unr} ({Beschr(block)}) " +
+                                        $"gleichzeitig in {slot.WTag} Std.{slot.Stunde} unterrichten";
+                                return true;
+                            }
+                            if (!vorhandene.Any(x => x.unr == unr))
+                                vorhandene.Add((unr, wg));
                         }
+                        else
+                        {
+                            lehrerImSlot[t.Lehrer] = new List<(int, string)> { (unr, wg) };
+                        }
+                    }
                 }
             }
 
@@ -2611,7 +2713,8 @@ namespace Stundenplan_V2
 
                 if (totalWst > verfügbar)
                 {
-                    grund = $"Wst-Überlauf: {kv.Key} hat {totalWst} Wst aber nur {verfügbar} Slots";
+                    grund = $"Wst-Überlauf: Lehrer {kv.Key} hat nach dem Tausch {totalWst} Wochenstunden, " +
+                            $"aber nur {verfügbar} freie Slots (von {totalSlots}, davon {gesperrteSlots} durch -3 gesperrt)";
                     return true;
                 }
             }
@@ -2623,7 +2726,7 @@ namespace Stundenplan_V2
                 if (lehrerImBlock.Count != lehrerImBlock.Distinct().Count())
                 {
                     var dupl = lehrerImBlock.GroupBy(x => x).Where(g => g.Count() > 1).Select(g => g.Key).First();
-                    grund = $"Duplikat: {dupl} zweimal in UNr {b.UNr}";
+                    grund = $"Lehrer-Duplikat: {dupl} zweimal in UNr {b.UNr} ({Beschr(b)})";
                     return true;
                 }
             }
@@ -2705,14 +2808,14 @@ namespace Stundenplan_V2
             foreach (var (g, k, paare) in kandidaten
                 .Where(x => x.paare.Count == 1)
                 .OrderByDescending(x => x.nettoGewinn))
-                log($"    [{k}]: {g:+0;-0;0} Konflikte");
+                log($"    [{k}]: Konfliktreduktion {g:+0;-0;0}");
 
             // Beste 10 Kombinationen gesamt
             log($"  Beste Kombinationen gesamt:");
             foreach (var (g, k, _) in kandidaten
                 .OrderByDescending(x => x.nettoGewinn)
                 .Take(10))
-                log($"    [{k}]: {g:+0;-0;0} Konflikte");
+                log($"    [{k}]: Konfliktreduktion {g:+0;-0;0}");
 
             var gesehen = new HashSet<string>();
             var result = new List<List<TauschPaar>>();
@@ -2728,7 +2831,7 @@ namespace Stundenplan_V2
                 if (gesehen.Contains(key)) continue;
                 gesehen.Add(key);
 
-                log($"  → Kandidat {result.Count + 1}: [{key}] {gewinn:+0;-0;0} Konflikte");
+                log($"  → Kandidat {result.Count + 1}: [{key}] Konfliktreduktion {gewinn:+0;-0;0}");
 
                 result.Add(kombi);
                 if (result.Count >= topN) break;
