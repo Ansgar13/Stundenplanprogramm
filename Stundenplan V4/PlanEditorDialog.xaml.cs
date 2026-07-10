@@ -2109,17 +2109,26 @@ namespace Stundenplan_V2
             var ergebnis = new HashSet<int> { blockIdx };
             var basis = _blocks[blockIdx];
 
-            // Alle (Klasse, Fach)-Paare des angeklickten Blocks
+            // Alle (Klasse, Fach)-Paare des angeklickten Blocks.
+            // Zeilen mit leerem/fehlendem Fach werden bewusst ausgeschlossen:
+            // ein leeres Fach ist kein "gleiches Fach" und würde sonst dazu
+            // führen, dass beliebige Blöcke mit derselben Klasse und ebenfalls
+            // leerem Fach fälschlich als dieselbe päd. Einheit gelten.
             var basisPaare = new HashSet<(string klasse, string fach)>();
             foreach (var t in basis.Teile)
+            {
+                if (string.IsNullOrWhiteSpace(t.Fach)) continue;
                 foreach (var k in t.Klassen)
                     basisPaare.Add((k, t.Fach));
+            }
+            if (basisPaare.Count == 0) return ergebnis;
 
             for (int b = 0; b < _blocks.Count; b++)
             {
                 if (b == blockIdx) continue;
                 foreach (var t in _blocks[b].Teile)
                 {
+                    if (string.IsNullOrWhiteSpace(t.Fach)) continue;
                     bool match = t.Klassen.Any(k => basisPaare.Contains((k, t.Fach)));
                     if (match) { ergebnis.Add(b); break; }
                 }
@@ -3403,6 +3412,8 @@ namespace Stundenplan_V2
 
                     var gezaehlt = new HashSet<string>();
                     foreach (var teil in block.Teile)
+                    {
+                        if (string.IsNullOrWhiteSpace(teil.Fach)) continue; // leeres Fach bildet keine päd. Einheit
                         foreach (var k in teil.Klassen)
                         {
                             // pro (Klasse, Fach)-Kombination nur einmal pro Slot zählen
@@ -3419,6 +3430,7 @@ namespace Stundenplan_V2
                             if (_slots[s].Stunde >= 6)
                                 spaeteProEinheit[kf].Add((b, s));
                         }
+                    }
                 }
             }
 

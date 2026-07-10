@@ -144,6 +144,18 @@ namespace Stundenplan_V2
                 if (ersteAktiveZeile == null) continue;
 
                 int wst = Cell(ersteAktiveZeile, header1, "Wst").GetValue<int>();
+
+                // Unterrichte mit Wst=0 komplett herausfiltern: kein Block wird
+                // erzeugt, und die UNr wird zusätzlich als "ignoriert" markiert,
+                // damit sie weiter unten auch aus 'Fix UNrn' entfernt wird. So
+                // taucht eine solche UNr nirgends mehr auf (Solver, Validator,
+                // ChkFix, Plan-Editor) und kann nie zu Infeasibility führen.
+                if (wst == 0)
+                {
+                    ignorierteUNrn.Add(uNr);
+                    continue;
+                }
+
                 string zeilentext = GetOptional(ersteAktiveZeile, header1, "ZeilenText");
                 string zeilentext2 = GetOptional(ersteAktiveZeile, header1, "ZeilenText-2");
                 string kkk = GetOptional(ersteAktiveZeile, header1, "KKK").Trim();
