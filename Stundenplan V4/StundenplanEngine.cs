@@ -959,10 +959,15 @@ namespace Stundenplan_V2
             Action<string> log,
             out string debug,
             Action<SolverFortschritt> fortschritt = null,
-            System.Threading.CancellationToken abbruch = default)
+            System.Threading.CancellationToken abbruch = default,
+            int mindestAbstandBloecke = 5)
         {
             // Diagnose-Buffer für aktuellen Lauf zurücksetzen
             _infeasibleDetails.Clear();
+
+            // Ein "Block-Umzug" ändert i.d.R. 2 Zellen (alter Slot 0, neuer Slot 1),
+            // daher Umrechnung Blöcke -> Bits für die Hamming-Abstands-Constraints.
+            int mindestAbstandBits = Math.Max(1, mindestAbstandBloecke * 2);
 
             var reporter = fortschritt != null ? new FortschrittReporter(fortschritt) : null;
 
@@ -1014,6 +1019,7 @@ namespace Stundenplan_V2
                 log, maxLösungen: anzahlLösungenOhne, tauschKey: null,
                 zeitlimitSekunden: zeitlimitSekunden,
                 nichtFreieTage: nichtFreieTage,
+                mindestAbstandBloecke: mindestAbstandBloecke,
                 gewichtFrüh: gewichtFrüh, gewichtSpät: gewichtSpät,
                 gewichtPäd: gewichtPäd, gewichtFrei: gewichtFrei,
                 strafeHohl: strafeHohl, strafeDoppelHohl: strafeDoppelHohl,
@@ -1121,6 +1127,7 @@ namespace Stundenplan_V2
                             zeitlimitSekunden: zeitlimitSekunden,
                             nichtFreieTage: nichtFreieTage,
                             randomSeed: seed,
+                            mindestAbstandBloecke: mindestAbstandBloecke,
                             gewichtFrüh: gewichtFrüh, gewichtSpät: gewichtSpät,
                             gewichtPäd: gewichtPäd, gewichtFrei: gewichtFrei,
                             strafeHohl: strafeHohl, strafeDoppelHohl: strafeDoppelHohl,
@@ -1175,11 +1182,57 @@ namespace Stundenplan_V2
             // --------------------------------------------------
             var ergebnis = new List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)>();
 
-            // beste OhneTausch-Lösungen → nach Qualität sortieren und Labels neu vergeben
-            var ohneSortiert = ohneLösungen
+            // --------------------------------------------------
+            // Hilfsfunktionen für strukturell diverse Top-N-Auswahl
+            // (gleicher Mindestabstand wie im Solver, hier als Nachfilter
+            // für die finale Auswahl über mehrere Solverläufe hinweg)
+            // --------------------------------------------------
+            int HammingAbstand(int[,] a, int[,] b)
+            {
+                int diff = 0;
+                int rows = a.GetLength(0), cols = a.GetLength(1);
+                for (int i = 0; i < rows; i++)
+                    for (int j = 0; j < cols; j++)
+                        if (a[i, j] != b[i, j]) diff++;
+                return diff;
+            }
+
+            List<T> WähleDiverseTopN<T>(
+                List<T> kandidatenNachQualitätSortiert,
+                int n,
+                Func<T, int[,]> belegungSelector,
+                string kontext)
+            {
+                var gewählt = new List<T>();
+                var übrig = new List<T>(kandidatenNachQualitätSortiert);
+
+                while (gewählt.Count < n && übrig.Count > 0)
+                {
+                    var kandidat = übrig.FirstOrDefault(c =>
+                        gewählt.All(g => HammingAbstand(belegungSelector(g), belegungSelector(c)) >= mindestAbstandBits));
+
+                    if (kandidat == null)
+                    {
+                        // Kein struktureller diverser Kandidat mehr übrig →
+                        // trotzdem die nächstbeste Lösung nehmen, damit die
+                        // gewünschte Anzahl möglichst erreicht wird.
+                        kandidat = übrig.First();
+                        log($"  [{kontext}] Kein Kandidat mit Mindestabstand {mindestAbstandBloecke} Blöcken mehr verfügbar – nehme nächstbeste Lösung trotzdem.");
+                    }
+
+                    gewählt.Add(kandidat);
+                    übrig.Remove(kandidat);
+                }
+
+                return gewählt;
+            }
+
+            // beste OhneTausch-Lösungen → nach Qualität sortieren, dann
+            // diversitätsbewusst die N besten (strukturell unterschiedlichen) auswählen
+            var ohneNachQualität = ohneLösungen
                 .OrderByDescending(l => l.quality)
-                .Take(anzahlLösungenOhne)
                 .ToList();
+            var ohneSortiert = WähleDiverseTopN(ohneNachQualität, anzahlLösungenOhne, l => l.belegung, "OhneTausch");
 
             for (int i = 0; i < ohneSortiert.Count; i++)
             {
@@ -1201,12 +1254,12 @@ namespace Stundenplan_V2
                 return sb.ToString();
             }
 
-            var topNMitTausch = mitTauschLösungen
+            var mitTauschDedupliziert = mitTauschLösungen
                 .GroupBy(l => BelegungSig(l.belegung))
                 .Select(g => g.OrderByDescending(l => l.quality).First())
                 .OrderByDescending(l => l.quality)
-                .Take(anzahlLösungenMit)
                 .ToList();
+            var topNMitTausch = WähleDiverseTopN(mitTauschDedupliziert, anzahlLösungenMit, l => l.belegung, "MitTausch");
 
             // Labels neu vergeben: Tausch-Key behalten, Nummer nach Qualitätsrang
             var tauschNummern = new Dictionary<string, int>(); // tauschKey → nächste Nummer
@@ -1269,6 +1322,7 @@ namespace Stundenplan_V2
             int zeitlimitSekunden = 10,
             HashSet<string> nichtFreieTage = null,
             int randomSeed = 1,
+            int mindestAbstandBloecke = 5,
             int gewichtFrüh = 1,
             int gewichtSpät = 5,
             int gewichtPäd = 5,
@@ -2439,20 +2493,37 @@ namespace Stundenplan_V2
 
             lösungen.Add((bestQuality, bestBad, bestBelegung, labelPrefix + "_1"));
 
+            // Ein "Block-Umzug" ändert i.d.R. 2 Zellen (alter Slot 0, neuer Slot 1),
+            // daher Umrechnung Blöcke -> Bits für die Hamming-Abstands-Constraint.
+            int mindestAbstandBitsIntern = Math.Max(1, mindestAbstandBloecke * 2);
+
             // Phase 2: Weitere diverse Lösungen
+            // Statt nur die exakte Vorgänger-Belegung zu verbieten (das führt zu
+            // fast identischen Lösungen, da der Solver nur minimal etwas ändert),
+            // wird ein Mindest-Hamming-Abstand zur direkt vorherigen Lösung erzwungen:
+            // mind. "mindestAbstandBloecke" Blöcke müssen sich anders platzieren.
             for (int k = 1; k < maxLösungen; k++)
             {
                 model.Add(qualityExpr <= bestQuality);
 
-                var forbid = new List<ILiteral>();
+                var belegteVars = new List<BoolVar>(); // Zellen, die in der Vorlösung =1 waren
+                var freieVars = new List<BoolVar>();   // Zellen, die in der Vorlösung =0 waren
+                int anzahlBelegt = 0;
                 for (int b = 0; b < B; b++)
                     for (int s = 0; s < S; s++)
                     {
-                        if (bestBelegung[b, s] == 1) forbid.Add(x[b, s].Not());
-                        else forbid.Add(x[b, s]);
+                        if (bestBelegung[b, s] == 1) { belegteVars.Add(x[b, s]); anzahlBelegt++; }
+                        else freieVars.Add(x[b, s]);
                     }
 
-                model.AddBoolOr(forbid);
+                // Hamming-Abstand = (anzahlBelegt - weiterhin belegte) + neu belegte
+                //                  = anzahlBelegt - sum(belegteVars) + sum(freieVars)
+                // umgeformt, damit nur LinearExpr-Operationen nötig sind, die im
+                // Projekt bereits verwendet werden. LinearExpr.Sum() auf leerer
+                // Liste vermeiden (analog ObjectiveBuilder.cs).
+                LinearExpr freieSumme = freieVars.Count > 0 ? LinearExpr.Sum(freieVars) : LinearExpr.Constant(0);
+                LinearExpr belegteSumme = belegteVars.Count > 0 ? LinearExpr.Sum(belegteVars) : LinearExpr.Constant(0);
+                model.Add(freieSumme - belegteSumme >= mindestAbstandBitsIntern - anzahlBelegt);
 
                 status = progressCb != null ? solver.Solve(model, progressCb) : solver.Solve(model);
 

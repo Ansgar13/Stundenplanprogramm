@@ -306,10 +306,13 @@ namespace Stundenplan_V2
             // B1 = ZeitlimitSekunden
             // B3 = AnzahlLösungenOhneTausch
             // B4 = AnzahlLösungenMitTausch
+            // "Mindestabstand Lösungen" = Mindestanzahl Blöcke, die sich
+            // zwischen zwei ausgegebenen Lösungen unterscheiden müssen.
             // =====================================================
             int zeitlimit = 30;
             int anzahlOhne = 2;
             int anzahlMit = 2;
+            int mindestAbstandBloecke = 5;
             var nichtFreieTage = new HashSet<string>();
             int gewichtFrüh = 1;
             int gewichtSpät = 5;
@@ -345,6 +348,8 @@ namespace Stundenplan_V2
                         int.TryParse(wert, out anzahlOhne);
                     else if (label.Contains("mit tausch"))
                         int.TryParse(wert, out anzahlMit);
+                    else if (label.Contains("mindestabstand"))
+                        int.TryParse(wert, out mindestAbstandBloecke);
                     else if (label.Contains("nichtfreieta") || label.Contains("freiet"))
                     {
                         if (!string.IsNullOrWhiteSpace(wert))
@@ -471,6 +476,7 @@ namespace Stundenplan_V2
                 ZeitlimitSekunden = zeitlimit,
                 AnzahlLösungenOhneTausch = anzahlOhne,
                 AnzahlLösungenMitTausch = anzahlMit,
+                MindestAbstandLösungenBloecke = mindestAbstandBloecke,
                 NichtFreieTage = nichtFreieTage,
                 GewichtFrüheDoppel = gewichtFrüh,
                 GewichtSpäteDoppel = gewichtSpät,

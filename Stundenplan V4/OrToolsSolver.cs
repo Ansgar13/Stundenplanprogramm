@@ -52,7 +52,8 @@ public class OrToolsSolver : ISolver
             log,
             out debug,
             fortschritt,
-            abbruch
+            abbruch,
+            input.MindestAbstandLösungenBloecke
         );
     }
 }

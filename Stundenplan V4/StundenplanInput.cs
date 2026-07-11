@@ -15,6 +15,9 @@ public class StundenplanInput
     public int ZeitlimitSekunden { get; set; } = 30;
     public int AnzahlLösungenOhneTausch { get; set; } = 2;
     public int AnzahlLösungenMitTausch { get; set; } = 2;
+    // Mindestanzahl Blöcke, die sich zwischen zwei ausgegebenen Lösungen
+    // mindestens unterscheiden müssen (verhindert nahezu identische Lösungen).
+    public int MindestAbstandLösungenBloecke { get; set; } = 5;
     public HashSet<string> NichtFreieTage { get; set; } = new HashSet<string>();
 
     // Qualitätsfunktion-Gewichte
