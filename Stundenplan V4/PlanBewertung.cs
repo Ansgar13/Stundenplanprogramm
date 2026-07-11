@@ -130,6 +130,13 @@ namespace Stundenplan_V2
                 }
             }
 
+            // Eine UNr kann mehrere Klassen gleichzeitig unterrichten (kombinierter
+            // Unterricht). Dabei entsteht pro betroffener Klasse ein eigener Key
+            // (Klasse|Zeilentext) in lateSlotsPerUnit. Damit dieselbe UNr trotzdem
+            // nur EINMAL als "bad unit" zählt, wird hier zusätzlich nach UNr
+            // dedupliziert.
+            var badUnrs = new Dictionary<int, List<(string klasse, string ztext)>>();
+
             foreach (var kv in lateSlotsPerUnit)
             {
                 if (kv.Value.Count >= 2)
@@ -138,9 +145,19 @@ namespace Stundenplan_V2
                     string klasse  = parts[0];
                     string ztext   = parts[1];
                     int unr        = unitUnr[kv.Key];
-                    result.BadUnits++;
-                    result.Details.Add($"{klasse} | UNr {unr} | {ztext}");
+
+                    if (!badUnrs.ContainsKey(unr))
+                        badUnrs[unr] = new List<(string, string)>();
+                    badUnrs[unr].Add((klasse, ztext));
                 }
+            }
+
+            foreach (var kv in badUnrs)
+            {
+                result.BadUnits++;
+                string klassen = string.Join(", ", kv.Value.Select(x => x.klasse).Distinct());
+                string ztext   = kv.Value.First().ztext;
+                result.Details.Add($"{klassen} | UNr {kv.Key} | {ztext}");
             }
 
             // -------------------------------------------------
@@ -306,8 +323,9 @@ namespace Stundenplan_V2
             List<UnterrichtsBlock> blocks,
             List<ZeitSlot> slots)
         {
-            var badVars     = new List<BoolVar>();
+            var badVars       = new List<BoolVar>();
             var paedEinheiten = new Dictionary<string, List<int>>();
+            var keyUnr        = new Dictionary<string, int>();
 
             for (int b = 0; b < blocks.Count; b++)
             {
@@ -322,20 +340,36 @@ namespace Stundenplan_V2
 
                         string key = k + "|" + block.Zeilentext;
                         if (!paedEinheiten.ContainsKey(key))
+                        {
                             paedEinheiten[key] = new List<int>();
+                            keyUnr[key] = block.UNr;
+                        }
                         paedEinheiten[key].Add(b);
                     }
             }
 
-            foreach (var kv in paedEinheiten)
+            // Eine UNr kann mehrere Klassen gleichzeitig unterrichten (kombinierter
+            // Unterricht). Dabei entsteht pro betroffener Klasse ein eigener Key
+            // (Klasse|Zeilentext), der aber auf dieselbe UNr zeigt. Damit dieselbe
+            // UNr im Solver-Ziel nicht mehrfach bestraft wird, werden hier alle
+            // Keys mit derselben (repräsentativen) UNr zu EINER Einheit
+            // zusammengefasst - identisch zur Dedup-Logik in Berechne().
+            var gruppenNachUnr = paedEinheiten.GroupBy(kv => keyUnr[kv.Key]);
+
+            foreach (var unrGruppe in gruppenNachUnr)
             {
-                var blockIds = kv.Value;
+                int unr = unrGruppe.Key;
+                var blockIds = unrGruppe
+                    .SelectMany(kv => kv.Value)
+                    .Distinct()
+                    .ToList();
 
                 // Pro spätem Zeitslot: OR über alle (ggf. parallelen) Blöcke
                 // dieser Einheit, die diesen Slot belegen könnten. Damit wird
                 // ein Zeitslot nur EINMAL gezählt, selbst wenn mehrere
-                // parallele Blöcke (z.B. Gruppenteilung) gleichzeitig in
-                // diesem Slot liegen - identisch zur Logik in Berechne().
+                // parallele Blöcke (z.B. Gruppenteilung) oder mehrere Klassen
+                // derselben UNr gleichzeitig in diesem Slot liegen - identisch
+                // zur Logik in Berechne().
                 var lateSlotVars = new List<IntVar>();
 
                 for (int s = 0; s < slots.Count; s++)
@@ -351,7 +385,7 @@ namespace Stundenplan_V2
                     }
                     else
                     {
-                        var occupied = model.NewBoolVar($"lateslot_{kv.Key}_{s}");
+                        var occupied = model.NewBoolVar($"lateslot_unr{unr}_{s}");
                         model.AddMaxEquality(occupied, varsAtS);
                         lateSlotVars.Add(occupied);
                     }
@@ -360,10 +394,10 @@ namespace Stundenplan_V2
                 if (lateSlotVars.Count == 0) continue;
 
                 IntVar lateCount = model.NewIntVar(
-                    0, lateSlotVars.Count, $"late_{kv.Key}");
+                    0, lateSlotVars.Count, $"late_unr{unr}");
                 model.Add(lateCount == LinearExpr.Sum(lateSlotVars));
 
-                BoolVar bad = model.NewBoolVar($"bad_{kv.Key}");
+                BoolVar bad = model.NewBoolVar($"bad_unr{unr}");
                 model.Add(lateCount >= 2).OnlyEnforceIf(bad);
                 model.Add(lateCount <= 1).OnlyEnforceIf(bad.Not());
 
