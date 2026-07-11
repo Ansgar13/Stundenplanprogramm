@@ -96,8 +96,13 @@ namespace Stundenplan_V2
             // -------------------------------------------------
             // Späte pädagogische Einheiten
             // -------------------------------------------------
-            var latePerUnit = new Dictionary<string, int>();
-            var unitUnr     = new Dictionary<string, int>();
+            // Pro Einheit (Klasse|Zeilentext) werden die tatsächlich belegten
+            // SPÄTEN ZEITSLOTS (WTag+Stunde) gesammelt - nicht die Anzahl der
+            // Block-Slot-Treffer. Laufen mehrere parallele Blöcke derselben
+            // Einheit (z.B. Gruppenteilung) im selben Zeitslot, darf das nur
+            // als EIN belegter später Zeitpunkt zählen.
+            var lateSlotsPerUnit = new Dictionary<string, HashSet<(string wtag, int stunde)>>();
+            var unitUnr          = new Dictionary<string, int>();
 
             for (int b = 0; b < B; b++)
             {
@@ -114,20 +119,20 @@ namespace Stundenplan_V2
                             countedClasses.Add(k);
 
                             string key = k + "|" + block.Zeilentext;
-                            if (!latePerUnit.ContainsKey(key))
+                            if (!lateSlotsPerUnit.ContainsKey(key))
                             {
-                                latePerUnit[key] = 0;
+                                lateSlotsPerUnit[key] = new HashSet<(string, int)>();
                                 unitUnr[key] = block.UNr;
                             }
                             if (slots[s].Stunde >= 6)
-                                latePerUnit[key]++;
+                                lateSlotsPerUnit[key].Add((slots[s].WTag, slots[s].Stunde));
                         }
                 }
             }
 
-            foreach (var kv in latePerUnit)
+            foreach (var kv in lateSlotsPerUnit)
             {
-                if (kv.Value >= 2)
+                if (kv.Value.Count >= 2)
                 {
                     var parts      = kv.Key.Split('|');
                     string klasse  = parts[0];
@@ -325,18 +330,38 @@ namespace Stundenplan_V2
             foreach (var kv in paedEinheiten)
             {
                 var blockIds = kv.Value;
-                var lateVars = new List<IntVar>();
 
-                foreach (int b in blockIds)
-                    for (int s = 0; s < slots.Count; s++)
-                        if (slots[s].Stunde >= 6)
-                            lateVars.Add(x[b, s]);
+                // Pro spätem Zeitslot: OR über alle (ggf. parallelen) Blöcke
+                // dieser Einheit, die diesen Slot belegen könnten. Damit wird
+                // ein Zeitslot nur EINMAL gezählt, selbst wenn mehrere
+                // parallele Blöcke (z.B. Gruppenteilung) gleichzeitig in
+                // diesem Slot liegen - identisch zur Logik in Berechne().
+                var lateSlotVars = new List<IntVar>();
 
-                if (lateVars.Count == 0) continue;
+                for (int s = 0; s < slots.Count; s++)
+                {
+                    if (slots[s].Stunde < 6) continue;
+
+                    var varsAtS = blockIds.Select(b => x[b, s]).ToList();
+                    if (varsAtS.Count == 0) continue;
+
+                    if (varsAtS.Count == 1)
+                    {
+                        lateSlotVars.Add(varsAtS[0]);
+                    }
+                    else
+                    {
+                        var occupied = model.NewBoolVar($"lateslot_{kv.Key}_{s}");
+                        model.AddMaxEquality(occupied, varsAtS);
+                        lateSlotVars.Add(occupied);
+                    }
+                }
+
+                if (lateSlotVars.Count == 0) continue;
 
                 IntVar lateCount = model.NewIntVar(
-                    0, lateVars.Count, $"late_{kv.Key}");
-                model.Add(lateCount == LinearExpr.Sum(lateVars));
+                    0, lateSlotVars.Count, $"late_{kv.Key}");
+                model.Add(lateCount == LinearExpr.Sum(lateSlotVars));
 
                 BoolVar bad = model.NewBoolVar($"bad_{kv.Key}");
                 model.Add(lateCount >= 2).OnlyEnforceIf(bad);

@@ -3398,9 +3398,13 @@ namespace Stundenplan_V2
             int B = _blocks.Count, S = _slots.Count;
 
             // Pro (Klasse|Fach)-Einheit sammeln:
-            //   spaeteSlots: Liste (b, s) der Slots ab Stunde 6
-            //   alleSlots:   Liste (b, s) aller Slots der Einheit
-            var spaeteProEinheit = new Dictionary<string, List<(int b, int s)>>();
+            //   spaeteSlots: eindeutige Zeitslot-Indizes (s) ab Stunde 6
+            //   alleProEinheit: Liste (b, s) aller Slots der Einheit (für die Markierung)
+            // Wichtig: bei parallelen Blöcken (z.B. Gruppenteilung) im selben
+            // Zeitslot darf dieser Slot nur EINMAL in die Zählung eingehen,
+            // sonst würde eine einzige späte Stunde fälschlich als "spät x2"
+            // gezählt und die Einheit sofort als spät markiert.
+            var spaeteSlotsProEinheit = new Dictionary<string, HashSet<int>>();
             var alleProEinheit   = new Dictionary<string, List<(int b, int s)>>();
 
             for (int b = 0; b < B; b++)
@@ -3424,19 +3428,19 @@ namespace Stundenplan_V2
                             if (!alleProEinheit.ContainsKey(kf))
                             {
                                 alleProEinheit[kf] = new List<(int, int)>();
-                                spaeteProEinheit[kf] = new List<(int, int)>();
+                                spaeteSlotsProEinheit[kf] = new HashSet<int>();
                             }
                             alleProEinheit[kf].Add((b, s));
                             if (_slots[s].Stunde >= 6)
-                                spaeteProEinheit[kf].Add((b, s));
+                                spaeteSlotsProEinheit[kf].Add(s);
                         }
                     }
                 }
             }
 
-            foreach (var kv in spaeteProEinheit)
+            foreach (var kv in spaeteSlotsProEinheit)
             {
-                // spät: mindestens 2 Stunden ab Stunde 6
+                // spät: mindestens 2 UNTERSCHIEDLICHE Zeitslots ab Stunde 6
                 if (kv.Value.Count < 2) continue;
 
                 // voll fixiert? -> alle Slots der Einheit müssen in FixUNrn stehen
