@@ -357,58 +357,38 @@ namespace Stundenplan_V2
                     }
 
             // =====================================================
-            // 8c. FACH PRO KLASSE PRO TAG (wie im Solver: Sum(x) <= 1 + hatDoppel)
-            // Pro Tag höchstens EINE Stunde desselben Fachs je Klasse — außer es ist
-            // eine echte Doppelstunde EINER einzelnen UNr (zwei aufeinanderfolgende
-            // Stunden desselben Blocks). Zwei verschiedene UNrn desselben (Klasse,Fach)
-            // am selben Tag sind damit eine Verletzung.
+            // 8c. FACH PRO KLASSE PRO TAG: max 2 Stunden desselben Fachs je Klasse und Tag
             // =====================================================
             {
-                // (Klasse, Fach) -> Menge der (block, slotIndex) mit Belegung.
-                // HashSet, damit zwei Teile desselben UNr/Blocks mit gleichem
-                // (Klasse, Fach) aber verschiedenem Lehrer (Team-Teaching) nur
-                // EINMAL zählen — konsistent zum Solver (fachKlasseMap als HashSet).
-                var platz = new Dictionary<(string klasse, string fach), HashSet<(int b, int s)>>();
+                var fachZähler = new Dictionary<(string klasse, string tag, string fach), int>();
                 for (int b = 0; b < B; b++)
                     for (int s = 0; s < S; s++)
                     {
                         if (belegung[b, s] != 1) continue;
+                        string tag = slots[s].WTag;
+
+                        // Mehrere Teile desselben Blocks im selben Slot (z.B. parallele
+                        // Gruppen/Lehrer derselben Klasse im selben Fach) sind EINE
+                        // Unterrichtsstunde, keine mehrfache - deshalb pro Block+Slot
+                        // je (Klasse, Fach) nur einmal zählen statt pro Teil.
+                        var distinktInSlot = new HashSet<(string klasse, string fach)>();
                         foreach (var t in blocks[b].Teile)
                             foreach (var k in t.Klassen)
-                            {
-                                var key = (k, t.Fach);
-                                if (!platz.TryGetValue(key, out var set))
-                                    platz[key] = set = new HashSet<(int, int)>();
-                                set.Add((b, s));
-                            }
-                    }
+                                distinktInSlot.Add((k, t.Fach));
 
-                foreach (var kv in platz)
-                    foreach (var g in kv.Value.GroupBy(p => slots[p.s].WTag))
-                    {
-                        string tag = g.Key;
-                        int total = g.Count();
-                        if (total <= 1) continue;
-
-                        // Echte Doppelstunde EINER UNr? (ein Block mit zwei
-                        // aufeinanderfolgenden Stunden am selben Tag)
-                        bool hatDoppel = false;
-                        foreach (var blockGrp in g.GroupBy(p => p.b))
+                        foreach (var kf in distinktInSlot)
                         {
-                            var stunden = blockGrp.Select(p => slots[p.s].Stunde).OrderBy(x => x).ToList();
-                            for (int i = 0; i + 1 < stunden.Count; i++)
-                                if (stunden[i + 1] == stunden[i] + 1) { hatDoppel = true; break; }
-                            if (hatDoppel) break;
+                            var key = (kf.klasse, tag, kf.fach);
+                            fachZähler[key] = fachZähler.TryGetValue(key, out int c) ? c + 1 : 1;
                         }
-
-                        int erlaubt = 1 + (hatDoppel ? 1 : 0);
-                        if (total > erlaubt)
-                            verletzungen.Add(new Verletzung(
-                                "Fach pro Klasse pro Tag", tag, 0, 0, "", kv.Key.fach,
-                                $"Klasse {kv.Key.klasse}: {total}x {kv.Key.fach} an {tag} " +
-                                $"(erlaubt: {erlaubt} — max. 1, außer echte Doppelstunde einer UNr)",
-                                kv.Key.klasse));
                     }
+                foreach (var kv in fachZähler)
+                    if (kv.Value > 2)
+                        verletzungen.Add(new Verletzung(
+                            "Fach pro Klasse pro Tag", kv.Key.tag, 0, 0,
+                            "", kv.Key.fach,
+                            $"Klasse {kv.Key.klasse}: {kv.Value}x {kv.Key.fach} an {kv.Key.tag} (max 2)",
+                            Klasse: kv.Key.klasse));
             }
 
             // =====================================================

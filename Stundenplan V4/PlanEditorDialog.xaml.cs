@@ -971,6 +971,9 @@ namespace Stundenplan_V2
                 VerticalAlignment = VerticalAlignment.Stretch
             };
 
+            if (warnung)
+                innerBorder.ToolTip = ErmittleWarnungsText(blockIdx, slotIdx);
+
             var teile = block.Teile;
             string klassen = string.Join(",", teile.SelectMany(t => t.Klassen).Distinct());
             string faecher = string.Join(",", teile.Select(t => t.Fach).Distinct());
@@ -3398,13 +3401,9 @@ namespace Stundenplan_V2
             int B = _blocks.Count, S = _slots.Count;
 
             // Pro (Klasse|Fach)-Einheit sammeln:
-            //   spaeteSlots: eindeutige Zeitslot-Indizes (s) ab Stunde 6
-            //   alleProEinheit: Liste (b, s) aller Slots der Einheit (für die Markierung)
-            // Wichtig: bei parallelen Blöcken (z.B. Gruppenteilung) im selben
-            // Zeitslot darf dieser Slot nur EINMAL in die Zählung eingehen,
-            // sonst würde eine einzige späte Stunde fälschlich als "spät x2"
-            // gezählt und die Einheit sofort als spät markiert.
-            var spaeteSlotsProEinheit = new Dictionary<string, HashSet<int>>();
+            //   spaeteSlots: Liste (b, s) der Slots ab Stunde 6
+            //   alleSlots:   Liste (b, s) aller Slots der Einheit
+            var spaeteProEinheit = new Dictionary<string, List<(int b, int s)>>();
             var alleProEinheit   = new Dictionary<string, List<(int b, int s)>>();
 
             for (int b = 0; b < B; b++)
@@ -3428,19 +3427,19 @@ namespace Stundenplan_V2
                             if (!alleProEinheit.ContainsKey(kf))
                             {
                                 alleProEinheit[kf] = new List<(int, int)>();
-                                spaeteSlotsProEinheit[kf] = new HashSet<int>();
+                                spaeteProEinheit[kf] = new List<(int, int)>();
                             }
                             alleProEinheit[kf].Add((b, s));
                             if (_slots[s].Stunde >= 6)
-                                spaeteSlotsProEinheit[kf].Add(s);
+                                spaeteProEinheit[kf].Add((b, s));
                         }
                     }
                 }
             }
 
-            foreach (var kv in spaeteSlotsProEinheit)
+            foreach (var kv in spaeteProEinheit)
             {
-                // spät: mindestens 2 UNTERSCHIEDLICHE Zeitslots ab Stunde 6
+                // spät: mindestens 2 Stunden ab Stunde 6
                 if (kv.Value.Count < 2) continue;
 
                 // voll fixiert? -> alle Slots der Einheit müssen in FixUNrn stehen
@@ -3489,21 +3488,154 @@ namespace Stundenplan_V2
             };
 
             DragDrop.DoDragDrop((DependencyObject)sender, "block", DragDropEffects.Move);
+            EntferneKonfliktMarkierung();
             _maybeDrag = null;
         }
 
         private int _letzterDragOverSlot = -2; // -2 = noch keiner
 
+        // Zielzelle, die aktuell wegen eines harten Konflikts rot markiert ist
+        // (Live-Feedback waehrend des Drags). Wird beim Verlassen der Zelle
+        // bzw. am Ende des Drags wieder zurueckgesetzt.
+        private Border _konfliktZelle;
+
+        // Gelber Rahmen fuer "weiche" Warnungen (Tagesregel/Doppelstunden) -
+        // der Zug bleibt erlaubt, es wird nur vorab gewarnt.
+        private static readonly SolidColorBrush WeicheWarnungBrush =
+            new SolidColorBrush(Color.FromRgb(0xE0, 0xB0, 0x00));
+
+        private void MarkiereKonfliktZelle(Border zelle, string grund, bool hart)
+        {
+            var farbe = hart ? Brushes.Red : WeicheWarnungBrush;
+
+            if (_konfliktZelle == zelle)
+            {
+                zelle.BorderBrush = farbe;
+                if (zelle.ToolTip is ToolTip ttBestehend)
+                    ttBestehend.Content = grund; // Text kann sich aendern, auch wenn Zelle gleich bleibt
+                return;
+            }
+            EntferneKonfliktMarkierung();
+            if (zelle == null) return;
+            _konfliktZelle = zelle;
+            zelle.BorderBrush = farbe;
+            zelle.BorderThickness = new Thickness(2.5);
+
+            // WICHTIG: Waehrend eines aktiven Drag&Drop liefert WPF keine normalen
+            // Maus-Hover-Events -> ein per Hover ausgeloester ToolTip wuerde nie
+            // erscheinen. Deshalb hier ein ToolTip-Objekt anlegen und per IsOpen
+            // sofort erzwungen anzeigen.
+            var tooltip = new ToolTip
+            {
+                Content = grund,
+                PlacementTarget = zelle,
+                Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom,
+                IsOpen = true
+            };
+            zelle.ToolTip = tooltip;
+        }
+
+        // Prueft, ob eine Verschiebung/Einplanung fuer den betroffenen Block (UNr)
+        // eine bislang NICHT vorhandene Tagesregel- oder Doppelstunden-Verletzung
+        // einfuehren wuerde. Bereits vorher bestehende Verletzungen (die durch den
+        // Zug nicht neu entstehen) werden dabei ignoriert, damit nicht staendig
+        // gewarnt wird, obwohl sich an dieser Verletzung nichts aendert.
+        // Gibt den konkreten Verletzungstext zurueck, oder null wenn keine neue
+        // weiche Verletzung entsteht.
+        private string FindeNeueWeicheVerletzung(int[,] probe, int unr)
+        {
+            List<PlanValidator.Verletzung> nachher;
+            try
+            {
+                nachher = PlanValidator.Prüfe(probe, _blocks, _slots, _grossePausen);
+            }
+            catch
+            {
+                return null;
+            }
+
+            bool IstRelevant(PlanValidator.Verletzung v) =>
+                (v.Kategorie == "Doppelstunden" || v.Kategorie == "Tagesregel") && v.UNr == unr;
+
+            var vorherKeys = (_aktuelleVerletzungen ?? new List<PlanValidator.Verletzung>())
+                .Where(IstRelevant)
+                .Select(v => v.Kategorie + "|" + v.Tag + "|" + v.Details)
+                .ToHashSet();
+
+            var neu = nachher.FirstOrDefault(v =>
+                IstRelevant(v) && !vorherKeys.Contains(v.Kategorie + "|" + v.Tag + "|" + v.Details));
+
+            return neu == null ? null : neu.Kategorie + ": " + neu.Details;
+        }
+
+        private void EntferneKonfliktMarkierung()
+        {
+            if (_konfliktZelle == null) return;
+            _konfliktZelle.BorderBrush = Brushes.LightGray;
+            _konfliktZelle.BorderThickness = new Thickness(0.5);
+            if (_konfliktZelle.ToolTip is ToolTip tt)
+                tt.IsOpen = false;
+            _konfliktZelle.ToolTip = null;
+            _konfliktZelle = null;
+        }
+
         private void Zelle_DragOver(object sender, DragEventArgs e)
         {
-            e.Effects = DragDropEffects.Move;
             e.Handled = true;
 
-            // Nur bei aktivem Block-Drag (nicht Parkbereich)
-            if (_dragQuelle == null || _dragQuelle.AusParkbereich) return;
-            if (!(sender is Border bd) || !(bd.Tag is int zielSlot)) return;
+            if (_dragQuelle == null) { e.Effects = DragDropEffects.Move; return; }
+            if (!(sender is Border bd) || !(bd.Tag is int zielSlot))
+            {
+                e.Effects = DragDropEffects.Move;
+                return;
+            }
 
-            // Nur neu zeichnen, wenn sich das ueberfahrene Feld geaendert hat
+            // =====================================================
+            // Sonderfall: Drag aus dem Parkbereich (eine Stunde einplanen)
+            // =====================================================
+            if (_dragQuelle.AusParkbereich)
+            {
+                if (zielSlot < 0)
+                {
+                    e.Effects = DragDropEffects.None;
+                    EntferneKonfliktMarkierung();
+                    return;
+                }
+
+                int blockIdxP = _dragQuelle.BlockIndex;
+                var probeP = (int[,])_belegung.Clone();
+                probeP[blockIdxP, zielSlot] = 1;
+                string konfliktP = FindeHartenKonflikt(probeP, blockIdxP, new List<int> { zielSlot });
+
+                if (konfliktP != null)
+                {
+                    e.Effects = DragDropEffects.None;
+                    MarkiereKonfliktZelle(bd, konfliktP, hart: true);
+                    SetStatus("Einplanen gesperrt: " + konfliktP, true);
+                }
+                else
+                {
+                    e.Effects = DragDropEffects.Move;
+                    string weicheP = FindeNeueWeicheVerletzung(probeP, _blocks[blockIdxP].UNr);
+                    if (weicheP != null)
+                    {
+                        MarkiereKonfliktZelle(bd, weicheP, hart: false);
+                        SetStatus("Achtung: " + weicheP, false);
+                    }
+                    else
+                    {
+                        EntferneKonfliktMarkierung();
+                    }
+                }
+                return;
+            }
+
+            // =====================================================
+            // Normales Verschieben
+            // =====================================================
+            e.Effects = DragDropEffects.Move;
+
+            // Nur neu berechnen, wenn sich das ueberfahrene Feld geaendert hat
             if (zielSlot == _letzterDragOverSlot) return;
             _letzterDragOverSlot = zielSlot;
 
@@ -3517,6 +3649,8 @@ namespace Stundenplan_V2
             if (zielSlot < 0)
             {
                 LeereVerschiebungen();
+                EntferneKonfliktMarkierung();
+                e.Effects = DragDropEffects.None;
                 return;
             }
 
@@ -3526,6 +3660,8 @@ namespace Stundenplan_V2
             if (zielSlots == null)
             {
                 LeereVerschiebungen();
+                EntferneKonfliktMarkierung();
+                e.Effects = DragDropEffects.None;
                 return;
             }
 
@@ -3533,10 +3669,40 @@ namespace Stundenplan_V2
             if (new HashSet<int>(zielSlots).SetEquals(new HashSet<int>(quellSlots)))
             {
                 LeereVerschiebungen();
+                EntferneKonfliktMarkierung();
                 return;
             }
 
             ZeigeVerschiebungen(blockIdx, quellSlots, zielSlots);
+
+            // NEU: direkten harten Konflikt am Zielslot pruefen und schon
+            // waehrend des Ziehens anzeigen (Cursor "verboten" + rote
+            // Zielzelle + Tooltip mit Grund), unabhaengig davon, ob spaeter
+            // ein Ausweich-Tausch moeglich waere.
+            var probe = (int[,])_belegung.Clone();
+            foreach (int s in quellSlots) probe[blockIdx, s] = 0;
+            foreach (int s in zielSlots) probe[blockIdx, s] = 1;
+            string konflikt = FindeHartenKonflikt(probe, blockIdx, zielSlots);
+
+            if (konflikt != null)
+            {
+                e.Effects = DragDropEffects.None;
+                MarkiereKonfliktZelle(bd, konflikt, hart: true);
+                SetStatus("Gesperrt: " + konflikt, true);
+            }
+            else
+            {
+                string weiche = FindeNeueWeicheVerletzung(probe, _blocks[blockIdx].UNr);
+                if (weiche != null)
+                {
+                    MarkiereKonfliktZelle(bd, weiche, hart: false);
+                    SetStatus("Achtung: " + weiche, false);
+                }
+                else
+                {
+                    EntferneKonfliktMarkierung();
+                }
+            }
         }
 
         // =====================================================
@@ -3544,6 +3710,7 @@ namespace Stundenplan_V2
         // =====================================================
         private void Zelle_Drop(object sender, DragEventArgs e)
         {
+            EntferneKonfliktMarkierung();
             if (_dragQuelle == null) return;
             if (!(sender is Border bd) || !(bd.Tag is int zielSlot)) return;
 
@@ -3665,6 +3832,7 @@ namespace Stundenplan_V2
         // =====================================================
         private void Parkbereich_Drop(object sender, DragEventArgs e)
         {
+            EntferneKonfliktMarkierung();
             if (_dragQuelle == null) return;
             if (_dragQuelle.AusParkbereich) { _dragQuelle = null; return; }
 
@@ -3931,15 +4099,17 @@ namespace Stundenplan_V2
             }
         }
 
-        // Hat ein Block in einem bestimmten Slot eine (weiche) Verletzung?
-        private bool SlotHatWarnung(int blockIdx, int slotIdx)
+        // Ermittelt alle (weichen) Verletzungen, die zu diesem Block/Slot gehören.
+        private List<PlanValidator.Verletzung> ErmittleWarnungen(int blockIdx, int slotIdx)
         {
-            if (_aktuelleVerletzungen == null || _aktuelleVerletzungen.Count == 0) return false;
+            if (_aktuelleVerletzungen == null || _aktuelleVerletzungen.Count == 0)
+                return new List<PlanValidator.Verletzung>();
+
             var block = _blocks[blockIdx];
             string tag = _slots[slotIdx].WTag;
             int stunde = _slots[slotIdx].Stunde;
 
-            return _aktuelleVerletzungen.Any(v =>
+            return _aktuelleVerletzungen.Where(v =>
             {
                 // Nicht an eine einzelne UNr gebundene Verletzung (UNr = 0),
                 // z.B. "Fach pro Klasse pro Tag": über Fach + Klasse + Tag zuordnen,
@@ -3953,7 +4123,20 @@ namespace Stundenplan_V2
                 return v.UNr == block.UNr
                     && (v.Tag == "" || v.Tag == tag)
                     && (v.Stunde == 0 || v.Stunde == stunde);
-            });
+            }).ToList();
+        }
+
+        // Hat ein Block in einem bestimmten Slot eine (weiche) Warnung?
+        private bool SlotHatWarnung(int blockIdx, int slotIdx)
+            => ErmittleWarnungen(blockIdx, slotIdx).Count > 0;
+
+        // Text für den Tooltip des gelben Warnungs-Hintergrunds: listet alle
+        // zutreffenden Verletzungen mit Kategorie + konkretem Grund auf.
+        private string ErmittleWarnungsText(int blockIdx, int slotIdx)
+        {
+            var warnungen = ErmittleWarnungen(blockIdx, slotIdx);
+            if (warnungen.Count == 0) return null;
+            return string.Join("\n", warnungen.Select(v => v.Kategorie + ": " + v.Details));
         }
 
         // =====================================================
@@ -4045,6 +4228,7 @@ namespace Stundenplan_V2
                         AusParkbereich = true
                     };
                     DragDrop.DoDragDrop(bd, "park", DragDropEffects.Move);
+                    EntferneKonfliktMarkierung();
                 };
                 ParkPanel.Children.Add(bd);
             }

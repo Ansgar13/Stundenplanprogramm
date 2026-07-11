@@ -195,6 +195,7 @@ namespace Stundenplan_V2
 
             // In Excel schreiben
             SchreibeInExcel(solutions);
+            SchreibeLehrerAbweichungenLös(solutions);
             SchreibeRanking(solutions);
 
             // Diagnose-Tabelle für alle Lösungen
@@ -419,6 +420,7 @@ namespace Stundenplan_V2
 
                 // In Lösungen-Tabelle eintragen
                 SchreibeInExcel(letzteSolutions);
+                SchreibeLehrerAbweichungenLös(letzteSolutions);
                 SchreibeRanking(letzteSolutions);
 
                 // Diagnose-Tabelle aktualisieren inkl. UNrPlan
@@ -612,6 +614,7 @@ namespace Stundenplan_V2
                 }
 
                 SchreibeInExcel(letzteSolutions);
+                SchreibeLehrerAbweichungenLös(letzteSolutions);
                 SchreibeRanking(letzteSolutions);
 
                 // Diagnose-Tabelle um verbesserte Lösung erweitern (anhängend)
@@ -781,6 +784,12 @@ namespace Stundenplan_V2
             for (int s = 0; s < input.Slots.Count; s++)
                 slotLookup[$"{input.Slots[s].WTag}_{input.Slots[s].Stunde}"] = s;
 
+            // Lehrer-Abweichungen (z.B. durch einen Tausch) je Lösungs-Spalte
+            // aus dem Companion-Sheet "<sheetName>Lehrer" nachladen, damit
+            // Tauschlösungen nach dem Neuladen der Excel-Datei weiterhin die
+            // richtigen (getauschten) Lehrer zeigen statt der UV-Standardlehrer.
+            var lehrerAbweichungen = LadeLehrerAbweichungen(sheetName);
+
             foreach (var kv in spaltenLabels)
             {
                 int col = kv.Key;
@@ -814,11 +823,297 @@ namespace Stundenplan_V2
                     }
                 }
 
-                result.Add((0, 0, belegung, label, input.Blocks));
+                var patch = lehrerAbweichungen.TryGetValue(kv.Value, out var p) ? p : null;
+
+                // Vorsichtsmaßnahme: Label beginnt mit "T_" -> eigentlich eine
+                // Tauschlösung. Fehlt dazu ein Eintrag im Companion-Sheet
+                // (z.B. weil es von Hand geändert/gelöscht wurde, die Spalte
+                // umbenannt wurde, oder die Datei noch aus der Zeit vor dieser
+                // Absicherung stammt), würde die Lösung sonst still mit den
+                // ungetauschten Standardlehrern angezeigt - hier zumindest im
+                // Log sichtbar machen statt es unbemerkt zu lassen.
+                if ((patch == null || patch.Count == 0) && kv.Value.StartsWith("T_"))
+                    Log($"Warnung: Lösung '{label}' sieht wie eine Tauschlösung aus, " +
+                        $"hat aber keinen passenden Eintrag im Sheet '{sheetName}Lehrer' " +
+                        "- es werden die ungetauschten Standardlehrer verwendet.");
+
+                var blocksFürLösung = KloneBlocksMitLehrerPatch(input.Blocks, patch);
+                result.Add((0, 0, belegung, label, blocksFürLösung));
             }
 
             return result;
         }
+
+        // Erzeugt eine Kopie von "basis" mit angepassten Lehrern gemäß "patch"
+        // (Key = (UNr, TeilIndex), Value = abweichender Lehrer). Ist "patch"
+        // leer/null, wird "basis" unverändert zurückgegeben (keine unnötige
+        // Kopie, identisch zum bisherigen Verhalten ohne Abweichungen).
+        private List<UnterrichtsBlock> KloneBlocksMitLehrerPatch(
+            List<UnterrichtsBlock> basis, Dictionary<(int unr, int teilIndex), string> patch)
+        {
+            if (patch == null || patch.Count == 0) return basis;
+
+            return basis.Select(b => new UnterrichtsBlock
+            {
+                UNr = b.UNr,
+                Wst = b.Wst,
+                Zeilentext = b.Zeilentext,
+                Zeilentext2 = b.Zeilentext2,
+                WochenDoppelstunden = b.WochenDoppelstunden,
+                DoppelÜberPauseErlaubt = b.DoppelÜberPauseErlaubt,
+                KKK = b.KKK,
+                WochenGruppe = b.WochenGruppe,
+                TagesDoppelstunden = new Dictionary<string, int>(b.TagesDoppelstunden),
+                Teile = b.Teile.Select((t, ti) => new TeilUnterricht
+                {
+                    UNr = t.UNr,
+                    Lehrer = patch.TryGetValue((b.UNr, ti), out var neuerLehrer) ? neuerLehrer : t.Lehrer,
+                    Fach = t.Fach,
+                    Klassen = new List<string>(t.Klassen),
+                    MinDoppel = t.MinDoppel,
+                    MaxDoppel = t.MaxDoppel,
+                    FachGruppe = t.FachGruppe,
+                    AktuelleDoppelstunden = t.AktuelleDoppelstunden,
+                    Ltkz = t.Ltkz,
+                    DoppelÜberPauseErlaubt = t.DoppelÜberPauseErlaubt
+                }).ToList()
+            }).ToList();
+        }
+
+        // Prüft, ob "pruef" gegenüber "standard" (input.Blocks) mindestens
+        // einen abweichenden Lehrer enthält (z.B. durch einen Tausch).
+        private static bool HatLehrerAbweichung(List<UnterrichtsBlock> standard, List<UnterrichtsBlock> pruef)
+        {
+            if (ReferenceEquals(standard, pruef)) return false; // identische Referenz -> garantiert keine Abweichung
+            int n = Math.Min(standard.Count, pruef.Count);
+            for (int b = 0; b < n; b++)
+            {
+                int m = Math.Min(standard[b].Teile.Count, pruef[b].Teile.Count);
+                for (int ti = 0; ti < m; ti++)
+                    if (standard[b].Teile[ti].Lehrer != pruef[b].Teile[ti].Lehrer)
+                        return true;
+            }
+            return false;
+        }
+
+        // Liest das Companion-Sheet "<sheetName>Lehrer" (falls vorhanden) und
+        // liefert je Lösungs-Label (Rohname, ohne labelPräfix) die abweichenden
+        // Lehrer als (UNr, TeilIndex) -> Lehrer.
+        private Dictionary<string, Dictionary<(int unr, int teilIndex), string>> LadeLehrerAbweichungen(string sheetName)
+        {
+            var result = new Dictionary<string, Dictionary<(int, int), string>>();
+            string lehrerSheetName = sheetName + "Lehrer";
+
+            using var wb = new XLWorkbook(excelPfad);
+            if (!wb.Worksheets.Any(ws => ws.Name == lehrerSheetName))
+                return result;
+
+            var sheet = wb.Worksheet(lehrerSheetName);
+            var headerRow = sheet.Row(1);
+            int maxCol = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
+            var spalten = new Dictionary<int, string>();
+            for (int col = 3; col <= maxCol; col++)
+            {
+                string label = headerRow.Cell(col).GetString().Trim();
+                if (!string.IsNullOrEmpty(label))
+                    spalten[col] = label;
+            }
+            if (spalten.Count == 0) return result;
+
+            int lastRow = sheet.LastRowUsed()?.RowNumber() ?? 1;
+            for (int row = 2; row <= lastRow; row++)
+            {
+                if (!int.TryParse(sheet.Cell(row, 1).GetString().Trim(), out int unr)) continue;
+                if (!int.TryParse(sheet.Cell(row, 2).GetString().Trim(), out int teilIndex)) continue;
+
+                foreach (var kv in spalten)
+                {
+                    string lehrer = sheet.Cell(row, kv.Key).GetString().Trim();
+                    if (string.IsNullOrEmpty(lehrer)) continue;
+
+                    if (!result.TryGetValue(kv.Value, out var map))
+                        result[kv.Value] = map = new Dictionary<(int, int), string>();
+                    map[(unr, teilIndex)] = lehrer;
+                }
+            }
+            return result;
+        }
+
+        // Schreibt/ersetzt das Companion-Sheet "LösLehrer" komplett neu -
+        // analog zu SchreibeInExcel für "Lös" (gleiche Spaltenreihenfolge/
+        // -labels, gleiches 10-Lösungen-Limit). Wird direkt nach jedem
+        // SchreibeInExcel(...)-Aufruf ausgeführt. Existiert für keine der
+        // Lösungen eine Lehrer-Abweichung, wird das Sheet (falls vorhanden)
+        // ersatzlos gelöscht, um die Datei nicht unnötig aufzublähen.
+        private void SchreibeLehrerAbweichungenLös(
+            List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> solutions)
+        {
+            const string sheetName = "LösLehrer";
+            int anzahl = Math.Min(10, solutions.Count);
+
+            using var wb = new XLWorkbook(excelPfad);
+            if (wb.Worksheets.Any(ws => ws.Name == sheetName))
+                wb.Worksheet(sheetName).Delete();
+
+            bool irgendeineAbweichung = false;
+            for (int p = 0; p < anzahl; p++)
+                if (HatLehrerAbweichung(input.Blocks, solutions[p].blocks))
+                { irgendeineAbweichung = true; break; }
+
+            if (!irgendeineAbweichung)
+            {
+                wb.Save();
+                return;
+            }
+
+            var sheet = wb.Worksheets.Add(sheetName);
+            sheet.Cell(1, 1).Value = "UNr";
+            sheet.Cell(1, 2).Value = "TeilIndex";
+            for (int p = 0; p < anzahl; p++)
+                sheet.Cell(1, 3 + p).Value = solutions[p].label;
+
+            int row = 2;
+            for (int b = 0; b < input.Blocks.Count; b++)
+            {
+                var standardTeile = input.Blocks[b].Teile;
+                for (int ti = 0; ti < standardTeile.Count; ti++)
+                {
+                    string standard = standardTeile[ti].Lehrer;
+
+                    bool zeileGebraucht = false;
+                    for (int p = 0; p < anzahl; p++)
+                    {
+                        var teile = solutions[p].blocks.ElementAtOrDefault(b)?.Teile;
+                        var teil = teile != null && ti < teile.Count ? teile[ti] : null;
+                        if (teil != null && teil.Lehrer != standard) { zeileGebraucht = true; break; }
+                    }
+                    if (!zeileGebraucht) continue;
+
+                    sheet.Cell(row, 1).Value = input.Blocks[b].UNr;
+                    sheet.Cell(row, 2).Value = ti;
+                    for (int p = 0; p < anzahl; p++)
+                    {
+                        var teile = solutions[p].blocks.ElementAtOrDefault(b)?.Teile;
+                        var teil = teile != null && ti < teile.Count ? teile[ti] : null;
+                        if (teil != null && teil.Lehrer != standard)
+                            sheet.Cell(row, 3 + p).Value = teil.Lehrer;
+                    }
+                    row++;
+                }
+            }
+
+            wb.Save();
+        }
+
+        // Schreibt/aktualisiert genau eine Spalte im Companion-Sheet
+        // "GesichertLehrer" (analog zu SichereLösung für "Gesichert").
+        // Andere gesicherte Lösungen bleiben unberührt.
+        private void SichereLehrerAbweichung(string name, List<UnterrichtsBlock> blocks)
+        {
+            const string sheetName = "GesichertLehrer";
+            bool hatAbweichung = HatLehrerAbweichung(input.Blocks, blocks);
+
+            using var wb = new XLWorkbook(excelPfad);
+            bool existiertSchon = wb.Worksheets.Any(ws => ws.Name == sheetName);
+
+            if (!hatAbweichung && !existiertSchon)
+            {
+                wb.Save();
+                return; // kein Tausch, kein Sheet nötig
+            }
+
+            var sheet = existiertSchon ? wb.Worksheet(sheetName) : wb.Worksheets.Add(sheetName);
+            if (!existiertSchon)
+            {
+                sheet.Cell(1, 1).Value = "UNr";
+                sheet.Cell(1, 2).Value = "TeilIndex";
+            }
+
+            var headerRow = sheet.Row(1);
+            int maxCol = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
+            int zielCol = -1;
+            for (int col = 3; col <= maxCol; col++)
+                if (headerRow.Cell(col).GetString().Trim() == name) { zielCol = col; break; }
+            if (zielCol == -1) zielCol = Math.Max(3, maxCol + 1);
+            sheet.Cell(1, zielCol).Value = name;
+
+            // Zielspalte zunächst leeren (falls diese Sicherung überschrieben wird)
+            int lastRowVorher = sheet.LastRowUsed()?.RowNumber() ?? 1;
+            for (int r = 2; r <= lastRowVorher; r++)
+                sheet.Cell(r, zielCol).Clear();
+
+            if (hatAbweichung)
+            {
+                for (int b = 0; b < input.Blocks.Count; b++)
+                {
+                    var standardTeile = input.Blocks[b].Teile;
+                    var teile = blocks.ElementAtOrDefault(b)?.Teile;
+                    for (int ti = 0; ti < standardTeile.Count; ti++)
+                    {
+                        var teil = teile != null && ti < teile.Count ? teile[ti] : null;
+                        if (teil == null || teil.Lehrer == standardTeile[ti].Lehrer) continue;
+
+                        int zielRow = FindeOderErstelleLehrerZeile(sheet, input.Blocks[b].UNr, ti);
+                        sheet.Cell(zielRow, zielCol).Value = teil.Lehrer;
+                    }
+                }
+            }
+
+            wb.Save();
+        }
+
+        // Sucht die Zeile für (UNr, TeilIndex) im Lehrer-Companion-Sheet,
+        // legt bei Bedarf eine neue Zeile an.
+        private int FindeOderErstelleLehrerZeile(IXLWorksheet sheet, int unr, int teilIndex)
+        {
+            int lastRow = sheet.LastRowUsed()?.RowNumber() ?? 1;
+            for (int r = 2; r <= lastRow; r++)
+            {
+                if (int.TryParse(sheet.Cell(r, 1).GetString(), out int u) && u == unr &&
+                    int.TryParse(sheet.Cell(r, 2).GetString(), out int ti) && ti == teilIndex)
+                    return r;
+            }
+            int neu = lastRow + 1;
+            sheet.Cell(neu, 1).Value = unr;
+            sheet.Cell(neu, 2).Value = teilIndex;
+            return neu;
+        }
+
+        // Entfernt (falls vorhanden) die Spalte "name" aus dem Companion-Sheet
+        // "GesichertLehrer" und löscht das Sheet ganz, wenn keine benannte
+        // Spalte mehr übrig ist. Wird von LöscheGesicherteLösung aufgerufen,
+        // damit keine verwaisten Lehrer-Abweichungen liegen bleiben.
+        private void EntferneLehrerAbweichungFürGesichert(string name)
+        {
+            const string sheetName = "GesichertLehrer";
+            using var wb = new XLWorkbook(excelPfad);
+            if (!wb.Worksheets.Any(ws => ws.Name == sheetName)) { wb.Save(); return; }
+
+            var sheet = wb.Worksheet(sheetName);
+            var headerRow = sheet.Row(1);
+            int maxCol = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
+
+            int zielCol = -1;
+            for (int col = 3; col <= maxCol; col++)
+                if (headerRow.Cell(col).GetString().Trim() == name) { zielCol = col; break; }
+
+            if (zielCol != -1)
+                sheet.Column(zielCol).Delete();
+
+            var headerRowNeu = sheet.Row(1);
+            int maxColNeu = headerRowNeu.LastCellUsed()?.Address.ColumnNumber ?? 2;
+            bool nochEineDa = false;
+            for (int col = 3; col <= maxColNeu; col++)
+                if (!string.IsNullOrWhiteSpace(headerRowNeu.Cell(col).GetString()))
+                    { nochEineDa = true; break; }
+
+            if (!nochEineDa)
+                wb.Worksheets.Delete(sheetName);
+
+            wb.Save();
+        }
+
+
 
         // =====================================================
         // FIX UNRN SCHREIBEN
@@ -1251,6 +1546,7 @@ namespace Stundenplan_V2
 
                 // Lös-Sheet neu schreiben
                 SchreibeInExcel(letzteSolutions);
+                SchreibeLehrerAbweichungenLös(letzteSolutions);
                 SchreibeRanking(letzteSolutions);
 
                 // Diagnose anhängen (nur für die neue Lösung)
@@ -1413,6 +1709,7 @@ namespace Stundenplan_V2
                 EntferneDiagnoseFuerLabel("[Gesichert] " + name.Trim());
 
                 SichereLösung(name.Trim(), sol.belegung, sol.blocks);
+                SichereLehrerAbweichung(name.Trim(), sol.blocks);
 
                 // Diagnose-Werte der gesicherten Lösung sofort im Sheet "Diag"
                 // verfügbar machen (statt erst beim nächsten Solver-/
@@ -1686,6 +1983,7 @@ namespace Stundenplan_V2
             try
             {
                 LöscheGesicherteLösung(gewählterName);
+                EntferneLehrerAbweichungFürGesichert(gewählterName);
 
                 // Zugehörigen Diagnose-Block ebenfalls entfernen, damit im Sheet
                 // "Diag" keine Karteikarte für eine nicht mehr existierende
@@ -1827,6 +2125,7 @@ namespace Stundenplan_V2
                     letzteSolutions.Add(sol);
                 }
                 SchreibeInExcel(letzteSolutions);
+                SchreibeLehrerAbweichungenLös(letzteSolutions);
                 SchreibeRanking(letzteSolutions);
 
                 // Diagnose
@@ -2854,46 +3153,95 @@ namespace Stundenplan_V2
         {
             if (input == null || string.IsNullOrEmpty(excelPfad))
             {
-                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 1).");
                 return;
             }
 
-            int anzFix = input.Slots.Sum(s => s.FixUNrn?.Count ?? 0);
-            if (anzFix == 0)
-            {
-                MessageBox.Show("Es sind keine Stunden fixiert (FixUNrn ist leer).",
-                    "FixUnr exportieren", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
+            var quelle = MessageBox.Show(
+                "Was soll übertragen werden?\n\n" +
+                "[Ja] = FixUnr (aktuelle Fixierungen)\n" +
+                "[Nein] = eine gewählte Lösung\n" +
+                "[Abbrechen] = nichts",
+                "Nach 'Plan' / 'Lös' übertragen", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
 
-            var ziel = MessageBox.Show(
-                "FixUnr als Plan exportieren – Ziel wählen:\n\n" +
-                "[Ja] = Spalte 'Fix' im Blatt 'Lös' (neu/aktualisiert)\n" +
-                "[Nein] = Blatt 'Plan'\n" +
-                "[Abbrechen] = nicht exportieren",
-                "FixUnr exportieren", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            if (quelle == MessageBoxResult.Cancel) return;
 
             try
             {
-                if (ziel == MessageBoxResult.Yes)
+                if (quelle == MessageBoxResult.Yes)
                 {
-                    var w = MessageBox.Show(
-                        "Eine evtl. vorhandene Spalte 'Fix' im Blatt 'Lös' wird überschrieben. Fortfahren?",
-                        "Überschreiben?", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
-                    if (w != MessageBoxResult.OK) return;
-                    ExportiereFixNachLös();
-                    Log($"FixUnr als Spalte 'Fix' ins Blatt 'Lös' geschrieben ({anzFix} fixierte Stunde(n)).");
-                    TxtStatus.Text = "FixUnr nach 'Lös' exportiert.";
+                    // --- FixUnr ---
+                    int anzFix = input.Slots.Sum(s => s.FixUNrn?.Count ?? 0);
+                    if (anzFix == 0)
+                    {
+                        MessageBox.Show("Es sind keine Stunden fixiert (FixUNrn ist leer).",
+                            "FixUnr exportieren", MessageBoxButton.OK, MessageBoxImage.Information);
+                        return;
+                    }
+
+                    var ziel = MessageBox.Show(
+                        "FixUnr – Ziel wählen:\n\n" +
+                        "[Ja] = Spalte 'Fix' im Blatt 'Lös' (neu/aktualisiert)\n" +
+                        "[Nein] = Blatt 'Plan'\n" +
+                        "[Abbrechen] = nicht exportieren",
+                        "FixUnr exportieren", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+
+                    if (ziel == MessageBoxResult.Yes)
+                    {
+                        var w = MessageBox.Show(
+                            "Eine evtl. vorhandene Spalte 'Fix' im Blatt 'Lös' wird überschrieben. Fortfahren?",
+                            "Überschreiben?", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+                        if (w != MessageBoxResult.OK) return;
+                        ExportiereFixNachLös();
+                        Log($"FixUnr als Spalte 'Fix' ins Blatt 'Lös' geschrieben ({anzFix} fixierte Stunde(n)).");
+                        TxtStatus.Text = "FixUnr nach 'Lös' exportiert.";
+                    }
+                    else if (ziel == MessageBoxResult.No)
+                    {
+                        var w = MessageBox.Show(
+                            "Das Blatt 'Plan' wird vollständig überschrieben. Fortfahren?",
+                            "Überschreiben?", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+                        if (w != MessageBoxResult.OK) return;
+                        ExportiereFixNachPlan();
+                        Log($"FixUnr ins Blatt 'Plan' geschrieben ({anzFix} fixierte Stunde(n)).");
+                        TxtStatus.Text = "FixUnr nach 'Plan' exportiert.";
+                    }
                 }
-                else if (ziel == MessageBoxResult.No)
+                else // gewählte Lösung -> Plan
                 {
+                    // Verfügbare Lösungen sammeln: Speicher + 'Lös' + 'Gesichert',
+                    // dedupliziert nach Label (erste Fundstelle gewinnt).
+                    var quellen = new List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)>();
+                    quellen.AddRange(letzteSolutions);
+                    try { quellen.AddRange(LadeLösungenAusExcel()); } catch { }
+                    try { quellen.AddRange(LadeGesicherteLösungen()); } catch { }
+
+                    var seen = new HashSet<string>();
+                    var liste = quellen
+                        .Where(s => !string.IsNullOrWhiteSpace(s.label) && seen.Add(s.label))
+                        .ToList();
+
+                    if (liste.Count == 0)
+                    {
+                        MessageBox.Show("Keine Lösungen verfügbar (weder im Speicher noch in 'Lös'/'Gesichert').",
+                            "Lösung nach 'Plan'", MessageBoxButton.OK, MessageBoxImage.Information);
+                        return;
+                    }
+
+                    string gewählt = ZeigeAuswahlDialog(
+                        "Lösung nach 'Plan' übertragen", liste.Select(s => s.label).ToList());
+                    if (string.IsNullOrEmpty(gewählt)) return;
+
+                    var sol = liste.First(s => s.label == gewählt);
+
                     var w = MessageBox.Show(
-                        "Das Blatt 'Plan' wird vollständig überschrieben. Fortfahren?",
+                        $"Das Blatt 'Plan' wird vollständig mit der Lösung '{gewählt}' überschrieben. Fortfahren?",
                         "Überschreiben?", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
                     if (w != MessageBoxResult.OK) return;
-                    ExportiereFixNachPlan();
-                    Log($"FixUnr ins Blatt 'Plan' geschrieben ({anzFix} fixierte Stunde(n)).");
-                    TxtStatus.Text = "FixUnr nach 'Plan' exportiert.";
+
+                    ExportiereBelegungNachPlan(sol.belegung);
+                    Log($"Lösung '{gewählt}' ins Blatt 'Plan' geschrieben.");
+                    TxtStatus.Text = $"Lösung '{gewählt}' nach 'Plan' exportiert.";
                 }
             }
             catch (Exception ex)
@@ -2955,6 +3303,35 @@ namespace Stundenplan_V2
                 int col = 3;
                 foreach (int unr in input.Slots[s].FixUNrn ?? new List<int>())
                     sheet.Cell(s + 2, col++).Value = unr;
+            }
+
+            wb.Save();
+        }
+
+        // Schreibt die volle Belegung einer Lösung ins Blatt "Plan"
+        // (Format wie vom Loader erwartet: WTag | Stunde | UNr1 | UNr2 | ...).
+        private void ExportiereBelegungNachPlan(int[,] belegung)
+        {
+            using var wb = new XLWorkbook(excelPfad);
+            var sheet = wb.Worksheets.Any(ws => ws.Name == "Plan")
+                ? wb.Worksheet("Plan")
+                : wb.Worksheets.Add("Plan");
+
+            sheet.Clear(XLClearOptions.All); // vollständig überschreiben
+
+            sheet.Cell(1, 1).Value = "WTag";
+            sheet.Cell(1, 2).Value = "Stunde";
+            sheet.Cell(1, 3).Value = "UNrn";
+
+            for (int s = 0; s < input.Slots.Count; s++)
+            {
+                sheet.Cell(s + 2, 1).Value = input.Slots[s].WTag;
+                sheet.Cell(s + 2, 2).Value = input.Slots[s].Stunde;
+
+                int col = 3;
+                for (int b = 0; b < input.Blocks.Count; b++)
+                    if (belegung[b, s] == 1)
+                        sheet.Cell(s + 2, col++).Value = input.Blocks[b].UNr;
             }
 
             wb.Save();
