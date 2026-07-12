@@ -1,6 +1,6 @@
-# Stundenplanprogramm V62 – Automatischer Stundenplangenerator
+# Stundenplanprogramm V72 – Automatischer Stundenplangenerator
 
-Stundenplanprogramm Version 62 ist ein Windows-Programm zur automatischen Erstellung von Schulstundenplänen. Es liest alle Unterrichtsdaten aus einer Excel-Datei, berechnet mit dem Google-OR-Tools-Solver optimale Stundenpläne und schreibt die Ergebnisse direkt in dieselbe Excel-Datei zurück. Als austauschbar gekennzeichnete Lehrer können getauscht werden! 
+Stundenplanprogramm Version 72 ist ein Windows-Programm zur automatischen Erstellung von Schulstundenplänen. Es liest alle Unterrichtsdaten aus einer Excel-Datei, berechnet mit dem Google-OR-Tools-Solver optimale Stundenpläne und schreibt die Ergebnisse direkt in dieselbe Excel-Datei zurück. Als austauschbar gekennzeichnete Lehrer können getauscht werden! 
 
 ## Kernfunktionen
 
