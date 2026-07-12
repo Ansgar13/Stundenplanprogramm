@@ -63,6 +63,10 @@ namespace Stundenplan_V2
             var aktivUNrn = new HashSet<int>();
             // UNrn die nur i-Zeilen haben → komplett ignoriert (für Fix-UNrn-Filter)
             var ignorierteUNrn = new HashSet<int>();
+            // Warnungen zu UV-Zeilen ohne Fach und/oder ohne Klasse (Pflichtfelder,
+            // siehe Kapitel 2.1 der Anleitung) — fehlen diese, kann der Solver
+            // scheinbar grundlos "infeasible" melden.
+            var uvFachKlasseWarnungen = new List<string>();
 
             // Erst-Durchlauf: welche UNrn haben aktive Zeilen?
             foreach (var row in rows1)
@@ -111,6 +115,20 @@ namespace Stundenplan_V2
                     .Split(',', StringSplitOptions.RemoveEmptyEntries)
                     .Select(k => k.Trim())
                     .ToList();
+
+                // Pflichtfelder Fach/Klasse prüfen (siehe Kapitel 2.1 der Anleitung).
+                // Fehlt eines davon, kann der Solver später ohne erkennbaren Grund
+                // "infeasible" melden — daher hier früh und deutlich warnen.
+                bool fehltFach = string.IsNullOrWhiteSpace(fach);
+                bool fehltKlasse = klassenListe.Count == 0;
+                if (fehltFach || fehltKlasse)
+                {
+                    string was = fehltFach && fehltKlasse ? "Fach UND Klasse fehlen"
+                               : fehltFach ? "Fach fehlt"
+                               : "Klasse fehlt";
+                    uvFachKlasseWarnungen.Add(
+                        $"UNr {uNr}: {was} (Lehrer '{lehrer}', Wst {wst}).");
+                }
 
                 alleTeile.Add(new TeilUnterricht
                 {
@@ -477,6 +495,7 @@ namespace Stundenplan_V2
                 AnzahlLösungenOhneTausch = anzahlOhne,
                 AnzahlLösungenMitTausch = anzahlMit,
                 MindestAbstandLösungenBloecke = mindestAbstandBloecke,
+                UvFachKlasseWarnungen = uvFachKlasseWarnungen,
                 NichtFreieTage = nichtFreieTage,
                 GewichtFrüheDoppel = gewichtFrüh,
                 GewichtSpäteDoppel = gewichtSpät,

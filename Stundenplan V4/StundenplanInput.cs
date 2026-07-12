@@ -18,6 +18,8 @@ public class StundenplanInput
     // Mindestanzahl Blöcke, die sich zwischen zwei ausgegebenen Lösungen
     // mindestens unterscheiden müssen (verhindert nahezu identische Lösungen).
     public int MindestAbstandLösungenBloecke { get; set; } = 5;
+    // Warnungen zu UV-Zeilen ohne Fach und/oder ohne Klasse (Pflichtfelder).
+    public List<string> UvFachKlasseWarnungen { get; set; } = new();
     public HashSet<string> NichtFreieTage { get; set; } = new HashSet<string>();
 
     // Qualitätsfunktion-Gewichte

@@ -50,7 +50,7 @@
         <Button Grid.Row="10" Content="10. Gesicherte Lösung löschen" Margin="0,0,0,10" Click="BtnGesicherteLoesungLoeschen_Click"/>
         <Button Grid.Row="11" Content="11. Plan verbessern" Margin="0,0,0,10" Click="BtnPlanVerbessern_Click"/>
         <Button Grid.Row="12" Content="12. Minimale Änderungen (Solver)" Margin="0,0,0,10" Click="BtnMinimalAenderung_Click"/>
-        <Button Grid.Row="13" Content="13. FixUnr als Plan exportieren" Margin="0,0,0,10" Click="BtnFixExport_Click"/>
+        <Button Grid.Row="13" Content="13. Fix/Lösung → Plan exportieren" Margin="0,0,0,10" Click="BtnFixExport_Click"/>
         <Button Grid.Row="14" Content="14. Diagnose an Diag anhängen" Margin="0,0,0,10" Click="BtnDiagAnhaengen_Click"/>
         <Button Grid.Row="15" Content="15. Klassenpläne erzeugen" Margin="0,0,0,10" Click="BtnKlassenplaene_Click"/>
         <Button Grid.Row="16" Content="15b. Klassenpläne EF / Q1 / Q2" Margin="0,0,0,10" Click="BtnKlassenplaeneOberstufe_Click"/>

@@ -39,6 +39,11 @@ namespace Stundenplan_V2
 
         private bool _initialisiert = false;
 
+        // ---- Diag-Filter (Lehrer-Auswahlliste auf Diag-Auffällige beschränken) ----
+        // null = kein Filter aktiv (volle Lehrerliste)
+        private List<int> _diagFilterKriterien = null;
+        private bool _diagFilterUnd = false;
+
         // ---- Vergleichsmodus (2 Lösungen nebeneinander, reine Ansicht) ----
         private bool _vergleichsModus = false;
         private bool _vmSyncLaeuft = false;        // verhindert Sync-Schleife zwischen Cbo(Vm)Lehrer/Klasse
@@ -711,9 +716,34 @@ namespace Stundenplan_V2
         private void FuelleLehrerKlasseDropdowns(string behaltenLehrer = null, string behaltenKlasse = null)
         {
             CboLehrer.Items.Clear();
-            foreach (var l in _blocks.SelectMany(b => b.Teile.Select(t => t.Lehrer))
+
+            var lehrerKandidaten = _blocks.SelectMany(b => b.Teile.Select(t => t.Lehrer))
                                      .Where(s => !string.IsNullOrWhiteSpace(s))
-                                     .Distinct().OrderBy(s => s))
+                                     .Distinct().OrderBy(s => s).ToList();
+
+            // Diag-Filter anwenden, falls aktiv: nur Lehrer behalten, die (je nach
+            // Verknüpfung) mindestens eines bzw. alle gewählten Diag-Kriterien der
+            // AKTUELL angezeigten Lösung verletzen. Gleiche Berechnungsgrundlage
+            // wie das "Diag-Werte"-Fenster / der Diagnose-Diff (LehrerDiagnose.Berechne).
+            if (_diagFilterKriterien != null && _diagFilterKriterien.Count > 0)
+            {
+                var p = _bewParam;
+                var diagListe = LehrerDiagnose.Berechne(_belegung, _blocks, _slots,
+                    p.LehrerStammdaten, p.StrafeHohl, p.StrafeDoppelHohl, p.StrafeDreifachHohl,
+                    p.StrafeStdFolge, true, p.ExtraFreieTage, p.LehrerFreiTageMinus2)
+                    .ToDictionary(d => d.Lehrer, d => d);
+
+                bool ErfülltFilter(string lehrer)
+                {
+                    if (!diagListe.TryGetValue(lehrer, out var diag)) return false;
+                    var treffer = _diagFilterKriterien.Select(i => DiagFilterDialog.Kriterien[i].Trifft(diag));
+                    return _diagFilterUnd ? treffer.All(x => x) : treffer.Any(x => x);
+                }
+
+                lehrerKandidaten = lehrerKandidaten.Where(ErfülltFilter).ToList();
+            }
+
+            foreach (var l in lehrerKandidaten)
                 CboLehrer.Items.Add(l);
 
             CboKlasse.Items.Clear();
@@ -732,6 +762,46 @@ namespace Stundenplan_V2
                 int idx = behaltenKlasse != null ? CboKlasse.Items.IndexOf(behaltenKlasse) : -1;
                 CboKlasse.SelectedIndex = idx >= 0 ? idx : 0;
             }
+        }
+
+        // =====================================================
+        // Diag-Filter: Lehrer-Auswahlliste auf Diag-Auffällige beschränken
+        // =====================================================
+        private void BtnDiagFilter_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new DiagFilterDialog(_diagFilterKriterien, _diagFilterUnd) { Owner = this };
+            if (dlg.ShowDialog() != true) return;
+
+            if (dlg.FilterAufgehoben)
+            {
+                _diagFilterKriterien = null;
+                BtnDiagFilter.Content = "Diag-Filter";
+                BtnDiagFilter.ClearValue(Button.BackgroundProperty);
+            }
+            else
+            {
+                _diagFilterKriterien = dlg.GewählteIndizes;
+                _diagFilterUnd = dlg.UndVerknüpfung;
+                BtnDiagFilter.Content = $"Diag-Filter ({_diagFilterKriterien.Count})";
+                BtnDiagFilter.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xE0, 0x90));
+            }
+
+            string behaltenLehrer = CboLehrer.SelectedItem as string;
+            string behaltenKlasse = CboKlasse.SelectedItem as string;
+            FuelleLehrerKlasseDropdowns(behaltenLehrer, behaltenKlasse);
+
+            if (_diagFilterKriterien != null && CboLehrer.Items.Count == 0)
+            {
+                MessageBox.Show(
+                    "Kein Lehrer erfüllt die gewählten Diag-Kriterien in der aktuellen Lösung. Filter wird wieder aufgehoben.",
+                    "Diag-Filter", MessageBoxButton.OK, MessageBoxImage.Information);
+                _diagFilterKriterien = null;
+                BtnDiagFilter.Content = "Diag-Filter";
+                BtnDiagFilter.ClearValue(Button.BackgroundProperty);
+                FuelleLehrerKlasseDropdowns(behaltenLehrer, behaltenKlasse);
+            }
+
+            ZeichneLehrerGrid();
         }
 
         // =====================================================
@@ -1021,6 +1091,49 @@ namespace Stundenplan_V2
                 innerBorder.ContextMenuOpening += Teilbereich_ContextMenuOpening;
             }
 
+            return innerBorder;
+        }
+
+        // =====================================================
+        // "Ignoriert"-Karte im Parkbereich im selben Look wie ein echtes
+        // Plan-Feld (siehe BaueTeilbereich): gleicher Aufbau — erste Zeile
+        // fett (Klassen bzw. Fach als Ersatz für ZeilenText, da ignorierte
+        // Zeilen keinen eigenen ZeilenText mitbringen), Fach, Lehrer, UNr.
+        // Graue statt farbige Füllung markiert "nicht eingeplant"; keine
+        // Maus-Handler — reine Anzeige, nicht ziehbar, nicht anklickbar.
+        // =====================================================
+        private Border BauePseudoZelleIgnoriert(IgnorierterUnterricht iu, bool lehrerAnsicht)
+        {
+            var innerBorder = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(0xE4, 0xE4, 0xE4)), // grau statt hellblau
+                BorderBrush = Brushes.Gray,
+                BorderThickness = new Thickness(0.5),
+                Margin = new Thickness(2),
+                Padding = new Thickness(2),
+                Width = ZellBreite,
+                // Keine feste Height: die Karte zeigt mehr Textzeilen als eine
+                // normale Plan-Zelle (zusätzlich "Wst: X"), daher hier auf
+                // Inhalt wachsen lassen statt bei ZellBreite abzuschneiden.
+                MinHeight = ZellBreite,
+                ToolTip = "Ignoriert (i/x in UV) — Wst " + iu.Wst
+            };
+
+            string klassen = string.Join(",", iu.Klassen);
+
+            // Erste Zeile: Lehreransicht -> Klassen, Klassenansicht -> Fach
+            // (ignorierte Zeilen haben keinen eigenen ZeilenText).
+            string ersteZeile = lehrerAnsicht ? klassen : iu.Fach;
+
+            var tb = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
+            tb.Inlines.Add(new System.Windows.Documents.Run(ersteZeile + "\n") { FontWeight = FontWeights.Bold });
+            if (lehrerAnsicht)
+                tb.Inlines.Add(new System.Windows.Documents.Run(iu.Fach + "\n"));
+            tb.Inlines.Add(new System.Windows.Documents.Run(iu.Lehrer + "\n") { Foreground = Brushes.DarkSlateGray, FontWeight = FontWeights.SemiBold });
+            tb.Inlines.Add(new System.Windows.Documents.Run("UNr " + iu.UNr + "  (ignoriert)\n") { FontSize = 10, Foreground = Brushes.Gray });
+            tb.Inlines.Add(new System.Windows.Documents.Run("Wst: " + iu.Wst) { FontSize = 10, Foreground = Brushes.Gray });
+
+            innerBorder.Child = tb;
             return innerBorder;
         }
 
@@ -4236,7 +4349,9 @@ namespace Stundenplan_V2
             // Optional: ignorierte Unterrichte — kontextabhängig gefiltert.
             // Nach Klick in eine Lehrer-Zelle nur die des aktuellen Lehrers,
             // nach Klick in eine Klassen-Zelle nur die der aktuellen Klasse.
-            // Nur Anzeige (grau/kursiv), nicht ziehbar, nicht anklickbar.
+            // Optik identisch zu einem normalen Plan-Feld (BaueTeilbereich):
+            // gleicher Aufbau/Inhalt, nur grau statt farbig — nicht ziehbar,
+            // nicht anklickbar (reine Anzeige).
             if (ChkIgnorierteZeigen?.IsChecked == true)
             {
                 foreach (var iu in _ignorierteUnterrichte)
@@ -4246,29 +4361,7 @@ namespace Stundenplan_V2
                         : (aktKlasse != null && iu.Klassen.Contains(aktKlasse));
                     if (!passt) continue;
 
-                    string iKlassen = string.Join(",", iu.Klassen);
-                    string iZeile2 = "Fach: " + iu.Fach + "  |  Kl: " + iKlassen + "  |  L: " + iu.Lehrer + "  |  Wst: " + iu.Wst;
-
-                    var bd = new Border
-                    {
-                        Background = new SolidColorBrush(Color.FromRgb(0xEE, 0xEE, 0xEE)),
-                        BorderBrush = Brushes.DarkGray,
-                        BorderThickness = new Thickness(1),
-                        Margin = new Thickness(2),
-                        Padding = new Thickness(4)
-                    };
-                    var tb = new TextBlock
-                    {
-                        TextWrapping = TextWrapping.Wrap,
-                        FontSize = 12,
-                        FontStyle = FontStyles.Italic,
-                        Foreground = Brushes.DimGray
-                    };
-                    tb.Inlines.Add(new System.Windows.Documents.Run("UNr " + iu.UNr + "  ") { FontWeight = FontWeights.Bold });
-                    tb.Inlines.Add(new System.Windows.Documents.Run("(ignoriert)\n"));
-                    tb.Inlines.Add(new System.Windows.Documents.Run(iZeile2) { FontWeight = FontWeights.Bold });
-                    bd.Child = tb;
-                    ParkPanel.Children.Add(bd);
+                    ParkPanel.Children.Add(BauePseudoZelleIgnoriert(iu, _parkKontextLehrer));
                 }
             }
 

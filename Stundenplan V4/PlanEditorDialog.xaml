@@ -88,6 +88,10 @@
                                   SelectionChanged="CboLehrer_SelectionChanged"/>
                         <Button x:Name="BtnNaechsterLehrer" Content="&#9654;" Width="28" VerticalAlignment="Center"
                                 ToolTip="Naechster Lehrer" Click="BtnNaechsterLehrer_Click"/>
+                        <Button x:Name="BtnDiagFilter" Content="Diag-Filter" VerticalAlignment="Center"
+                                Margin="8,0,0,0" Padding="6,2"
+                                ToolTip="Lehrer-Auswahlliste auf Lehrer beschränken, die bestimmte Diag-Kriterien verletzen"
+                                Click="BtnDiagFilter_Click"/>
                     </StackPanel>
                     <TextBlock DockPanel.Dock="Top" Text="LEHRERPLAN" FontWeight="Bold" Height="20"
                                HorizontalAlignment="Center" Margin="0,0,0,2"/>

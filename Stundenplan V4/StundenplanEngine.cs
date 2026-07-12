@@ -140,7 +140,9 @@ namespace Stundenplan_V2
             bool mitKeine3InFolge = true,
             bool mitTagesregel = true,
             bool verbotMinus2Lehrer = false,
-            int timeoutSekunden = 5)
+            int timeoutSekunden = 5,
+            HashSet<int> ignoriereMinDoppelFürUNr = null,
+            bool mitZusammenhangsConstraint = true)
         {
             var model = new CpModel();
             var x = new BoolVar[B, S];
@@ -285,6 +287,11 @@ namespace Stundenplan_V2
                 {
                     int minD = blocks[b].Teile.Max(t => t.MinDoppel);
                     int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
+                    // Für die Diagnose-Bisektion (ErmittleDoppelstundenKombinationskonflikt):
+                    // Dopp.Std.-Minimum für ausgewählte UNrn testweise ignorieren,
+                    // um herauszufinden, ob GENAU diese das Modell blockieren.
+                    if (ignoriereMinDoppelFürUNr != null && ignoriereMinDoppelFürUNr.Contains(blocks[b].UNr))
+                        minD = 0;
                     var dVars = new List<BoolVar>();
                     for (int s = 0; s < S - 1; s++)
                         if (d[b, s] != null) dVars.Add(d[b, s]);
@@ -306,32 +313,35 @@ namespace Stundenplan_V2
                 // Doppelstunde an diesem Tag (dSum=0) ist nur 1 Stunde erlaubt; mit
                 // einer Doppelstunde (dSum=1) duerfen es bis zu 3 sein (die generelle
                 // Tagesregel-Obergrenze von 2 greift unabhaengig weiterhin).
-                foreach (var tag in tage)
-                {
-                    var daySlotsD = slots
-                        .Select((z, i) => new { z, i })
-                        .Where(z => z.z.WTag == tag)
-                        .Select(z => z.i)
-                        .ToList();
-
-                    for (int b = 0; b < B; b++)
+                // Per 'mitZusammenhangsConstraint' abschaltbar — nur für die Sequenz-
+                // diagnose gedacht, um diesen Constraint isoliert testen zu können.
+                if (mitZusammenhangsConstraint)
+                    foreach (var tag in tage)
                     {
-                        int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
-                        if (maxD <= 0) continue; // ohne Doppel-Vorgabe greift bereits limit=1 oben
+                        var daySlotsD = slots
+                            .Select((z, i) => new { z, i })
+                            .Where(z => z.z.WTag == tag)
+                            .Select(z => z.i)
+                            .ToList();
 
-                        var xVarsTag = daySlotsD.Select(s => x[b, s]).ToList();
-                        if (xVarsTag.Count == 0) continue;
-
-                        var dVarsTag = new List<BoolVar>();
-                        for (int idx = 0; idx < daySlotsD.Count - 1; idx++)
+                        for (int b = 0; b < B; b++)
                         {
-                            int s = daySlotsD[idx];
-                            if (d[b, s] != null) dVarsTag.Add(d[b, s]);
-                        }
+                            int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
+                            if (maxD <= 0) continue; // ohne Doppel-Vorgabe greift bereits limit=1 oben
 
-                        model.Add(LinearExpr.Sum(xVarsTag) <= 1 + 2 * LinearExpr.Sum(dVarsTag));
+                            var xVarsTag = daySlotsD.Select(s => x[b, s]).ToList();
+                            if (xVarsTag.Count == 0) continue;
+
+                            var dVarsTag = new List<BoolVar>();
+                            for (int idx = 0; idx < daySlotsD.Count - 1; idx++)
+                            {
+                                int s = daySlotsD[idx];
+                                if (d[b, s] != null) dVarsTag.Add(d[b, s]);
+                            }
+
+                            model.Add(LinearExpr.Sum(xVarsTag) <= 1 + 2 * LinearExpr.Sum(dVarsTag));
+                        }
                     }
-                }
 
                 // Verbot späte Doppelstunden
                 if (verbotSpäteDoppel)
@@ -711,6 +721,413 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
+        // Ermittelt konkrete UNr-Verletzungen, wenn das Doppelstunden-
+        // Constraint (Stufe 4 der Sequenzdiagnose) infeasible wird.
+        // Betrachtet werden nur Blöcke mit mindestens einem FixUNr-Slot,
+        // da nur bei diesen der Solver keine Ausweichmöglichkeit mehr hat:
+        //   1) Fixierte Doppelstunden über dem Dopp.Std.-Maximum
+        //   2) Fixierte Doppelstunde liegt über einer großen Pause
+        //      (und (E)-Spalte erlaubt das nicht)
+        //   3) Block ist vollständig fixiert und erreicht das Dopp.Std.-
+        //      Minimum nicht, weil zu wenige der Fix-Slots benachbart sind
+        // 'verbotSpäteDoppel' wird hier bewusst NICHT geprüft: der echte
+        // Solver exemptiert vollständig fixierte Doppelstunden von diesem
+        // Verbot (siehe VERBOT SPÄTE DOPPELSTUNDEN im Hauptmodell), eine
+        // Meldung dazu wäre also grundsätzlich ein falsches Positiv.
+        // =====================================================
+        private static List<string> ErmittleDoppelstundenKonflikte(
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            int S,
+            List<(int stundeVor, int stundeNach)> grossePausen)
+        {
+            var meldungen = new List<string>();
+
+            // Fixierte Slot-Indizes je Block sammeln
+            var fixSlotsProBlock = new Dictionary<int, List<int>>();
+            for (int s = 0; s < S; s++)
+                foreach (var unr in slots[s].FixUNrn)
+                {
+                    int bIdx = blocks.FindIndex(b => b.UNr == unr);
+                    if (bIdx < 0) continue;
+                    if (!fixSlotsProBlock.TryGetValue(bIdx, out var liste))
+                        fixSlotsProBlock[bIdx] = liste = new List<int>();
+                    liste.Add(s);
+                }
+
+            foreach (var kv in fixSlotsProBlock.OrderBy(kv => blocks[kv.Key].UNr))
+            {
+                var block = blocks[kv.Key];
+                var fixSlots = kv.Value.OrderBy(s => s).ToList();
+                var fixSlotsSet = new HashSet<int>(fixSlots);
+                int minD = block.Teile.Count > 0 ? block.Teile.Max(t => t.MinDoppel) : 0;
+                int maxD = block.Teile.Count > 0 ? block.Teile.Max(t => t.MaxDoppel) : 0;
+
+                // Benachbarte Fix-Slot-Paare = fixierte Doppelstunden
+                var fixDoppelPaare = new List<(int s1, int s2)>();
+                foreach (int s in fixSlots)
+                {
+                    int sNext = s + 1;
+                    if (fixSlotsSet.Contains(sNext) &&
+                        slots[s].WTag == slots[sNext].WTag &&
+                        slots[s].Stunde + 1 == slots[sNext].Stunde)
+                        fixDoppelPaare.Add((s, sNext));
+                }
+
+                string OrtVon((int s1, int s2) p) =>
+                    $"{slots[p.s1].WTag} Std.{slots[p.s1].Stunde}-{slots[p.s2].Stunde}";
+
+                // 1) Dopp.Std.-Maximum durch Fix-Slots überschritten
+                if (maxD > 0 && fixDoppelPaare.Count > maxD)
+                    meldungen.Add(
+                        $"UNr {block.UNr}: {fixDoppelPaare.Count} fixierte Doppelstunde(n), aber Dopp.Std.-Maximum ist {maxD} " +
+                        $"({string.Join(", ", fixDoppelPaare.Select(OrtVon))})");
+
+                // 2) Fixierte Doppelstunde über einer großen Pause (ohne (E)-Freigabe)
+                if (!block.DoppelÜberPauseErlaubt && grossePausen != null)
+                    foreach (var p in fixDoppelPaare)
+                    {
+                        bool istPause = grossePausen.Any(gp =>
+                            gp.stundeVor == slots[p.s1].Stunde && gp.stundeNach == slots[p.s2].Stunde);
+                        if (istPause)
+                            meldungen.Add(
+                                $"UNr {block.UNr}: fixierte Doppelstunde {OrtVon(p)} liegt über einer großen Pause " +
+                                $"— Spalte (E) ist für diese UNr nicht gesetzt.");
+                    }
+
+                // Hinweis: 'verbotSpäteDoppel' wird bewusst NICHT geprüft — der echte
+                // Solver (siehe VERBOT SPÄTE DOPPELSTUNDEN weiter unten) exemptiert
+                // Doppelstunden, bei denen beide Slots per FixUNrn vorgegeben sind,
+                // von diesem Verbot. Jedes Paar in fixDoppelPaare besteht per
+                // Konstruktion aus zwei für diese UNr fixierten Slots und ist damit
+                // immer exemptiert — eine Meldung hier wäre also stets ein falsches
+                // Positiv und stünde im Widerspruch zum tatsächlichen Solver-Verhalten.
+
+                // 3) Vollständig fixierter Block erreicht Dopp.Std.-Minimum nicht.
+                //    Nur melden, wenn schon die reine ADJAZENZ nicht ausreicht
+                //    (also selbst ohne große-Pause-Sperre zu wenige benachbarte
+                //    Fix-Slot-Paare existieren). Ist genug Adjazenz vorhanden und
+                //    nur durch eine große Pause blockiert, wurde das bereits
+                //    unter 2) konkret gemeldet — eine zusätzliche "0 Paare"-
+                //    Meldung wäre dort redundant und irreführend, da ja sehr wohl
+                //    ein Paar existiert (nur eben eines, das durch eine andere
+                //    Regel verboten ist).
+                if (minD > 0 && fixSlots.Count == block.Wst && fixDoppelPaare.Count < minD)
+                    meldungen.Add(
+                        $"UNr {block.UNr}: vollständig fixiert ({fixSlots.Count} von {block.Wst} Wst), benötigt " +
+                        $"mind. {minD} Doppelstunde(n) (Dopp.Std.), aber nur {fixDoppelPaare.Count} der fixierten Slots " +
+                        $"liegen überhaupt benachbart (zu wenige mögliche Doppelstunden-Paare).");
+            }
+
+            return meldungen;
+        }
+
+        // =====================================================
+        // Ergänzung zu ErmittleDoppelstundenKonflikte: findet Blöcke, die
+        // ein Dopp.Std.-Minimum > 0 haben, aber im GESAMTEN Zeitraster zu
+        // wenige zusammenhängende freie Slot-Paare übrig haben — unabhängig
+        // von FixUNrn. Ursache sind dann Klassen- bzw. Lehrer-Zeitwunsch-
+        // −3-Sperren (Sheets ZWK/ZWL), die so viele Slots blockieren, dass
+        // keine ausreichende Anzahl möglicher Doppelstunden-Zeitfenster
+        // mehr übrig bleibt. Das greift z. B. bei sehr vielen −3-Sperren,
+        // auch wenn gar keine UNr fixiert ist.
+        // =====================================================
+        private static List<string> ErmittleDoppelstundenKapazitätsKonflikte(
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            int S,
+            HashSet<string> ignoriereLehrerSperren,
+            List<(int stundeVor, int stundeNach)> grossePausen,
+            bool verbotSpäteDoppel)
+        {
+            var meldungen = new List<string>();
+
+            bool SlotGesperrtFürBlock(int s, UnterrichtsBlock block)
+            {
+                foreach (var t in block.Teile)
+                {
+                    foreach (var k in t.Klassen)
+                        if (slots[s].KlassenWunsch.TryGetValue(k, out int kw) && kw == -3)
+                            return true;
+                    if (!ignoriereLehrerSperren.Contains(t.Lehrer) &&
+                        slots[s].LehrerWunsch.TryGetValue(t.Lehrer, out int lw) && lw == -3)
+                        return true;
+                }
+                return false;
+            }
+
+            foreach (var block in blocks)
+            {
+                int minD = block.Teile.Count > 0 ? block.Teile.Max(t => t.MinDoppel) : 0;
+                if (minD <= 0) continue;
+
+                int gültigePaare = 0;
+                for (int s = 0; s < S - 1; s++)
+                {
+                    if (slots[s].WTag != slots[s + 1].WTag) continue;
+                    if (slots[s].Stunde + 1 != slots[s + 1].Stunde) continue;
+                    if (SlotGesperrtFürBlock(s, block) || SlotGesperrtFürBlock(s + 1, block)) continue;
+
+                    if (!block.DoppelÜberPauseErlaubt && grossePausen != null &&
+                        grossePausen.Any(p => p.stundeVor == slots[s].Stunde && p.stundeNach == slots[s + 1].Stunde))
+                        continue;
+
+                    if (verbotSpäteDoppel && slots[s].Stunde >= 6) continue;
+
+                    gültigePaare++;
+                }
+
+                if (gültigePaare < minD)
+                    meldungen.Add(
+                        $"UNr {block.UNr}: benötigt mind. {minD} Doppelstunde(n) (Dopp.Std.), aber im gesamten " +
+                        $"Zeitraster bleiben nach Abzug aller Klassen-/Lehrer-−3-Sperren" +
+                        $"{(grossePausen != null && grossePausen.Count > 0 ? ", großer Pausen" : "")}" +
+                        $"{(verbotSpäteDoppel ? "/verbotSpäteDoppel" : "")} nur {gültigePaare} mögliche(s) " +
+                        $"Doppelstunden-Zeitfenster übrig.");
+            }
+
+            return meldungen;
+        }
+
+        // =====================================================
+        // Prüft die "Zusammenhangs-Regel" (siehe ZUSAMMENHANGS-CONSTRAINT in
+        // LöseModellMitFlags): Blöcke mit Dopp.Std.-Maximum > 0 dürfen an
+        // einem Tag nur 1 Einzelstunde OHNE zusammenhängende Doppelstunde
+        // haben. Für jeden solchen Block wird pro Tag ermittelt, wie viele
+        // Slots nach Abzug aller Klassen-/Lehrer-−3-Sperren noch frei sind
+        // und ob darunter ein benachbartes (doppelstunden-fähiges) Paar
+        // liegt. Tage ohne ein solches Paar tragen dann nur mit maximal 1
+        // Stunde zur erreichbaren Wochenstundenzahl bei. Reicht die Summe
+        // über alle Tage nicht an block.Wst heran, wird das gemeldet.
+        // Reine Kapazitätsrechnung (kein echter Solve) — kann daher auch
+        // false positives im Zusammenspiel mit anderen Blöcken übersehen,
+        // liefert aber einen schnellen, konkreten Anhaltspunkt.
+        // =====================================================
+        private static List<string> ErmittleZusammenhangsKonflikte(
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            int S,
+            HashSet<string> ignoriereLehrerSperren)
+        {
+            var meldungen = new List<string>();
+
+            bool SlotGesperrtFürBlock(int s, UnterrichtsBlock block)
+            {
+                foreach (var t in block.Teile)
+                {
+                    foreach (var k in t.Klassen)
+                        if (slots[s].KlassenWunsch.TryGetValue(k, out int kw) && kw == -3)
+                            return true;
+                    if (!ignoriereLehrerSperren.Contains(t.Lehrer) &&
+                        slots[s].LehrerWunsch.TryGetValue(t.Lehrer, out int lw) && lw == -3)
+                        return true;
+                }
+                return false;
+            }
+
+            var tage = slots.Select(z => z.WTag).Distinct().ToList();
+
+            foreach (var block in blocks)
+            {
+                int maxD = block.Teile.Count > 0 ? block.Teile.Max(t => t.MaxDoppel) : 0;
+                if (maxD <= 0) continue; // Regel greift nur für Blöcke mit Doppelstunden-Erlaubnis
+
+                int kapazität = 0;
+                foreach (var tag in tage)
+                {
+                    var freieSlotsTag = slots
+                        .Select((z, i) => new { z, i })
+                        .Where(z => z.z.WTag == tag && !SlotGesperrtFürBlock(z.i, block))
+                        .Select(z => z.i)
+                        .OrderBy(i => i)
+                        .ToList();
+                    if (freieSlotsTag.Count == 0) continue;
+
+                    bool hatBenachbartesPaar = false;
+                    for (int idx = 0; idx < freieSlotsTag.Count - 1; idx++)
+                    {
+                        int s1 = freieSlotsTag[idx], s2 = freieSlotsTag[idx + 1];
+                        if (slots[s1].Stunde + 1 == slots[s2].Stunde)
+                        {
+                            hatBenachbartesPaar = true;
+                            break;
+                        }
+                    }
+
+                    kapazität += hatBenachbartesPaar ? freieSlotsTag.Count : Math.Min(freieSlotsTag.Count, 1);
+                }
+
+                if (kapazität < block.Wst)
+                    meldungen.Add(
+                        $"UNr {block.UNr}: benötigt {block.Wst} Wst, aber unter der Zusammenhangs-Regel " +
+                        $"(max. 1 Einzelstunde pro Tag ohne zusammenhängende Doppelstunde) bleiben wegen der " +
+                        $"Klassen-/Lehrer-−3-Sperren rechnerisch nur {kapazität} Stunde(n)/Woche erreichbar.");
+            }
+
+            return meldungen;
+        }
+
+
+        // =====================================================
+        // Letzter Diagnose-Schritt für Stufe 4, falls weder die FixUNr- noch
+        // die Kapazitäts-Prüfung eine Einzelursache findet: dann liegt es
+        // vermutlich daran, dass mehrere Blöcke GEMEINSAM um dieselben
+        // wenigen freien Doppelstunden-Zeitfenster konkurrieren (jeder für
+        // sich hätte genug Platz, aber nicht alle gleichzeitig).
+        //
+        // Vorgehen (Bisektion): Zuerst wird für ALLE UNrn mit Dopp.Std.-
+        // Minimum > 0 das Minimum testweise ignoriert. Wird das Modell dann
+        // feasible, werden die UNrn nacheinander wieder "scharf geschaltet"
+        // (ihr Minimum wieder erzwungen) und jeweils neu gelöst. Kippt eine
+        // Reaktivierung die Lösbarkeit, bleibt diese UNr (mit-)ursächlich
+        // und wird gemeldet. Das Ergebnis ist keine global minimale, aber
+        // eine praktisch nützliche unlösbare Kombination.
+        //
+        // Wegen der vielen Solver-Aufrufe nur mit kurzem Timeout je Test und
+        // nur bis zu einer Obergrenze an Kandidaten (sonst zu langsam) –
+        // bei Überschreitung wird nur die Kandidatenliste ohne Bisektion
+        // gemeldet.
+        // =====================================================
+        private static List<string> ErmittleDoppelstundenKombinationskonflikt(
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            int B, int S,
+            HashSet<string> ignoriereLehrerSperren,
+            Dictionary<string, int> fachraumLimit,
+            List<(int stundeVor, int stundeNach)> grossePausen,
+            bool verbotSpäteDoppel)
+        {
+            var meldungen = new List<string>();
+            const int proTestTimeout = 5;
+            const int maxKandidaten = 30;
+
+            var problemUNrn = blocks
+                .Where(b => b.Teile.Count > 0 && b.Teile.Max(t => t.MinDoppel) > 0)
+                .Select(b => b.UNr)
+                .Distinct()
+                .ToList();
+
+            if (problemUNrn.Count == 0)
+                return meldungen;
+
+            bool IstFeasible(HashSet<int> ignorierteMinDoppel)
+            {
+                var status = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                    mitKlassenSperren: true,
+                    fachraumLimit: fachraumLimit, mitRäume: true,
+                    extraFreieTage: null, mitFreeDay: false,
+                    grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel, mitDoppelstunden: true,
+                    mitFachProKlasseProTag: true,
+                    timeoutSekunden: proTestTimeout,
+                    ignoriereMinDoppelFürUNr: ignorierteMinDoppel);
+                return status == CpSolverStatus.Optimal || status == CpSolverStatus.Feasible;
+            }
+
+            // Baseline: wird es feasible, wenn ALLE Dopp.Std.-Minima ignoriert werden?
+            var alleIgnoriert = new HashSet<int>(problemUNrn);
+            if (!IstFeasible(alleIgnoriert))
+            {
+                // Liegt nicht (nur) an den Dopp.Std.-Minima selbst — Bisektion hilft hier nicht.
+                return meldungen;
+            }
+
+            if (problemUNrn.Count > maxKandidaten)
+            {
+                meldungen.Add(
+                    $"Wird das Dopp.Std.-Minimum für ALLE {problemUNrn.Count} UNrn mit Doppelstunden-Vorgabe ignoriert, " +
+                    "wird das Modell lösbar — die Ursache liegt also in der Kombination mehrerer dieser UNrn. " +
+                    $"Zu viele Kandidaten ({problemUNrn.Count} > {maxKandidaten}) für eine automatische Eingrenzung; " +
+                    $"betroffene UNrn: {string.Join(", ", problemUNrn)}.");
+                return meldungen;
+            }
+
+            // Greedy Vorwärtssuche: UNrn nacheinander wieder scharf schalten.
+            var ignoriert = new HashSet<int>(problemUNrn);
+            var schuldige = new List<int>();
+            foreach (var unr in problemUNrn)
+            {
+                ignoriert.Remove(unr);
+                if (!IstFeasible(ignoriert))
+                {
+                    ignoriert.Add(unr); // bleibt ignoriert, sonst bricht der weitere Test
+                    schuldige.Add(unr);
+                }
+            }
+
+            if (schuldige.Count > 0)
+                meldungen.Add(
+                    "Diese UNrn benötigen zusammen mehr Doppelstunden-Zeitfenster, als bei den aktuellen " +
+                    "Zeitwunsch-Sperren/Räumen gemeinsam verfügbar sind (Modell wird erst lösbar, wenn deren " +
+                    "Dopp.Std.-Minimum reduziert oder deren Zeitwunsch-Sperren gelockert werden): " +
+                    string.Join(", ", schuldige.Select(u => "UNr " + u)) + ".");
+
+            return meldungen;
+        }
+
+
+        // =====================================================
+        // Ermittelt konkrete UNr-Verletzungen, wenn das Basis-Modell
+        // (Stufe 1 der Sequenzdiagnose) infeasible wird und dabei die
+        // Tagesregel (max. Stunden desselben Blocks pro Tag) bzw. das
+        // eng verwandte "Keine 3 in Folge"-Verbot die Ursache ist.
+        // Betrachtet werden nur Blöcke mit FixUNr-Slots, da nur bei
+        // diesen der Solver keine Ausweichmöglichkeit mehr hat.
+        // Limit pro Tag: 1 Stunde ohne Dopp.Std.-Vorgabe bei Wst>=2,
+        // sonst 2 Stunden (siehe Tagesregel in LöseModellMitFlags).
+        // =====================================================
+        private static List<string> ErmittleTagesregelKonflikte(
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            int S)
+        {
+            var meldungen = new List<string>();
+
+            var fixSlotsProBlock = new Dictionary<int, List<int>>();
+            for (int s = 0; s < S; s++)
+                foreach (var unr in slots[s].FixUNrn)
+                {
+                    int bIdx = blocks.FindIndex(b => b.UNr == unr);
+                    if (bIdx < 0) continue;
+                    if (!fixSlotsProBlock.TryGetValue(bIdx, out var liste))
+                        fixSlotsProBlock[bIdx] = liste = new List<int>();
+                    liste.Add(s);
+                }
+
+            foreach (var kv in fixSlotsProBlock.OrderBy(kv => blocks[kv.Key].UNr))
+            {
+                var block = blocks[kv.Key];
+                var fixSlots = kv.Value.OrderBy(s => s).ToList();
+                int maxD = block.Teile.Count > 0 ? block.Teile.Max(t => t.MaxDoppel) : 0;
+                int limit = (maxD == 0 && block.Wst >= 2) ? 1 : 2;
+
+                // Tagesregel: zu viele Fix-Slots desselben Blocks am selben Tag
+                foreach (var g in fixSlots.GroupBy(s => slots[s].WTag))
+                {
+                    if (g.Count() <= limit) continue;
+                    string stunden = string.Join(", ", g.OrderBy(s => slots[s].Stunde).Select(s => "Std." + slots[s].Stunde));
+                    meldungen.Add(
+                        $"UNr {block.UNr}: {g.Count()} fixierte Stunden an {g.Key} ({stunden}), erlaubt sind max. {limit} pro Tag " +
+                        (limit == 1
+                            ? "(Tagesregel: keine Doppelstunden-Vorgabe in Dopp.Std. gesetzt, obwohl Wst ≥ 2)."
+                            : "(Tagesregel)."));
+                }
+
+                // Eng verwandt: "Keine 3 in Folge" bei 3 direkt aufeinanderfolgenden Fix-Slots
+                for (int i = 0; i < fixSlots.Count - 2; i++)
+                {
+                    int s0 = fixSlots[i], s1v = fixSlots[i + 1], s2v = fixSlots[i + 2];
+                    if (slots[s0].WTag == slots[s1v].WTag && slots[s0].WTag == slots[s2v].WTag &&
+                        slots[s0].Stunde + 1 == slots[s1v].Stunde && slots[s0].Stunde + 2 == slots[s2v].Stunde)
+                        meldungen.Add(
+                            $"UNr {block.UNr}: 3 fixierte Stunden in Folge an {slots[s0].WTag} " +
+                            $"(Std.{slots[s0].Stunde}-{slots[s2v].Stunde}) — 'Keine 3 in Folge' verletzt.");
+                }
+            }
+
+            return meldungen;
+        }
+
+        // =====================================================
         // Sequenzielle Diagnose: fügt Constraints schrittweise hinzu,
         // bis das Modell infeasible wird — und identifiziert damit
         // den schuldigen Constraint-Block.
@@ -766,6 +1183,14 @@ namespace Stundenplan_V2
                     DiagLog(log, $"  [Diagnose]    → {anzahlKlassenSperren} Klassen-Sperren oder Tagesregel/Lehrerregel im Fix-UNr-Setup blockieren.");
                 else
                     DiagLog(log, "  [Diagnose]    → Tagesregel, Lehrerregel oder Klassenregel werden durch FixUNrn verletzt.");
+
+                var tagesregelKonflikte = ErmittleTagesregelKonflikte(blocks, slots, S);
+                if (tagesregelKonflikte.Count > 0)
+                {
+                    DiagLog(log, "  [Diagnose]    Konkrete Tagesregel-Verletzungen aus FixUNrn:");
+                    foreach (var m in tagesregelKonflikte)
+                        DiagLog(log, $"  [Diagnose]      • {m}");
+                }
                 return;
             }
             DiagLog(log, "  [Diagnose] ✓ Basis-Modell feasible.");
@@ -837,23 +1262,119 @@ namespace Stundenplan_V2
             }
             DiagLog(log, "  [Diagnose] ✓ Mit 'Fach pro Klasse pro Tag' feasible.");
 
-            // Stufe 4: + Doppelstunden
-            var s4 = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+            // Stufe 4: + Doppelstunden — aufgeteilt in Sub-Stufen, damit bei
+            // Infeasibility klar wird, WELCHER Teil-Mechanismus schuld ist:
+            // 4a) nur die reinen Dopp.Std.-Grenzen (Min/Max je Block)
+            // 4b) + Zusammenhangs-Regel (max. 1 Einzelstunde/Tag ohne Doppelstunde)
+            // 4c) + große Pausen
+            // 4d) + verbotSpäteDoppel  (= vollständige Stufe 4)
+            var s4a = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                 mitKlassenSperren: true,
                 fachraumLimit: fachraumLimit, mitRäume: true,
                 extraFreieTage: null, mitFreeDay: false,
-                grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel, mitDoppelstunden: true,
-                mitFachProKlasseProTag: true);
-            if (!IstOK(s4))
+                grossePausen: null, verbotSpäteDoppel: false, mitDoppelstunden: true,
+                mitFachProKlasseProTag: true,
+                mitZusammenhangsConstraint: false);
+            if (!IstOK(s4a))
             {
-                DiagLog(log, "  [Diagnose] ❌ Mit Doppelstunden-Constraint infeasible!");
-                DiagLog(log, "  [Diagnose]    → Konflikt zwischen MinDoppel/MaxDoppel und FixUNr-Slots.");
+                DiagLog(log, "  [Diagnose] ❌ Schon die reinen Dopp.Std.-Grenzen (Min/Max je Block) sind infeasible!");
+                DiagLog(log, "  [Diagnose]    → Konflikt zwischen MinDoppel/MaxDoppel und FixUNr-Slots bzw. Zeitwunsch-Sperren.");
                 DiagLog(log, "  [Diagnose]    Prüfen: 'Dopp.Std.'-Spalte vs. tatsächliche Verteilung.");
-                if (grossePausen != null && grossePausen.Count > 0)
-                    DiagLog(log, "  [Diagnose]    Oder: große Pausen verbieten erwartete Doppelstunden.");
-                if (verbotSpäteDoppel)
-                    DiagLog(log, "  [Diagnose]    Oder: 'verbotSpäteDoppel' verbietet Doppelstunden ab Stunde 6.");
+
+                DiagLog(log, "  [Diagnose]    Konkrete Verletzungen aus FixUNrn:");
+                var doppelKonflikte = ErmittleDoppelstundenKonflikte(blocks, slots, S, grossePausen);
+                if (doppelKonflikte.Count > 0)
+                    foreach (var m in doppelKonflikte)
+                        DiagLog(log, $"  [Diagnose]      • {m}");
+                else
+                    DiagLog(log, "  [Diagnose]      Keine direkten Verletzungen in FixUNrn gefunden.");
+
+                var kapazitätsKonflikte = ErmittleDoppelstundenKapazitätsKonflikte(
+                    blocks, slots, S, ignoriereLehrerSperren, grossePausen, verbotSpäteDoppel);
+                if (kapazitätsKonflikte.Count > 0)
+                {
+                    DiagLog(log, "  [Diagnose]    Blöcke, denen durch Zeitwunsch-−3-Sperren (ZWK/ZWL) zu wenige mögliche Doppelstunden-Zeitfenster bleiben:");
+                    foreach (var m in kapazitätsKonflikte)
+                        DiagLog(log, $"  [Diagnose]      • {m}");
+                }
+
+                if (doppelKonflikte.Count == 0 && kapazitätsKonflikte.Count == 0)
+                {
+                    DiagLog(log, "  [Diagnose]      Keine direkte Einzelursache gefunden — teste Kombinationen mehrerer Blöcke (kann etwas dauern)...");
+                    var kombiKonflikte = ErmittleDoppelstundenKombinationskonflikt(
+                        blocks, slots, B, S, ignoriereLehrerSperren, fachraumLimit, grossePausen, verbotSpäteDoppel);
+                    if (kombiKonflikte.Count > 0)
+                        foreach (var m in kombiKonflikte)
+                            DiagLog(log, $"  [Diagnose]      • {m}");
+                    else
+                        DiagLog(log, "  [Diagnose]      Auch keine Kombinationsursache gefunden — vermutlich Zusammenspiel mit Räumen/Klassen-Sperren jenseits der Doppelstunden selbst.");
+                }
                 return;
+            }
+            DiagLog(log, "  [Diagnose] ✓ Reine Dopp.Std.-Grenzen (Min/Max) sind für sich feasible.");
+
+            var s4b = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                mitKlassenSperren: true,
+                fachraumLimit: fachraumLimit, mitRäume: true,
+                extraFreieTage: null, mitFreeDay: false,
+                grossePausen: null, verbotSpäteDoppel: false, mitDoppelstunden: true,
+                mitFachProKlasseProTag: true,
+                mitZusammenhangsConstraint: true);
+            if (!IstOK(s4b))
+            {
+                DiagLog(log, "  [Diagnose] ❌ Mit Zusammenhangs-Regel infeasible!");
+                DiagLog(log, "  [Diagnose]    → Blöcke mit Dopp.Std.-Maximum > 0 dürfen an einem Tag nur 1 Einzelstunde OHNE zusammenhängende Doppelstunde haben.");
+                DiagLog(log, "  [Diagnose]    Das kollidiert vermutlich mit Klassen-/Lehrer-Zeitwunsch-Sperren (ZWK/ZWL), die an vielen Tagen nur noch einzelne, nicht benachbarte Slots übrig lassen.");
+                var zusKonflikte = ErmittleZusammenhangsKonflikte(blocks, slots, S, ignoriereLehrerSperren);
+                if (zusKonflikte.Count > 0)
+                    foreach (var m in zusKonflikte)
+                        DiagLog(log, $"  [Diagnose]      • {m}");
+                else
+                    DiagLog(log, "  [Diagnose]      Keine einzelne UNr eindeutig identifizierbar — vermutlich Kombination mehrerer Blöcke, die sich gegenseitig die Doppelstunden-Zeitfenster wegnehmen.");
+                return;
+            }
+            DiagLog(log, "  [Diagnose] ✓ Mit Zusammenhangs-Regel feasible.");
+
+            if (grossePausen != null && grossePausen.Count > 0)
+            {
+                var s4c = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                    mitKlassenSperren: true,
+                    fachraumLimit: fachraumLimit, mitRäume: true,
+                    extraFreieTage: null, mitFreeDay: false,
+                    grossePausen: grossePausen, verbotSpäteDoppel: false, mitDoppelstunden: true,
+                    mitFachProKlasseProTag: true,
+                    mitZusammenhangsConstraint: true);
+                if (!IstOK(s4c))
+                {
+                    DiagLog(log, "  [Diagnose] ❌ Mit großen Pausen infeasible!");
+                    DiagLog(log, "  [Diagnose]    → Große Pausen verbieten Doppelstunden über die Pause (außer Spalte (E) gesetzt) und lassen zusammen mit den Zeitwunsch-Sperren zu wenig Zeitfenster übrig.");
+                    var pauseKonflikte = ErmittleDoppelstundenKonflikte(blocks, slots, S, grossePausen);
+                    if (pauseKonflikte.Count > 0)
+                        foreach (var m in pauseKonflikte)
+                            DiagLog(log, $"  [Diagnose]      • {m}");
+                    else
+                        DiagLog(log, "  [Diagnose]      Keine einzelne UNr eindeutig identifizierbar — vermutlich Kombination mehrerer Blöcke.");
+                    return;
+                }
+                DiagLog(log, "  [Diagnose] ✓ Mit großen Pausen feasible.");
+            }
+
+            var s4 = s4b;
+            if (verbotSpäteDoppel)
+            {
+                s4 = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                    mitKlassenSperren: true,
+                    fachraumLimit: fachraumLimit, mitRäume: true,
+                    extraFreieTage: null, mitFreeDay: false,
+                    grossePausen: grossePausen, verbotSpäteDoppel: true, mitDoppelstunden: true,
+                    mitFachProKlasseProTag: true,
+                    mitZusammenhangsConstraint: true);
+                if (!IstOK(s4))
+                {
+                    DiagLog(log, "  [Diagnose] ❌ Mit 'verbotSpäteDoppel' infeasible!");
+                    DiagLog(log, "  [Diagnose]    → Das Verbot später Doppelstunden (ab Stunde 6) lässt zusammen mit den übrigen Sperren zu wenig Zeitfenster übrig (vollständig fixierte Doppelstunden sind davon ausgenommen).");
+                    return;
+                }
             }
             DiagLog(log, "  [Diagnose] ✓ Mit Doppelstunden feasible.");
 

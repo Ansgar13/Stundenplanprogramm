@@ -85,6 +85,22 @@ namespace Stundenplan_V2
                 if (input.FtDiagnose != null)
                     foreach (var zeile in input.FtDiagnose)
                         Log(zeile);
+
+                // Warnung, falls UV-Zeilen ohne Fach und/oder Klasse gefunden wurden.
+                // Solche Zeilen können den Solver ohne erkennbaren Grund "infeasible"
+                // melden lassen (siehe Kapitel 2.1 der Anleitung).
+                if (input.UvFachKlasseWarnungen != null && input.UvFachKlasseWarnungen.Count > 0)
+                {
+                    Log($"⚠ ACHTUNG: {input.UvFachKlasseWarnungen.Count} Zeile(n) in UV ohne Fach und/oder Klasse:");
+                    foreach (var w in input.UvFachKlasseWarnungen)
+                        Log("   " + w);
+                    MessageBox.Show(
+                        $"Achtung: {input.UvFachKlasseWarnungen.Count} Zeile(n) in der UV haben kein Fach und/oder keine Klasse eingetragen.\n\n" +
+                        "Das ist ein Pflichtfeld und kann beim Solverlauf zu einer scheinbar unerklärlichen " +
+                        "Unlösbarkeit (Infeasible) führen.\n\n" +
+                        "Details siehe Log-Fenster.",
+                        "Warnung: UV unvollständig", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
                 // In-Memory-Lösungen leeren: nach dem Neuladen gelten nur noch
                 // die Lösungen, die tatsächlich in der Excel-Datei stehen.
                 // Sonst würden zuvor manuell geloeschte Lösungen aus dem Speicher
