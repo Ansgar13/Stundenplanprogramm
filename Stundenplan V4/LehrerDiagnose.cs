@@ -245,7 +245,8 @@ namespace Stundenplan_V2
             string excelPfad,
             List<(string label, List<LehrerDiagnoseErgebnis> diagnosen)> lösungen,
             bool vorherLöschen = false,
-            bool meldeLeherMinus2 = false)
+            bool meldeLeherMinus2 = false,
+            List<(string label, int spaetePaedEinheiten, int qualitaet)> zusatzDaten = null)
         {
             using var wb = new XLWorkbook(excelPfad);
 
@@ -498,6 +499,47 @@ namespace Stundenplan_V2
                 sheet.Cell(sumZeile, col + vOffS + 1).Style.Font.Bold = true;
                 sheet.Cell(sumZeile, col + vOffS + 1).Style.Fill.BackgroundColor =
                     sumTR > 0 ? XLColor.LightPink : XLColor.LightGray;
+            }
+
+            // Zwei zusätzliche Zeilen direkt unter "Summe": Anzahl der späten
+            // pädagogischen Einheiten und der Qualitätsfaktor der Lösung
+            // (beides Kennzahlen der GESAMTEN Lösung, nicht pro Lehrer -
+            // daher je Lösungsblock nur EIN Wert in der ersten Datenspalte).
+            int spaetePaedZeile = sumZeile + 1;
+            int qualitätZeile   = sumZeile + 2;
+
+            if (sheet.Cell(spaetePaedZeile, 1).IsEmpty())
+            {
+                sheet.Cell(spaetePaedZeile, 1).Value = "Späte päd. Einheiten";
+                sheet.Cell(spaetePaedZeile, 1).Style.Font.Bold = true;
+                sheet.Cell(spaetePaedZeile, 1).Style.Fill.BackgroundColor = XLColor.LightGray;
+            }
+            if (sheet.Cell(qualitätZeile, 1).IsEmpty())
+            {
+                sheet.Cell(qualitätZeile, 1).Value = "Qualitätsfaktor";
+                sheet.Cell(qualitätZeile, 1).Style.Font.Bold = true;
+                sheet.Cell(qualitätZeile, 1).Style.Fill.BackgroundColor = XLColor.LightGray;
+            }
+
+            if (zusatzDaten != null)
+            {
+                for (int i = 0; i < lösungen.Count; i++)
+                {
+                    int col = startCol + i * (colsProLösung + 1);
+                    string label = lösungen[i].label;
+
+                    var z = zusatzDaten.FirstOrDefault(x => x.label == label);
+                    if (z.label == null) continue; // keine Zusatzdaten für diese Lösung übergeben
+
+                    sheet.Cell(spaetePaedZeile, col).Value = z.spaetePaedEinheiten;
+                    sheet.Cell(spaetePaedZeile, col).Style.Font.Bold = true;
+                    sheet.Cell(spaetePaedZeile, col).Style.Fill.BackgroundColor =
+                        z.spaetePaedEinheiten > 0 ? XLColor.LightPink : XLColor.LightGray;
+
+                    sheet.Cell(qualitätZeile, col).Value = z.qualitaet;
+                    sheet.Cell(qualitätZeile, col).Style.Font.Bold = true;
+                    sheet.Cell(qualitätZeile, col).Style.Fill.BackgroundColor = XLColor.LightGray;
+                }
             }
 
             sheet.Columns().AdjustToContents();

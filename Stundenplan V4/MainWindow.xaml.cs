@@ -235,7 +235,16 @@ namespace Stundenplan_V2
                             input.LehrerFreiTageMinus2)))
                     .ToList();
 
-                LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten, vorherLöschen: true, meldeLeherMinus2: meldeMinus2);
+                var zusatzDaten = letzteSolutions
+                    .Select(sol =>
+                    {
+                        var z = BerechneZusatzDiagWerte(sol.belegung, sol.blocks);
+                        return (sol.label, z.spaetePaed, z.qualitaet);
+                    })
+                    .ToList();
+
+                LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten, vorherLöschen: true,
+                    meldeLeherMinus2: meldeMinus2, zusatzDaten: zusatzDaten);
 
                 // Dstd-F: Doppelstunden-Verletzungen je Lehrer / UNr
                 var dstdFDaten = letzteSolutions
@@ -459,8 +468,17 @@ namespace Stundenplan_V2
                                 input.ExtraFreieTage,
                                 input.LehrerFreiTageMinus2)))
                         .ToList();
+
+                    var zusatzDaten6 = letzteSolutions
+                        .Select(sol =>
+                        {
+                            var z = BerechneZusatzDiagWerte(sol.belegung, sol.blocks);
+                            return (sol.label, z.spaetePaed, z.qualitaet);
+                        })
+                        .ToList();
+
                     LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten,
-                        vorherLöschen: true, meldeLeherMinus2: meldeMinus2);
+                        vorherLöschen: true, meldeLeherMinus2: meldeMinus2, zusatzDaten: zusatzDaten6);
 
                     // Dstd-F: Doppelstunden-Verletzungen je Lehrer / UNr
                     var dstdFDaten6 = letzteSolutions
@@ -653,8 +671,17 @@ namespace Stundenplan_V2
                                 input.ExtraFreieTage,
                                 input.LehrerFreiTageMinus2)))
                         .ToList();
+
+                    var zusatzDaten9 = letzteSolutions
+                        .Select(sol =>
+                        {
+                            var z = BerechneZusatzDiagWerte(sol.belegung, sol.blocks);
+                            return (sol.label, z.spaetePaed, z.qualitaet);
+                        })
+                        .ToList();
+
                     LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten,
-                        vorherLöschen: true, meldeLeherMinus2: meldeMinus2);
+                        vorherLöschen: true, meldeLeherMinus2: meldeMinus2, zusatzDaten: zusatzDaten9);
 
                     // Dstd-F: Doppelstunden-Verletzungen je Lehrer / UNr
                     var dstdFDaten9 = letzteSolutions
@@ -1583,7 +1610,14 @@ namespace Stundenplan_V2
                             input.ExtraFreieTage,
                             input.LehrerFreiTageMinus2))
                     };
-                    LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten, vorherLöschen: false, meldeLeherMinus2: meldeMinus2);
+
+                    var zusatzDatenEditor = new List<(string, int, int)>
+                    {
+                        (neuLabel, bewertung.BadUnits, bewertung.Quality)
+                    };
+
+                    LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten, vorherLöschen: false,
+                        meldeLeherMinus2: meldeMinus2, zusatzDaten: zusatzDatenEditor);
 
                     // Dstd-F: nur die neu hinzugefügte Lösung anhängen
                     LehrerDiagnose.ExportiereDstdF(
@@ -1824,6 +1858,32 @@ namespace Stundenplan_V2
         // damit sie dort permanent zum Vergleich stehen bleiben und nicht
         // durch Solver- oder Verbesserungs-Läufe verloren gehen.
         // =====================================================
+        // Berechnet die zwei Zusatz-Kennzahlen für die Diag-Zeilen "Späte päd.
+        // Einheiten" und "Qualitätsfaktor" (siehe LehrerDiagnose.Exportiere).
+        // Immer frisch aus der Belegung berechnet (PlanBewertung.Berechne),
+        // da z.B. frisch aus Excel geladene Lösungen (LadeLösungenAusSheet)
+        // ihr quality/badUnits-Tupelfeld nur mit Platzhaltern (0,0) befüllen.
+        private (int spaetePaed, int qualitaet) BerechneZusatzDiagWerte(
+            int[,] belegung, List<UnterrichtsBlock> blocks)
+        {
+            var bew = PlanBewertung.Berechne(
+                belegung,
+                blocks ?? input.Blocks,
+                input.Slots,
+                input.GewichtFrüheDoppel,
+                input.GewichtSpäteDoppel,
+                input.GewichtSpätePädEinheiten,
+                input.StrafeHohlstunde,
+                input.StrafeDoppelHohlstunde,
+                input.StrafeDreifachHohlstunde,
+                input.StrafeEinzelstunde,
+                input.StrafeSpäteLkStunden,
+                input.StrafeHauptfachSpät,
+                input.HauptfachSpätAnteilProzent,
+                input.LehrerStammdaten, input.GrenzeSpäteLk);
+            return (bew.BadUnits, bew.Quality);
+        }
+
         private void ErgaenzeDiagnoseFuerGesicherte()
         {
             try
@@ -1850,7 +1910,16 @@ namespace Stundenplan_V2
                             input.LehrerFreiTageMinus2)))
                     .ToList();
 
-                LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten, vorherLöschen: false, meldeLeherMinus2: meldeMinus2);
+                var zusatzDaten = gesicherte
+                    .Select(sol =>
+                    {
+                        var z = BerechneZusatzDiagWerte(sol.belegung, sol.blocks);
+                        return (sol.label, z.spaetePaed, z.qualitaet);
+                    })
+                    .ToList();
+
+                LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten, vorherLöschen: false,
+                    meldeLeherMinus2: meldeMinus2, zusatzDaten: zusatzDaten);
 
                 var dstdFDaten = gesicherte
                     .Select(sol => (sol.label, sol.belegung, sol.blocks))
@@ -2156,7 +2225,17 @@ namespace Stundenplan_V2
                                 input.StrafeDreifachHohlstunde, input.StrafeStdFolge,
                                 meldeMinus2, input.ExtraFreieTage, input.LehrerFreiTageMinus2)))
                         .ToList();
-                    LehrerDiagnose.Exportiere(excelPfad, diagDaten, vorherLöschen: false, meldeLeherMinus2: meldeMinus2);
+
+                    var zusatzDaten = ergebnisse
+                        .Select(sol =>
+                        {
+                            var z = BerechneZusatzDiagWerte(sol.belegung, sol.blocks);
+                            return (sol.label, z.spaetePaed, z.qualitaet);
+                        })
+                        .ToList();
+
+                    LehrerDiagnose.Exportiere(excelPfad, diagDaten, vorherLöschen: false,
+                        meldeLeherMinus2: meldeMinus2, zusatzDaten: zusatzDaten);
 
                     var dstdFDaten = ergebnisse.Select(sol => (sol.label, sol.belegung, sol.blocks)).ToList();
                     LehrerDiagnose.ExportiereDstdF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: false);
@@ -3045,11 +3124,15 @@ namespace Stundenplan_V2
                     input.ExtraFreieTage,
                     input.LehrerFreiTageMinus2);
 
+                var zusatzZ = BerechneZusatzDiagWerte(sol.belegung, sol.blocks ?? input.Blocks);
+                var zusatzDaten = new List<(string, int, int)> { (sol.label, zusatzZ.spaetePaed, zusatzZ.qualitaet) };
+
                 LehrerDiagnose.Exportiere(
                     excelPfad,
                     new List<(string, List<LehrerDiagnoseErgebnis>)> { (sol.label, diagnosen) },
                     vorherLöschen: false,
-                    meldeLeherMinus2: meldeMinus2);
+                    meldeLeherMinus2: meldeMinus2,
+                    zusatzDaten: zusatzDaten);
 
                 int nachher = LiesDiagLetzteSpalte();
                 if (nachher > vorher && vorher >= 1)

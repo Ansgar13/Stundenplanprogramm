@@ -102,18 +102,25 @@ namespace Stundenplan_V2
             });
 
             // Anzuzeigende Zeilen (Reihenfolge)
-            var serien = new List<(string caption, string label, bool summe)>();
+            // zeilenTyp: 0=Lehrer, 1=Summe, 2=Späte päd. Einheiten, 3=Qualitätsfaktor
+            var serien = new List<(string caption, string label, int zeilenTyp)>();
             if (_vergleich)
             {
-                serien.Add(($"{_lehrer}  [{_label1}]", _label1, false));
-                serien.Add(($"{_lehrer}  [{_label2}]", _label2, false));
-                serien.Add(($"Summe  [{_label1}]", _label1, true));
-                serien.Add(($"Summe  [{_label2}]", _label2, true));
+                serien.Add(($"{_lehrer}  [{_label1}]", _label1, 0));
+                serien.Add(($"{_lehrer}  [{_label2}]", _label2, 0));
+                serien.Add(($"Summe  [{_label1}]", _label1, 1));
+                serien.Add(($"Summe  [{_label2}]", _label2, 1));
+                serien.Add(($"Späte päd. Einheiten  [{_label1}]", _label1, 2));
+                serien.Add(($"Späte päd. Einheiten  [{_label2}]", _label2, 2));
+                serien.Add(($"Qualitätsfaktor  [{_label1}]", _label1, 3));
+                serien.Add(($"Qualitätsfaktor  [{_label2}]", _label2, 3));
             }
             else
             {
-                serien.Add(($"{_lehrer}  [{_label1}]", _label1, false));
-                serien.Add(($"Summe  [{_label1}]", _label1, true));
+                serien.Add(($"{_lehrer}  [{_label1}]", _label1, 0));
+                serien.Add(($"Summe  [{_label1}]", _label1, 1));
+                serien.Add(($"Späte päd. Einheiten  [{_label1}]", _label1, 2));
+                serien.Add(($"Qualitätsfaktor  [{_label1}]", _label1, 3));
             }
 
             var grid = new Grid();
@@ -133,9 +140,13 @@ namespace Stundenplan_V2
                 grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
                 AddCell(grid, r, 0, s.caption, header: true, left: true);
 
-                int row = s.summe
-                    ? _cache.SummeRow
-                    : (_cache.TeacherRow.TryGetValue(_lehrer, out int tr) ? tr : -1);
+                int row = s.zeilenTyp switch
+                {
+                    1 => _cache.SummeRow,
+                    2 => _cache.SpaetePaedRow,
+                    3 => _cache.QualitätRow,
+                    _ => (_cache.TeacherRow.TryGetValue(_lehrer, out int tr) ? tr : -1)
+                };
                 var werte = (row > 0 && _cache.HatLabel(s.label)) ? _cache.Werte(s.label, row) : null;
 
                 for (int i = 0; i < cols.Count; i++)
@@ -196,6 +207,8 @@ namespace Stundenplan_V2
             public List<(string label, List<(string header, int col)> cols)> Blocks = new();
             public Dictionary<string, int> TeacherRow = new(StringComparer.OrdinalIgnoreCase);
             public int SummeRow = -1;
+            public int SpaetePaedRow = -1;
+            public int QualitätRow = -1;
 
             public static DiagCache Lade(string pfad)
             {
@@ -247,6 +260,10 @@ namespace Stundenplan_V2
                         if (name.Length == 0) continue;
                         if (name.Equals("Summe", StringComparison.OrdinalIgnoreCase))
                             c.SummeRow = r;
+                        else if (name.Equals("Späte päd. Einheiten", StringComparison.OrdinalIgnoreCase))
+                            c.SpaetePaedRow = r;
+                        else if (name.Equals("Qualitätsfaktor", StringComparison.OrdinalIgnoreCase))
+                            c.QualitätRow = r;
                         else if (!c.TeacherRow.ContainsKey(name))
                             c.TeacherRow[name] = r;
                     }
