@@ -1,134 +1,134 @@
-# Stundenplanprogramm V72 – Automatischer Stundenplangenerator
+# Stundenplan V4
 
-Stundenplanprogramm Version 72 ist ein Windows-Programm zur automatischen Erstellung von Schulstundenplänen. Es liest alle Unterrichtsdaten aus einer Excel-Datei, berechnet mit dem Google-OR-Tools-Solver optimale Stundenpläne und schreibt die Ergebnisse direkt in dieselbe Excel-Datei zurück. Als austauschbar gekennzeichnete Lehrer können getauscht werden! 
+Windows-Programm zur automatischen Erstellung von Schulstundenplänen mit dem Google-OR-Tools-Solver (CP-SAT).
 
-## Kernfunktionen
+## Überblick
+
+Stundenplan liest alle Unterrichts- und Lehrerstammdaten aus einer einzigen Excel-Datei (`.xlsx`), berechnet mit Hilfe des Google-OR-Tools-Solvers optimale Stundenpläne unter Berücksichtigung diverser Constraints (Lehrer-/Klassenkonflikte, Zeitwünsche, Doppelstunden, Fachraum-Limits, Tauschgruppen, A-/B-Wochen u. v. m.) und schreibt die Ergebnisse direkt in dieselbe Excel-Datei zurück.
+
+Die Unterrichts- und Lehrerstammdaten können z. B. aus einer Untis-Datei per Copy & Paste übertragen werden.
+
+> **Besonderer Vorteil für Sek-II-Pläne:** Über ein Lehrertauschkennzeichen (LTKZ) lassen sich gekennzeichnete, gegenseitig austauschbare Lehrer definieren. Der Solver kann diese Lehrer bei der Planberechnung automatisch untereinander tauschen, um bessere Lösungen zu finden. Das ist gerade bei Kurssystemen der Sekundarstufe II (parallele Kurse mit mehreren gleichwertigen Fachlehrern) ein entscheidender Vorteil, da hier die Zuordnung Lehrer↔Kurs oft flexibel ist und so deutlich bessere bzw. überhaupt erst zulässige Pläne entstehen.
+
+### Kernfunktionen
 
 - Vollautomatische Planerstellung unter Berücksichtigung von Lehrer- und Klassenkonflikten
-- Zeitwünsche und Sperrzeiten für Lehrer und Klassen (−3 bis +3)
-- Doppelstunden, Fachraum-Limits, Tauschgruppen, A-/B-Wochen
-- Separate Tabelle für zusätzliche freie Lehrertage (Sheet `FT`)
-- Zweiter Beschriftungstext (`ZeilenText-2`) mit automatischer Kursfarbe (LK01/LK02)
+- Zeitwünsche und Sperrzeiten für Lehrer und Klassen
+- Doppelstunden-Vorgaben, Fachraum-Limits, **Tauschgruppen (LTKZ) – besonders wertvoll für Sek-II-Pläne**, A-/B-Wochen
+- Separate Tabelle für zusätzliche freie Lehrertage
 - Iterative Verbesserung bestehender Pläne
 - Export von Lehrer- und Klassenplänen als Excel-Sheets
-- Constraint-Prüfung mit farbcodiertem Verletzungs-Report (Sheet `Verl`)
-- Automatische Checkup-Prüfung fixierter Unterrichte vor jedem Solverlauf (Sheet `ChkFix`)
+- Constraint-Prüfung mit farbcodiertem Verletzungs-Report
+- Automatische Sequenzdiagnose bei Infeasibility (identifiziert den schuldigen Constraint-Block)
 - Manueller Plan-Editor mit Drag & Drop, Tauschvorschlägen und Verschiebung-mit-Ausweich
 
-## Voraussetzungen
+Eine ausführliche Bedienungsanleitung befindet sich in `Stundenplan_V70_Anleitung.docx`.
 
-- Windows 10 oder höher
-- Microsoft Excel
-- Eingabedatei ausschließlich als `.xlsx` (kein `.xlsm`)
+## Technologie-Stack
+
+- **.NET 10 / WPF** (`net10.0-windows`, `UseWPF=true`)
+- **Google.OrTools** – CP-SAT-Solver für die Optimierung
+- **ClosedXML** – Lesen/Schreiben der `.xlsx`-Eingabedatei
+
+## Projektstruktur
+
+```
+├── App.xaml / App_xaml.cs                     Anwendungseinstieg
+├── MainWindow.xaml / MainWindow_xaml.cs        Hauptfenster (Buttons, Log, Workflow-Steuerung)
+│
+├── Eingabe & Datenmodell
+│   ├── ExcelLoader.cs                          Einlesen der xlsx (UV, Lös, PM, StD, FT, FGR, Fix UNrn, Plan)
+│   ├── StundenplanInput.cs                     Eingabedaten-Container (Blöcke, Slots, Parameter)
+│   ├── StundenplanModel.cs                     Domänenmodell (UnterrichtsBlock, Teile, …)
+│   ├── LehrerStammdaten.cs                     Individuelle Lehrer-Einstellungen (Sheet StD)
+│   └── ZeitSlot.cs                             Zeitraster (Tag/Stunde)
+│
+├── Solver & Constraints
+│   ├── StundenplanEngine.cs                    Kernlogik: Modellaufbau, Lösungssuche, Sequenzdiagnose
+│   ├── OrToolsSolver.cs                        CP-SAT-Solver-Wrapper
+│   ├── StundenplanService.cs                   Orchestrierung Engine ↔ UI
+│   ├── ObjectiveBuilder.cs                     Aufbau der Zielfunktion (Solver-Ziel)
+│   ├── PlanBewertung.cs                        Berechnung der angezeigten Qualität (Rank-Kennzahl)
+│   ├── TimeConstraint.cs                       Zeitwunsch-/Sperrzeiten-Constraints
+│   ├── RoomConstraint.cs                       Fachraum-Constraints
+│   ├── ClassConstraint.cs                      Klassenkonflikt-Constraints
+│   └── FreeDayConstraint.cs                    Freie-Tage-Constraints
+│
+├── Verbesserung & Validierung
+│   ├── PlanVerbesserung.cs                     Iterative Verbesserung bestehender Pläne
+│   ├── PlanValidator.cs                        Constraint-Prüfung / Verletzungs-Report
+│   ├── LehrerDiagnose.cs                       Lehrer-Diagnose-Übersicht
+│   ├── SolutionCollector.cs                    Sammlung/Ranking berechneter Lösungen
+│   └── SolverFortschritt.cs                    Fortschrittsanzeige während des Solver-Laufs
+│
+├── Export & Generatoren
+│   ├── KlassenplanGenerator.cs                 Klassenpläne erzeugen
+│   ├── LehrerplanGenerator.cs                  Lehrerpläne erzeugen
+│   ├── UnrPlanExporter.cs                      Export des manuellen Unterrichtsplans
+│   ├── ZeitwunschExporter.cs                   Erzeugt ZeitWL/ZeitWK aus Textdatei
+│   └── AbweichungsExporter.cs                  Export von Plan-Abweichungen
+│
+├── Dialoge (XAML + Code-Behind)
+│   ├── KlasseFixierenDialog(.xaml/.cs)         Gezieltes Fixieren nach Klasse/Fach
+│   ├── FixierenDialog(.xaml/.cs)               Allgemeines Fixieren von Zeitslots
+│   ├── PlanEditorDialog(.xaml/.cs)             Manueller Plan-Editor (Drag & Drop)
+│   ├── MinimalAenderungDialog(.xaml/.cs)       Minimal-Änderungs-Suche
+│   ├── VerbesserungsDialog(.xaml/.cs)          Automatische Plan-Verbesserung
+│   ├── IgnoreDialog(.xaml/.cs)                 Ignorieren einzelner Unterrichtseinheiten
+│   ├── DiagFilterDialog(.xaml/.cs)             Filter für die Diagnose-Ansicht
+│   └── DiagAnzeigeWindow.cs                    Anzeige der Diagnose-Ergebnisse
+│
+├── SucheStatusFenster.cs                       Statusfenster während der Solver-Suche
+│
+├── Stundenplan_V4.csproj                       Projektdatei (.NET 10, WPF)
+├── AssemblyInfo.cs                             Assembly-Metadaten
+├── Stundenplan_V70_Anleitung.docx               Ausführliches Benutzerhandbuch
+└── Teststdplan_ohne_Makros.xlsx                Beispiel-/Test-Eingabedatei
+```
 
 ## Die Excel-Eingabedatei
 
-Die gesamte Konfiguration erfolgt in einer einzigen `.xlsx`-Datei. Ab V18 verwenden alle internen Sheets kurze Namen:
+Die gesamte Konfiguration erfolgt in einer einzigen `.xlsx`-Datei mit u. a. folgenden Tabellenblättern:
 
 | Kurzname | Inhalt |
-|---|---|
-| `UV` | Zentrale Unterrichts- und Lehrerzuordnung (Pflicht) |
-| `Lös` | Zeitraster und berechnete Lösungsspalten (Pflicht) |
-| `PM` | Steuerungsparameter für den Solver (Pflicht) |
-| `StD` | Individuelle Lehrer-Einstellungen (optional) |
-| `ZWL` / `ZWK` | Zeitwünsche für Lehrer / Klassen (von Button 1 erzeugt) |
-| `FT` | Freie Tage der Lehrer (optional) |
-| `FGR` | Fachraum-Limits nach Fachgruppe (optional) |
-| `Fix UNrn` | Fixierte Zeitslots |
-| `Plan` | Manueller Ausgangsplan (optional) |
-| `Rang` | Ranking aller berechneten Lösungen (Ausgabe) |
-| `Verl` | Constraint-Verletzungs-Report (Ausgabe) |
-| `Diag` | Lehrer-Diagnose-Übersicht (Ausgabe) |
-| `ChkFix` | Checkup der fixierten Unterrichte vor dem Solverlauf (Ausgabe) |
-| `Dstd-F` | Detailliste der Doppelstunden-Verletzungen (Ausgabe) |
-| `Tausch` | Liste der Lehrertausch-Paare (Ausgabe) |
-| `LKue` | Zuordnung Originalname ↔ Anonymkürzel |
+| --- | --- |
+| UV | Zentrale Unterrichts- und Lehrerzuordnung (Pflicht) |
+| Lös | Zeitraster und berechnete Lösungsspalten (Pflicht) |
+| PM | Steuerungsparameter für den Solver (Pflicht) |
+| StD | Individuelle Lehrer-Einstellungen (optional) |
+| ZWL / ZWK | Zeitwünsche für Lehrer / Klassen |
+| FT | Freie Tage der Lehrer |
+| FGR | Fachraum-Limits nach Fachgruppe |
+| Fix UNrn | Fixierte Zeitslots |
+| Plan | Manueller Ausgangsplan |
+| Rank | Ranking aller berechneten Lösungen (Ausgabe) |
+| Verl | Constraint-Verletzungs-Report (Ausgabe) |
+| Diag | Lehrer-Diagnose-Übersicht (Ausgabe) |
 
-Das wichtigste Sheet ist `UV`: Jede Zeile beschreibt einen Unterrichtseinsatz (U-Nr, Wochenstunden, Lehrer, Fach, Klasse, optional Doppelstunden-Vorgabe, Beschriftungstexte, Tauschkennzeichen, Ignore-Flag, Klassen-Konflikt-Kennzeichen, A-/B-Woche).
-
-## Zeitwunsch-Textdatei
-
-Zeitwünsche werden über eine einfache `.txt`-Datei eingelesen (Semikolon-getrennt):
-
-```
-Typ;Name;Tag;Stunde;Wert
-L;WIN;3;1;-3    (Lehrer WIN: Mittwoch 1. Stunde gesperrt)
-K;5a;5;7;-2     (Klasse 5a: Freitag 7. Stunde stark unerwünscht)
-```
-
-Werte reichen von −3 (absolute Sperre) bis +3 (starker Wunsch); aktuell sind nur 0, −2 und −3 implementiert.
-
-## Programmbedienung
-
-Das Hauptfenster zeigt zehn Schaltflächen in empfohlener Reihenfolge:
-
-| Button | Funktion |
-|---|---|
-| 1 | Zeitwünsche aus Textdatei einlesen |
-| 2 | Excel-Datei einlesen (Voraussetzung für alle weiteren Schritte) |
-| 3 | Stundenplanerstellung (Solver starten, inkl. Infeasibility-Diagnose) |
-| 4 | Lehrerpläne erzeugen |
-| 5 / 5b | Klassenpläne erzeugen (5b nur für EF/Q1/Q2) |
-| 6 | UNr-Plan bewerten |
-| 7 | Klasse fixieren → Fix UNrn |
-| 8 | UNr-Plan auf Verletzungen prüfen |
-| 9 | Plan verbessern (automatische Tauschoperationen) |
-| 10 | Fix UNrn selektiv löschen |
-
-### Manueller Plan-Editor
-
-Eigenständiges Fenster zur grafischen Bearbeitung einer berechneten Lösung per Drag & Drop: Verschieben auf freie Slots, Tauschen mit belegten Zellen, Entplanen in einen Parkbereich, automatische Tauschvorschläge sowie "Verschiebung mit Ausweich" bei blockierten Zielslots. Ein Diagnose-Panel zeigt für betroffene Lehrer die Veränderung von freien Tagen, Hohlstunden und Gesamtqualität vorher/nachher.
+Details zu allen Spalten und Parametern: siehe `Stundenplan_V70_Anleitung.docx`.
 
 ## Empfohlener Arbeitsablauf
 
-1. Excel-Datei vorbereiten (`UV`, `Lös`, `PM`, ggf. `StD`, `FT`)
-2. Programm starten, Button 2 (Excel laden)
-3. Optional: Zeitwünsche per Button 1 einlesen
-4. Button 3 (Solver starten)
-5. Beste Lösung im Sheet `Rang` identifizieren
-6. Button 4/5 für Lehrer- und Klassenpläne
-7. Gute Klassen mit Button 7 fixieren, Solver erneut starten
-8. Constraint-Prüfung mit Button 8
-9. Bei Bedarf mit Button 9 oder dem Plan-Editor nachbessern
-10. Fixierungen bei Bedarf mit Button 10 zurücksetzen und Prozess wiederholen
+1. Excel-Datei vorbereiten (UV, Lös, PM, ggf. StD, FT).
+2. Programm starten, Excel-Datei laden.
+3. Optional: Zeitwünsche als `.txt` einlesen.
+4. Solver starten (Zeitlimit/Lösungsanzahl vorher in PM einstellen).
+5. Beste Lösung im Sheet `Rank` identifizieren.
+6. Klassen- und Lehrerpläne erzeugen und prüfen.
+7. Bei Bedarf gute Bereiche fixieren und Solver erneut starten.
+8. Constraint-Prüfung durchführen.
+9. Verbleibende Schwachstellen automatisch verbessern oder im Plan-Editor manuell bearbeiten.
 
-## Die Excel-Makrodatei (.xlsm)
+## Build & Ausführung
 
-Parallel zur `.xlsx`-Datei existiert eine `.xlsm`-Datei mit VBA-Makros für komfortables manuelles Arbeiten direkt in Excel. Das Stundenplan-Programm selbst liest ausschließlich `.xlsx`-Dateien ein.
+Voraussetzungen: **.NET 10 SDK** (Windows, da WPF).
 
-| Makro | Funktion |
-|---|---|
-| `LehrerDurchKuerzelErsetzen` | Ersetzt Lehrernamen durch anonyme Kürzel |
-| `KuerzelZurueckErsetzen` | Stellt Originalnamen wieder her |
-| `TabellenImportieren` | Importiert Sheets aus einer beliebigen Excel-Datei |
-| `TabellenExportieren` | Exportiert alle Sheets als makrofreie `.xlsx` |
-| `LösungInFixUNrnÜbertragen` | Überträgt eine komplette Lösung in `Fix UNrn` |
+```bash
+dotnet restore
+dotnet build
+dotnet run --project Stundenplan_V4.csproj
+```
 
-## Fehlerbehebung
+## Status
 
-| Meldung | Lösung |
-|---|---|
-| „Bitte zuerst Excel-Datei laden (Button 2)“ | Button 2 ausführen |
-| „Keine Lösungen verfügbar“ | Button 3 (Solver) ausführen |
-| „Kein UNr-Plan gefunden“ | Sheet `Plan` befüllen oder Button 3 starten |
-| „Tabelle 'Fix UNrn' nicht gefunden“ | Sheet manuell anlegen oder aus Vorlage kopieren |
-| „Spalte 'X' nicht gefunden“ | Pflichtspalte in `UV` prüfen |
-
-Weitere Hinweise: Die Excel-Datei darf während des Programmbetriebs nicht in Excel geöffnet sein. Lehrer- und Klassenkürzel müssen in allen Sheets exakt übereinstimmen.
-
-## Glossar (Auswahl)
-
-- **UNr** – Unterrichtsnummer, eindeutige ID für einen Unterrichtsblock
-- **Block** – Gruppe von Zeilen mit gleicher UNr
-- **Slot** – konkreter Zeitpunkt im Stundenplan (Wochentag + Stunde)
-- **Hohlstunde** – Lücke im Lehrerplan
-- **Fix UNrn** – als unveränderlich vorgegebene Zeitslots
-- **Qualität** – Strafpunkte-Summe des Solvers (kleiner = besser)
-
-## Vollständige Dokumentation
-
-Eine ausführliche Beschreibung aller Sheets, Parameter und Funktionen befindet sich in `Stundenplan_V44_Anleitung.docx`.
-
-## Lizenz
-
-Noch keine Lizenz festgelegt.
+`erst auf Aufforderung zum coden warten` – es werden aktuell keine Code-Änderungen vorgenommen; diese README dient als Ausgangsbasis/Referenz für kommende Aufgaben.
