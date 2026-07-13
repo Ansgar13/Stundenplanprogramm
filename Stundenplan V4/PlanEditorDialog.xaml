@@ -74,8 +74,14 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
+
+            <!-- ANGEHEFTETE PLAENE (beliebig viele Lehrer-/Klassenpläne
+                 zusätzlich zur normalen Auswahl oben, nebeneinander scrollbar
+                 über ScrollEditAnsicht, alle live editierbar auf derselben
+                 _belegung — siehe AnhefteTile()/ZeichneAlleAngehefteten(). -->
+            <StackPanel x:Name="PnlAngeheftet" Grid.Column="6" Orientation="Horizontal"/>
 
             <!-- LEHRER-PLAN -->
             <Border Grid.Column="0" BorderBrush="#CCC" BorderThickness="1" Margin="0,0,4,0">
@@ -92,6 +98,10 @@
                                 Margin="8,0,0,0" Padding="6,2"
                                 ToolTip="Lehrer-Auswahlliste auf Lehrer beschränken, die bestimmte Diag-Kriterien verletzen"
                                 Click="BtnDiagFilter_Click"/>
+                        <Button x:Name="BtnLehrerAnheften" Content="📌" Width="28" VerticalAlignment="Center"
+                                Margin="8,0,0,0"
+                                ToolTip="Diesen Lehrerplan zusätzlich anheften (bleibt sichtbar und bearbeitbar, auch wenn oben ein anderer Lehrer gewählt wird)"
+                                Click="BtnLehrerAnheften_Click"/>
                     </StackPanel>
                     <TextBlock DockPanel.Dock="Top" Text="LEHRERPLAN" FontWeight="Bold" Height="20"
                                HorizontalAlignment="Center" Margin="0,0,0,2"/>
@@ -115,6 +125,10 @@
                                   SelectionChanged="CboKlasse_SelectionChanged"/>
                         <Button x:Name="BtnNaechsteKlasse" Content="&#9654;" Width="28" VerticalAlignment="Center"
                                 ToolTip="Naechste Klasse" Click="BtnNaechsteKlasse_Click"/>
+                        <Button x:Name="BtnKlasseAnheften" Content="📌" Width="28" VerticalAlignment="Center"
+                                Margin="8,0,0,0"
+                                ToolTip="Diesen Klassenplan zusätzlich anheften (bleibt sichtbar und bearbeitbar, auch wenn oben eine andere Klasse gewählt wird)"
+                                Click="BtnKlasseAnheften_Click"/>
                     </StackPanel>
                     <TextBlock DockPanel.Dock="Top" Text="KLASSENPLAN" FontWeight="Bold" Height="20"
                                HorizontalAlignment="Center" Margin="0,0,0,2"/>

@@ -653,6 +653,74 @@ namespace Stundenplan_V2
                 return false;
             }
 
+            // =====================================================
+            // Lineare Ursachensuche (Deletion-based) INNERHALB einer bereits als
+            // infeasible erkannten Klasse/Gruppe: entfernt probeweise nacheinander
+            // einzelne Unterrichte und prüft, ob die Restmenge dadurch feasible
+            // wird.
+            //   - bleibt weiterhin BEWIESEN infeasible  -> der entfernte Unterricht
+            //     war nicht nötig, bleibt draußen.
+            //   - wird feasible (oder Timeout/Unknown)  -> er gehört (mutmaßlich)
+            //     zur Ursache, wird wieder aufgenommen (bei Unknown konservativ,
+            //     um keine falschen Ursachen auszuschließen).
+            // Ergebnis: eine minimale Teilmenge, die zusammen mit den FixUNr
+            // bereits allein infeasible ist. Aufwand: O(n) Solver-Läufe
+            // (n = Anzahl Unterrichte der übergebenen Menge) — für sehr große
+            // Gruppen (>~20 Unterrichte) ist das spürbar langsamer als eine
+            // binäre (QuickXplain-)Suche, für die üblichen Klassengrößen aber
+            // einfach und schnell genug.
+            // =====================================================
+            List<UnterrichtsBlock> EngrenzeUrsacheLinear(List<UnterrichtsBlock> teilmenge)
+            {
+                var rest = new List<UnterrichtsBlock>(teilmenge);
+                for (int i = rest.Count - 1; i >= 0; i--)
+                {
+                    if (rest.Count <= 1) break; // mindestens ein Unterricht muss übrig bleiben
+
+                    var probe = new List<UnterrichtsBlock>(rest);
+                    var entfernt = probe[i];
+                    probe.RemoveAt(i);
+
+                    var status = KandidatStatus(probe);
+                    if (status == CpSolverStatus.Infeasible)
+                    {
+                        // Ohne diesen Unterricht immer noch bewiesen unlösbar
+                        // -> er war für die Ursache nicht nötig, dauerhaft entfernen.
+                        rest = probe;
+                    }
+                    // Feasible ODER Unknown (Timeout) -> Unterricht gehört (vermutlich)
+                    // zur minimalen Ursache, bleibt in 'rest' enthalten.
+                }
+                return rest;
+            }
+
+            // Führt EngrenzeUrsacheLinear für einen gefundenen Treffer aus und
+            // loggt das Ergebnis. Nur sinnvoll, wenn mehr als ein Unterricht
+            // beteiligt ist (bei genau einem ist die Menge schon minimal).
+            void EngrenzeUndLoggeUrsache(string art, string name, List<UnterrichtsBlock> teilmenge)
+            {
+                if (teilmenge.Count <= 1) return;
+
+                log($"     Grenze Ursache innerhalb {art} '{name}' ein " +
+                    $"({teilmenge.Count} Unterrichte, lineare Suche)...");
+
+                var minimal = EngrenzeUrsacheLinear(teilmenge);
+
+                if (minimal.Count < teilmenge.Count)
+                {
+                    string unrText = string.Join(", ", minimal.Select(b => "UNr " + b.UNr));
+                    log($"     → Minimale Ursache in {art} '{name}': {minimal.Count} von " +
+                        $"{teilmenge.Count} Unterrichten genügen bereits ({unrText}).");
+                    if (minimal.Count > 1)
+                        BreakdownUrsache(minimal);
+                }
+                else
+                {
+                    log($"     → Keine Eingrenzung möglich: alle {teilmenge.Count} Unterrichte " +
+                        "werden für die Unlösbarkeit benötigt (oder Zeitlimit zu knapp für die Einzeltests).");
+                }
+            }
+
             bool gefunden = false;
             int anzKlassenInfeasible = 0;
             int anzGruppenInfeasible = 0;
@@ -695,6 +763,7 @@ namespace Stundenplan_V2
                 {
                     gefunden = true;
                     anzKlassenInfeasible++;
+                    EngrenzeUndLoggeUrsache("Klasse", klasse, klassenBlöcke);
                 }
             }
 
@@ -711,6 +780,7 @@ namespace Stundenplan_V2
                 {
                     gefunden = true;
                     anzGruppenInfeasible++;
+                    EngrenzeUndLoggeUrsache("Zeilentext2", g.Key, g.ToList());
                 }
             }
 

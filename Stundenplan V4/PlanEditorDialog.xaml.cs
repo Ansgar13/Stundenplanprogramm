@@ -97,6 +97,15 @@ namespace Stundenplan_V2
         // Modeless Fenster mit den Diag-Zeilen des aktuellen Lehrers.
         private DiagAnzeigeWindow _diagFenster;
 
+        // ---- Angeheftete Pläne (mehrere Lehrer-/Klassenpläne gleichzeitig
+        // sichtbar und bearbeitbar, zusätzlich zu den normalen Lehrer-/
+        // Klasse-Dropdowns oben). Alle Tiles zeichnen auf derselben
+        // _belegung/_blocks-Arbeitskopie, Drag&Drop funktioniert also über
+        // Tile-Grenzen hinweg (Tausch zwischen zwei angehefteten Plänen ist
+        // ganz normales Zelle_Drop wie im Hauptbereich). ----
+        private readonly List<(bool istLehrer, string name, Border tile, Grid grid, Canvas canvas)> _angeheftete
+            = new();
+
         public PlanEditorDialog(
             List<(string label, int[,] belegung, List<UnterrichtsBlock> blocks)> loesungen,
             List<ZeitSlot> slots,
@@ -812,6 +821,7 @@ namespace Stundenplan_V2
             AktualisiereSpaetePaedEinheiten();
             ZeichneLehrerGrid();
             ZeichneKlasseGrid();
+            ZeichneAlleAngehefteten();
         }
 
         private void ZeichneLehrerGrid()
@@ -824,6 +834,136 @@ namespace Stundenplan_V2
         {
             string auswahl = CboKlasse.SelectedItem as string;
             ZeichneEinGrid(KlasseGrid, auswahl, lehrerAnsicht: false);
+        }
+
+        // =====================================================
+        // Angeheftete Pläne (mehrere Lehrer-/Klassenpläne gleichzeitig)
+        // =====================================================
+
+        private void BtnLehrerAnheften_Click(object sender, RoutedEventArgs e)
+        {
+            string name = CboLehrer.SelectedItem as string;
+            if (name == null) return;
+            AnhefteTile(istLehrer: true, name);
+        }
+
+        private void BtnKlasseAnheften_Click(object sender, RoutedEventArgs e)
+        {
+            string name = CboKlasse.SelectedItem as string;
+            if (name == null) return;
+            AnhefteTile(istLehrer: false, name);
+        }
+
+        // Legt eine neue, dauerhaft sichtbare Kachel für einen Lehrer- oder
+        // Klassenplan an. Die Kachel zeichnet (wie LehrerGrid/KlasseGrid) direkt
+        // auf der gemeinsamen Arbeitskopie _belegung/_blocks — Drag&Drop
+        // zwischen einer angehefteten Kachel und jedem anderen sichtbaren Plan
+        // (Haupt-Grids oder andere Kacheln) funktioniert daher ohne weiteres
+        // Zutun, weil Zelle_Drop/Zelle_DragOver ausschliesslich mit dieser
+        // gemeinsamen Belegung arbeiten, nicht mit dem jeweiligen Grid.
+        private void AnhefteTile(bool istLehrer, string name)
+        {
+            if (_belegung == null) return;
+
+            // Gleicher Typ+Name schon angeheftet -> nichts tun, nur Hinweis.
+            if (_angeheftete.Any(t => t.istLehrer == istLehrer && t.name == name))
+            {
+                SetStatus($"{(istLehrer ? "Lehrer" : "Klasse")} '{name}' ist bereits angeheftet.", false);
+                return;
+            }
+
+            var grid = new Grid();
+            var canvas = new Canvas { IsHitTestVisible = false };
+            var innerGrid = new Grid();
+            innerGrid.Children.Add(grid);
+            innerGrid.Children.Add(canvas);
+
+            var scroll = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Content = innerGrid
+            };
+
+            var closeBtn = new Button
+            {
+                Content = "✕",
+                Width = 22,
+                Height = 22,
+                Margin = new Thickness(8, 0, 0, 0),
+                ToolTip = "Angehefteten Plan schließen"
+            };
+
+            var header = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(4),
+                Height = 32
+            };
+            header.Children.Add(new TextBlock
+            {
+                Text = (istLehrer ? "📌 Lehrer: " : "📌 Klasse: ") + name,
+                FontWeight = FontWeights.Bold,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            header.Children.Add(closeBtn);
+
+            var titel = new TextBlock
+            {
+                Text = istLehrer ? "LEHRERPLAN (angeheftet)" : "KLASSENPLAN (angeheftet)",
+                FontWeight = FontWeights.Bold,
+                Height = 20,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 2)
+            };
+
+            var dock = new DockPanel();
+            DockPanel.SetDock(header, Dock.Top);
+            DockPanel.SetDock(titel, Dock.Top);
+            dock.Children.Add(header);
+            dock.Children.Add(titel);
+            dock.Children.Add(scroll);
+
+            var tile = new Border
+            {
+                BorderBrush = Brushes.OrangeRed,
+                BorderThickness = new Thickness(1.5),
+                Margin = new Thickness(4, 0, 0, 0),
+                Background = Brushes.White,
+                Child = dock
+            };
+
+            var eintrag = (istLehrer, name, tile, grid, canvas);
+
+            closeBtn.Click += (s, e2) =>
+            {
+                _angeheftete.RemoveAll(t => t.tile == tile);
+                PnlAngeheftet.Children.Remove(tile);
+            };
+
+            _angeheftete.Add(eintrag);
+            PnlAngeheftet.Children.Add(tile);
+
+            ZeichneAngeheftetesTile(eintrag);
+            SetStatus($"{(istLehrer ? "Lehrer" : "Klasse")} '{name}' angeheftet.", false);
+        }
+
+        private void ZeichneAngeheftetesTile(
+            (bool istLehrer, string name, Border tile, Grid grid, Canvas canvas) t)
+        {
+            if (_belegung == null) return;
+            // Interaktiv wie die Haupt-Grids: gleiche BaueZelle/Zelle_Drop-Logik,
+            // nur auf ein anderes Ziel-Grid gezeichnet.
+            ZeichneEinGrid(t.grid, t.name, lehrerAnsicht: t.istLehrer);
+        }
+
+        // Wird nach jeder Änderung der Belegung aufgerufen (siehe ZeichneBeideGrids
+        // und die Tausch-Sonderfälle), damit angeheftete Kacheln nie veraltete
+        // Stunden zeigen.
+        private void ZeichneAlleAngehefteten()
+        {
+            foreach (var t in _angeheftete)
+                ZeichneAngeheftetesTile(t);
         }
 
         private const double ZellBreite = 76; // quadratisch, gross genug fuer UNr-Zeile
@@ -1571,6 +1711,7 @@ namespace Stundenplan_V2
                 {
                     CboKlasse.SelectedIndex = idx; // ZeichneKlasseGrid via SelectionChanged
                     ZeichneLehrerGrid();
+                    ZeichneAlleAngehefteten();
                     ZeichneParkbereich();
                     PruefeUndZeigeWarnungen();
                     return;
