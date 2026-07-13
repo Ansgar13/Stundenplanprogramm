@@ -170,6 +170,11 @@ namespace Stundenplan_V2
                 return;
             }
 
+            // Log-Fenster ("Sichtbox") vor jedem neuen Solverlauf automatisch
+            // leeren, damit hier nur das Protokoll des aktuellen Laufs steht
+            // und nicht das der vorherigen Läufe mit angehängt wird.
+            TxtLog.Clear();
+
             var fenster = new SucheStatusFenster { Owner = this };
             var cts = new System.Threading.CancellationTokenSource();
             fenster.AbbruchGewuenscht += () => { cts.Cancel(); fenster.MarkiereAbbrechend(); };
