@@ -2504,20 +2504,17 @@ namespace Stundenplan_V2
                     string klassenStr = row.Cell(colKlassen).GetString();
                     string zt2    = colZt2Local > 0 ? row.Cell(colZt2Local).GetString().Trim() : "";
 
-                    var klassenInZeile = klassenStr
-                        .Split(',')
-                        .Select(k => k.Trim())
-                        .Where(k => k.Length > 0)
-                        .ToList();
+                    // Exakter Vergleich des gesamten (normalisierten) Klasse(n)-Werts:
+                    // eine Zeile mit z.B. "6a,6b" ist nur Treffer, wenn "6a,6b" selbst
+                    // ausgewählt wurde — nicht schon, wenn nur "6a" gewählt ist.
+                    string klassenNorm = NormalisiereKlassenStr(klassenStr);
 
                     bool treffer;
                     if (dialog.UndVerknüpfung)
                     {
                         // UND (Kombination): jede Kategorie MIT Auswahl muss passen;
                         // eine Kategorie ohne Auswahl zählt als "egal" (Wildcard).
-                        // Die Klassen-Kategorie gilt als erfüllt, wenn die Zeile
-                        // mindestens eine der gewählten Klassen enthält.
-                        bool kOk = fKlassen.Count == 0 || klassenInZeile.Any(k => fKlassen.Contains(k));
+                        bool kOk = fKlassen.Count == 0 || fKlassen.Contains(klassenNorm);
                         bool lOk = fLehrer.Count  == 0 || fLehrer.Contains(lehrer);
                         bool fOk = fFächer.Count  == 0 || fFächer.Contains(fach);
                         bool zOk = fZt2.Count     == 0 || fZt2.Contains(zt2);
@@ -2527,7 +2524,7 @@ namespace Stundenplan_V2
                     {
                         // ODER zwischen allen Filtern — eine Übereinstimmung reicht.
                         treffer =
-                            klassenInZeile.Any(k => fKlassen.Contains(k)) ||
+                            fKlassen.Contains(klassenNorm) ||
                             fLehrer.Contains(lehrer) ||
                             fFächer.Contains(fach) ||
                             fZt2.Contains(zt2);
@@ -2654,14 +2651,13 @@ namespace Stundenplan_V2
                     string klassenStr = row.Cell(colKlassen).GetString();
                     string zt2    = colZt2Local > 0 ? row.Cell(colZt2Local).GetString().Trim() : "";
 
-                    var klassenInZeile = klassenStr
-                        .Split(',')
-                        .Select(k => k.Trim())
-                        .Where(k => k.Length > 0)
-                        .ToList();
+                    // Exakter Vergleich des gesamten (normalisierten) Klasse(n)-Werts:
+                    // eine Zeile mit z.B. "6a,6b" ist nur Treffer, wenn "6a,6b" selbst
+                    // ausgewählt wurde — nicht schon, wenn nur "6a" gewählt ist.
+                    string klassenNorm = NormalisiereKlassenStr(klassenStr);
 
                     bool treffer =
-                        klassenInZeile.Any(k => fKlassen.Contains(k)) ||
+                        fKlassen.Contains(klassenNorm) ||
                         fLehrer.Contains(lehrer) ||
                         fFächer.Contains(fach) ||
                         fZt2.Contains(zt2);
@@ -2819,6 +2815,19 @@ namespace Stundenplan_V2
                     : "") + ".");
         }
 
+        // Normalisiert den Rohinhalt der Spalte "Klasse(n)" auf ein einheitliches
+        // Format ("6a,6b" statt z.B. "6a, 6b" oder "6a ,6b"), damit derselbe
+        // Mehrfach-Klassen-Eintrag beim Auflisten und beim Abgleich im Filter
+        // exakt gleich aussieht.
+        private static string NormalisiereKlassenStr(string roh)
+        {
+            var teile = (roh ?? "")
+                .Split(',')
+                .Select(x => x.Trim())
+                .Where(x => x.Length > 0);
+            return string.Join(",", teile);
+        }
+
         // Liest alle eindeutigen Werte für Klassen, Lehrer, Fächer und ZeilenText-2
         // DIREKT aus der UV-Tabelle — inklusive ignorierter Zeilen (Spalte 'Ignore (i)' = "i"),
         // damit auch komplett ignorierte Werte in den Filter-Listen sichtbar bleiben.
@@ -2870,9 +2879,13 @@ namespace Stundenplan_V2
                     }
                     if (colKlassen > 0)
                     {
-                        string ks = row.Cell(colKlassen).GetString();
-                        foreach (var k in ks.Split(',').Select(x => x.Trim()).Where(x => x.Length > 0))
-                            klassenSet.Add(k);
+                        // Nicht mehr in Einzelklassen aufsplitten: der komplette
+                        // Zellinhalt (z.B. "6a,6b") wird als EIN eigener Listeneintrag
+                        // aufgenommen. So erscheinen Mehrfach-Klassen-Zeilen separat
+                        // von den Zeilen der einzelnen Klassen und werden beim Filtern
+                        // (siehe unten) nicht mehr fälschlich mitgetroffen.
+                        string ks = NormalisiereKlassenStr(row.Cell(colKlassen).GetString());
+                        if (ks.Length > 0) klassenSet.Add(ks);
                     }
                     if (colZt2 > 0)
                     {
