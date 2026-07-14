@@ -48,10 +48,11 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <Button Grid.Row="0" Grid.Column="0" Content="1. Excel-Datei einlesen" Margin="0,0,6,10" Click="BtnPfad_Click"/>
-            <Button Grid.Row="0" Grid.Column="1" Content="2. Zeitwünsche einlesen" Margin="6,0,0,10" Click="BtnZeitwuensche_Click"/>
+            <Button Grid.Row="0" Grid.Column="1" Content="2. Zeitwünsche einlesen/exportieren" Margin="6,0,0,10" Click="BtnZeitwuensche_Click"/>
 
             <Button Grid.Row="1" Grid.Column="0" Content="3. Gezielt ignorieren" Margin="0,0,6,10" Click="BtnIgnorieren_Click"/>
             <Button Grid.Row="1" Grid.Column="1" Content="4. Gezielt fixieren" Margin="6,0,0,10" Click="BtnFixieren_Click"/>
@@ -75,6 +76,10 @@
             <Button Grid.Row="7" Grid.Column="1" Content="15b. Klassenpläne EF / Q1 / Q2" Margin="6,0,0,10" Click="BtnKlassenplaeneOberstufe_Click"/>
 
             <Button Grid.Row="8" Grid.Column="0" Content="16. Lehrerpläne erzeugen" Margin="0,0,6,10" Click="BtnLehrerplaene_Click"/>
+            <Button Grid.Row="8" Grid.Column="1" Content="17. PM-Parameter bearbeiten" Margin="6,0,0,10" Click="BtnPmBearbeiten_Click"/>
+
+            <Button Grid.Row="9" Grid.Column="0" Content="18. UV als GPU002.TXT exportieren" Margin="0,0,6,10" Click="BtnGpuExport_Click"/>
+            <Button Grid.Row="9" Grid.Column="1" Content="19. GPU002.TXT in UV importieren" Margin="6,0,0,10" Click="BtnGpuImport_Click"/>
         </Grid>
 
         <!-- Meldefenster (Protokoll-Log): bekommt durch die zweispaltigen Buttons

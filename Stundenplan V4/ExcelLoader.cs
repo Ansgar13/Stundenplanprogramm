@@ -67,6 +67,10 @@ namespace Stundenplan_V2
             // siehe Kapitel 2.1 der Anleitung) — fehlen diese, kann der Solver
             // scheinbar grundlos "infeasible" melden.
             var uvFachKlasseWarnungen = new List<string>();
+            // Reine UNr-Werte parallel zu obiger Liste, dedupliziert (eine UNr kann
+            // mehrere Teilzeilen mit fehlendem Fach/Klasse haben, soll aber nur
+            // einmal in der kompakten UNr-Liste erscheinen).
+            var uvFachKlasseWarnungUNrn = new HashSet<int>();
 
             // Erst-Durchlauf: welche UNrn haben aktive Zeilen?
             foreach (var row in rows1)
@@ -128,6 +132,7 @@ namespace Stundenplan_V2
                                : "Klasse fehlt";
                     uvFachKlasseWarnungen.Add(
                         $"UNr {uNr}: {was} (Lehrer '{lehrer}', Wst {wst}).");
+                    uvFachKlasseWarnungUNrn.Add(uNr);
                 }
 
                 alleTeile.Add(new TeilUnterricht
@@ -496,6 +501,7 @@ namespace Stundenplan_V2
                 AnzahlLösungenMitTausch = anzahlMit,
                 MindestAbstandLösungenBloecke = mindestAbstandBloecke,
                 UvFachKlasseWarnungen = uvFachKlasseWarnungen,
+                UvFachKlasseWarnungUNrn = uvFachKlasseWarnungUNrn.OrderBy(u => u).ToList(),
                 NichtFreieTage = nichtFreieTage,
                 GewichtFrüheDoppel = gewichtFrüh,
                 GewichtSpäteDoppel = gewichtSpät,

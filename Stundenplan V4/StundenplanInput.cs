@@ -20,6 +20,10 @@ public class StundenplanInput
     public int MindestAbstandLösungenBloecke { get; set; } = 5;
     // Warnungen zu UV-Zeilen ohne Fach und/oder ohne Klasse (Pflichtfelder).
     public List<string> UvFachKlasseWarnungen { get; set; } = new();
+    // Dieselben Zeilen wie oben, aber nur die reinen UNr-Werte (dedupliziert,
+    // aufsteigend sortiert) — für kompakte Anzeige direkt in der Warn-MessageBox,
+    // ohne den vollen Beschreibungstext parsen zu müssen.
+    public List<int> UvFachKlasseWarnungUNrn { get; set; } = new();
     public HashSet<string> NichtFreieTage { get; set; } = new HashSet<string>();
 
     // Qualitätsfunktion-Gewichte

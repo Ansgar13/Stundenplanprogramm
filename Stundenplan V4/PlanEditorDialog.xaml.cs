@@ -106,6 +106,20 @@ namespace Stundenplan_V2
         private readonly List<(bool istLehrer, string name, Border tile, Grid grid, Canvas canvas)> _angeheftete
             = new();
 
+        // ---- Zoom (LayoutTransform auf dem Wurzel-Grid, siehe XAML) ----
+        // Design-Groesse = die urspruengliche, fest im XAML vergebene Fenstergroesse
+        // bei 100% Zoom. Fenstergroesse und ZoomTransform werden immer gemeinsam
+        // im gleichen Verhaeltnis gesetzt (SetzeZoom) - dadurch "sieht" das
+        // Wurzel-Grid intern immer die volle Design-Groesse und alle Auto-/
+        // Star-Zeilen sowie MinHeight-Angaben verhalten sich wie bei 100%,
+        // nur eben gleichmaessig kleiner gerendert.
+        private const double ZOOM_DESIGN_BREITE = 1800;
+        private const double ZOOM_DESIGN_HOEHE = 1144;
+        private const double ZOOM_MIN = 0.5;
+        private const double ZOOM_MAX = 1.2;
+        private const double ZOOM_SCHRITT = 0.05;
+        private double _zoomFaktor = 1.0;
+
         public PlanEditorDialog(
             List<(string label, int[,] belegung, List<UnterrichtsBlock> blocks)> loesungen,
             List<ZeitSlot> slots,
@@ -118,6 +132,7 @@ namespace Stundenplan_V2
             string excelPfad = null)
         {
             InitializeComponent();
+            InitialenZoomSetzen();
 
             _loesungen = loesungen;
             _slots = slots;
@@ -141,6 +156,53 @@ namespace Stundenplan_V2
             if (CboLoesung.Items.Count > 0)
                 CboLoesung.SelectedIndex = 0;
         }
+
+        // =====================================================
+        // ZOOM (Groesse + Schrift gleichmaessig skalieren)
+        // =====================================================
+
+        // Passt den Zoom beim Oeffnen automatisch an, falls der Monitor
+        // kleiner als die Design-Groesse (1800x1144) ist. Auf ausreichend
+        // grossen Monitoren bleibt es bei 100%.
+        private void InitialenZoomSetzen()
+        {
+            const double sicherheitsabstand = 0.95; // kleiner Puffer zum Bildschirmrand
+
+            double verfügbareBreite = SystemParameters.WorkArea.Width;
+            double verfügbareHöhe = SystemParameters.WorkArea.Height;
+
+            double faktor = Math.Min(1.0, Math.Min(
+                verfügbareBreite / ZOOM_DESIGN_BREITE,
+                verfügbareHöhe / ZOOM_DESIGN_HOEHE)) * sicherheitsabstand;
+
+            SetzeZoom(faktor);
+        }
+
+        // Setzt Fenstergroesse und ZoomTransform IMMER gemeinsam im selben
+        // Verhaeltnis, damit das Wurzel-Grid intern stets die volle
+        // Design-Groesse "sieht" (siehe Kommentar bei den Zoom-Feldern oben).
+        private void SetzeZoom(double faktor)
+        {
+            faktor = Math.Max(ZOOM_MIN, Math.Min(ZOOM_MAX, faktor));
+            _zoomFaktor = faktor;
+
+            ZoomTransform.ScaleX = faktor;
+            ZoomTransform.ScaleY = faktor;
+
+            Width = ZOOM_DESIGN_BREITE * faktor;
+            Height = ZOOM_DESIGN_HOEHE * faktor;
+
+            TxtZoomWert.Text = $"{Math.Round(faktor * 100)}%";
+        }
+
+        private void BtnZoomOut_Click(object sender, RoutedEventArgs e)
+            => SetzeZoom(_zoomFaktor - ZOOM_SCHRITT);
+
+        private void BtnZoomIn_Click(object sender, RoutedEventArgs e)
+            => SetzeZoom(_zoomFaktor + ZOOM_SCHRITT);
+
+        private void BtnZoomReset_Click(object sender, RoutedEventArgs e)
+            => SetzeZoom(1.0);
 
         // =====================================================
         // Lösungs-Auswahl
