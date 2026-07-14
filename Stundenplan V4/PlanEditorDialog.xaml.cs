@@ -1172,7 +1172,7 @@ namespace Stundenplan_V2
             {
                 Background = hintergrund,
                 BorderBrush = hervorheben
-                    ? new SolidColorBrush(Color.FromRgb(0xFF, 0x6A, 0x00)) // kräftiges Orange
+                    ? new SolidColorBrush(Color.FromRgb(0xE3, 0x1A, 0x1A)) // kräftiges Rot (päd. Einheit hervorgehoben)
                     : Brushes.Gray,
                 BorderThickness = hervorheben ? new Thickness(2.5) : new Thickness(0.5),
                 Margin = new Thickness(0),
@@ -2313,6 +2313,12 @@ namespace Stundenplan_V2
             // Hervorhebung: alle Blöcke der pädagogischen Einheit des angeklickten Blocks.
             // Päd. Einheit = gleiche Klasse UND gleiches Fach (irgendein Teil-Match).
             _highlightBloecke = BerechnePaedEinheit(blockIdx);
+
+            // Angeheftete Kacheln zeigen dieselbe Hervorhebung wie die Hauptpläne –
+            // unabhängig davon, ob ihr Lehrer/ihre Klasse Teil der päd. Einheit ist
+            // (ZeichneAngeheftetesTile zeichnet ohnehin komplett neu, betroffene
+            // Zellen bekommen so denselben roten Rahmen wie in Lehrer-/Klassenplan).
+            ZeichneAlleAngehefteten();
 
             _syncLaeuft = true;
             try
