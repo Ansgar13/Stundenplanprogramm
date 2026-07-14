@@ -46,10 +46,11 @@
         <!-- Vorauswahl-Aktionen + Suche -->
         <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,8">
             <Button x:Name="BtnVorauswahlAnhaken" Content="Treffer anhaken" Padding="8,3" Click="BtnVorauswahlAnhaken_Click"/>
-            <Button x:Name="BtnEingefärbteAuswählen" Content="Eingefärbte auswählen" Padding="8,3" Margin="6,0,0,0" Click="BtnEingefärbteAuswählen_Click"/>
+            <Button x:Name="BtnEingefärbteAuswählen" Content="Markierte anhaken" Padding="8,3" Margin="6,0,0,0" Click="BtnEingefärbteAuswählen_Click"
+                    ToolTip="Hakt die Checkbox aller aktuell mit der Maus markierten (highlighted) Zeilen an"/>
             <Button x:Name="BtnAuswahlLeeren" Content="Auswahl leeren" Padding="8,3" Margin="6,0,0,0" Click="BtnAuswahlLeeren_Click"/>
             <TextBlock Text="Suche:" VerticalAlignment="Center" Margin="24,0,6,0"/>
-            <TextBox x:Name="TxtSuche" Width="240" ToolTip="Filtert die Tabelle nach UNr, Klasse, Fach oder Lehrer"
+            <TextBox x:Name="TxtSuche" Width="240" ToolTip="Filtert die Tabelle nach UNr, Klasse, Fach, Lehrer oder ZeilenText-2"
                      TextChanged="TxtSuche_TextChanged"/>
             <TextBlock x:Name="TxtAnzahlGewählt" VerticalAlignment="Center" Margin="24,0,0,0" FontWeight="Bold" Text="0 ausgewählt"/>
 
@@ -77,6 +78,7 @@
                 <DataGridTextColumn Header="Klasse" Binding="{Binding Klasse}" Width="110" IsReadOnly="True"/>
                 <DataGridTextColumn Header="Fach"   Binding="{Binding Fach}"   Width="90"  IsReadOnly="True"/>
                 <DataGridTextColumn Header="Lehrer" Binding="{Binding Lehrer}" Width="110" IsReadOnly="True"/>
+                <DataGridTextColumn Header="ZeilenText-2" Binding="{Binding Zt2}" Width="100" IsReadOnly="True"/>
                 <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*"   IsReadOnly="True"/>
             </DataGrid.Columns>
         </DataGrid>

@@ -216,7 +216,8 @@ namespace Stundenplan_V2
                     z.UNr.ToString().Contains(q) ||
                     z.Klasse.ToLower().Contains(q) ||
                     z.Fach.ToLower().Contains(q) ||
-                    z.Lehrer.ToLower().Contains(q);
+                    z.Lehrer.ToLower().Contains(q) ||
+                    z.Zt2.ToLower().Contains(q);
                 if (sichtbar) _anzeige.Add(z);
             }
             AktualisiereZähler();
@@ -276,16 +277,26 @@ namespace Stundenplan_V2
             AktualisiereZähler();
         }
 
-        // Wählt mit einem Klick alle Zeilen aus, die aktuell eingefärbt sind
-        // (also ignoriert und/oder fixiert, Status ungleich "–") — unabhängig
-        // von den Kategorie-Filtern oben. Nützlich, um z.B. schnell alle schon
-        // fixierten Stunden zu markieren und in einem Rutsch zu entfixieren.
+        // Hakt die Checkbox aller Zeilen an, die aktuell im DataGrid mit der
+        // Maus markiert (highlighted) sind — Standard-Mehrfachauswahl per
+        // Klick/Strg-Klick/Shift-Klick (SelectionMode="Extended"). Damit lässt
+        // sich eine per Maus zusammengestellte Auswahl mit einem Klick in
+        // "angehakt" (also fuer die Aktions-Buttons wirksam) uebernehmen.
         private void BtnEingefärbteAuswählen_Click(object sender, RoutedEventArgs e)
         {
-            int angehakt = 0;
-            foreach (var z in _alleZeilen)
+            var markiert = DgZeilen.SelectedItems.Cast<ZeilenEintrag>().ToList();
+            if (markiert.Count == 0)
             {
-                if (z.IstEingefärbt && !z.Ausgewählt)
+                MessageBox.Show("Bitte zuerst Zeilen in der Tabelle mit der Maus markieren " +
+                    "(Klick/Strg-Klick/Shift-Klick).", "Hinweis",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            int angehakt = 0;
+            foreach (var z in markiert)
+            {
+                if (!z.Ausgewählt)
                 {
                     z.Ausgewählt = true;
                     angehakt++;
@@ -294,7 +305,7 @@ namespace Stundenplan_V2
             AktualisiereZähler();
 
             if (angehakt == 0)
-                MessageBox.Show("Keine eingefärbten Zeilen gefunden (evtl. bereits alle angehakt, oder aktuell nichts ignoriert/fixiert).",
+                MessageBox.Show("Alle markierten Zeilen waren bereits angehakt.",
                     "Hinweis", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
