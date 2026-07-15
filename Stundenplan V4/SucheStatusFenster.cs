@@ -12,8 +12,10 @@ namespace Stundenplan_V2
     /// </summary>
     public class SucheStatusFenster : Window
     {
+        private readonly TextBlock _datei;
         private readonly TextBlock _phase;
         private readonly TextBlock _wert;
+        private readonly TextBlock _bad;
         private readonly TextBlock _zeit;
         private readonly TextBlock _anzahl;
         private readonly TextBlock _hinweis;
@@ -24,7 +26,14 @@ namespace Stundenplan_V2
         /// <summary>Wird ausgelöst, wenn der Nutzer „Abbrechen“ drückt.</summary>
         public event Action AbbruchGewuenscht;
 
-        public SucheStatusFenster()
+        /// <param name="excelPfad">
+        /// Pfad der aktuell eingelesenen Excel-Datei. Wird oben im Fenster fett
+        /// angezeigt, damit bei mehreren parallel offenen Programminstanzen
+        /// (z.B. während man sich per Live-Export den Zwischenstand eines
+        /// anderen Laufs ansieht) immer klar ist, zu welcher Datei dieses
+        /// Such-Fenster gehört.
+        /// </param>
+        public SucheStatusFenster(string excelPfad = null)
         {
             Title = "Engine sucht …";
             Width = 500;
@@ -37,17 +46,32 @@ namespace Stundenplan_V2
             Topmost = true;
 
             var grid = new Grid { Margin = new Thickness(16) };
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 0 phase
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 1 wert
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 2 anzahl
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 3 zeit
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 4 listen-header
-            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // 5 liste
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 6 hinweis
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 7 button
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 0 datei
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 1 phase
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 2 wert
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 3 bad (laufende Phase)
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 4 anzahl
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 5 zeit
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 6 listen-header
+            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // 7 liste
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 8 hinweis
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 9 button
+
+            string dateiName = string.IsNullOrEmpty(excelPfad)
+                ? "(keine Datei geladen)"
+                : System.IO.Path.GetFileName(excelPfad);
+            _datei = new TextBlock
+            {
+                Text = "Datei: " + dateiName,
+                FontWeight = FontWeights.Bold,
+                FontSize = 15,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 0, 0, 10)
+            };
 
             _phase = new TextBlock { Text = "Starte Solver …", FontWeight = FontWeights.SemiBold, FontSize = 14, Margin = new Thickness(0, 0, 0, 10), TextWrapping = TextWrapping.Wrap };
             _wert = new TextBlock { Text = "Bester Zielwert: –", Margin = new Thickness(0, 0, 0, 4) };
+            _bad = new TextBlock { Text = "BadUnits (laufende Phase): –", Margin = new Thickness(0, 0, 0, 4) };
             _anzahl = new TextBlock { Text = "Gefundene Lösungen: 0", Margin = new Thickness(0, 0, 0, 4) };
             _zeit = new TextBlock { Text = "Zeit: 0,0 s", Margin = new Thickness(0, 0, 0, 8) };
             _listeHeader = new TextBlock { Text = "Bisherige Lösungen (Label: Qualität / BadUnits):", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 4) };
@@ -64,13 +88,15 @@ namespace Stundenplan_V2
                 Padding = new Thickness(4)
             };
 
-            Grid.SetRow(_phase, 0);
-            Grid.SetRow(_wert, 1);
-            Grid.SetRow(_anzahl, 2);
-            Grid.SetRow(_zeit, 3);
-            Grid.SetRow(_listeHeader, 4);
-            Grid.SetRow(listeScroll, 5);
-            Grid.SetRow(_hinweis, 6);
+            Grid.SetRow(_datei, 0);
+            Grid.SetRow(_phase, 1);
+            Grid.SetRow(_wert, 2);
+            Grid.SetRow(_bad, 3);
+            Grid.SetRow(_anzahl, 4);
+            Grid.SetRow(_zeit, 5);
+            Grid.SetRow(_listeHeader, 6);
+            Grid.SetRow(listeScroll, 7);
+            Grid.SetRow(_hinweis, 8);
 
             _btnAbbrechen = new Button
             {
@@ -81,10 +107,12 @@ namespace Stundenplan_V2
                 Margin = new Thickness(0, 6, 0, 0)
             };
             _btnAbbrechen.Click += (s, e) => AbbruchGewuenscht?.Invoke();
-            Grid.SetRow(_btnAbbrechen, 7);
+            Grid.SetRow(_btnAbbrechen, 9);
 
+            grid.Children.Add(_datei);
             grid.Children.Add(_phase);
             grid.Children.Add(_wert);
+            grid.Children.Add(_bad);
             grid.Children.Add(_anzahl);
             grid.Children.Add(_zeit);
             grid.Children.Add(_listeHeader);
@@ -103,6 +131,9 @@ namespace Stundenplan_V2
             _wert.Text = f.HatZielwert
                 ? "Bester Zielwert (laufende Phase): " + f.BesterZielwert.ToString("0")
                 : "Bester Zielwert: – (noch keine Lösung)";
+            _bad.Text = f.HatZielwert
+                ? "BadUnits (laufende Phase): " + f.AktuelleBadUnits
+                : "BadUnits (laufende Phase): –";
             _anzahl.Text = "Gefundene Lösungen: " + f.GefundeneLösungen;
             _zeit.Text = "Zeit: " + f.Zeit.TotalSeconds.ToString("0.0") + " s";
 

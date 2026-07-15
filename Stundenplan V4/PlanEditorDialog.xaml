@@ -2,16 +2,8 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Plan-Editor" Width="1800" Height="1144"
-        MinWidth="900" MinHeight="572"
         WindowStartupLocation="CenterOwner">
     <Grid Margin="10">
-        <Grid.LayoutTransform>
-            <!-- Skaliert das komplette Fenster inkl. Schrift gleichmäßig (siehe
-                 SetzeZoom() im Code-Behind). ScaleX/Y werden dort gesetzt, nie
-                 hier fest im XAML, damit die automatische Anpassung an die
-                 Monitorgröße und die Zoom-Buttons konsistent bleiben. -->
-            <ScaleTransform x:Name="ZoomTransform" ScaleX="1" ScaleY="1"/>
-        </Grid.LayoutTransform>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -21,25 +13,8 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Kopfzeile: Loesung + Modus (links), Zoom-Regler (rechts) -->
-        <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
-
-        <!-- Zoom-Regler: passt Groesse+Schrift des gesamten Fensters gleichmaessig
-             an (ueber ZoomTransform / SetzeZoom() im Code-Behind). Nuetzlich vor
-             allem auf kleinen Monitoren, wo die Standardgroesse nicht passt. -->
-        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-            <TextBlock Text="Zoom:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
-            <Button x:Name="BtnZoomOut" Content="-" Width="26" VerticalAlignment="Center"
-                    ToolTip="Verkleinern" Click="BtnZoomOut_Click"/>
-            <TextBlock x:Name="TxtZoomWert" Text="100%" Width="42" TextAlignment="Center"
-                       VerticalAlignment="Center"/>
-            <Button x:Name="BtnZoomIn" Content="+" Width="26" VerticalAlignment="Center"
-                    ToolTip="Vergroessern" Click="BtnZoomIn_Click"/>
-            <Button x:Name="BtnZoomReset" Content="100%" Width="42" VerticalAlignment="Center"
-                    Margin="8,0,0,0" ToolTip="Zoom zuruecksetzen" Click="BtnZoomReset_Click"/>
-        </StackPanel>
-
-        <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+        <!-- Kopfzeile: Loesung + Modus -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
             <TextBlock Text="Loesung:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
             <Button x:Name="BtnVorigeLoesung" Content="&#9664;" Width="28" VerticalAlignment="Center"
                     Margin="0,0,2,0" ToolTip="Vorige Loesung" Click="BtnVorigeLoesung_Click"/>
@@ -48,9 +23,13 @@
             <Button x:Name="BtnNaechsteLoesung" Content="&#9654;" Width="28" VerticalAlignment="Center"
                     Margin="0,0,30,0" ToolTip="Naechste Loesung" Click="BtnNaechsteLoesung_Click"/>
 
-            <Button x:Name="BtnDiagWerte" Content="Diag-Werte" VerticalAlignment="Center" Margin="0,0,30,0"
+            <Button x:Name="BtnDiagWerte" Content="Diag-Werte" VerticalAlignment="Center" Margin="0,0,8,0"
                     Padding="8,2" ToolTip="Diag-Zeile des aktuellen Lehrers (und Summe) in eigenem Fenster anzeigen"
                     Click="BtnDiagWerte_Click"/>
+
+            <Button x:Name="BtnUvZeigen" Content="UV anzeigen" VerticalAlignment="Center" Margin="0,0,30,0"
+                    Padding="8,2" ToolTip="UV-Zeilen des aktuellen Lehrers/der aktuellen Klasse in eigenem Fenster anzeigen (nur lesend). Mehrfach klickbar — jedes Fenster behaelt seinen Filter."
+                    Click="BtnUvZeigen_Click"/>
 
             <TextBlock Text="Modus:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
             <RadioButton x:Name="RbBlock"  Content="Block (ganzer Tag)" GroupName="Modus"
@@ -75,7 +54,6 @@
             <Button x:Name="BtnNaechsteVglLoesung2" Content="&#9654;" Width="28" VerticalAlignment="Center"
                     ToolTip="Nächste 2. Lösung" Click="BtnNaechsteVglLoesung2_Click" Visibility="Collapsed"/>
         </StackPanel>
-        </DockPanel>
 
         <!-- Hinweiszeile -->
         <TextBlock Grid.Row="1" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="#555"

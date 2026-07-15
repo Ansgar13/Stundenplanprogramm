@@ -97,6 +97,15 @@ namespace Stundenplan_V2
         // Modeless Fenster mit den Diag-Zeilen des aktuellen Lehrers.
         private DiagAnzeigeWindow _diagFenster;
 
+        // Modeless UV-Fenster (rein lesend). Bewusst eine LISTE statt eines
+        // einzelnen Fensters wie bei _diagFenster: jeder Klick auf "UV anzeigen"
+        // öffnet ein weiteres Fenster, damit sich z.B. zwei Lehrer nebeneinander
+        // vergleichen lassen. Die Fenster sind Owned Windows dieses Dialogs und
+        // schließen sich daher automatisch mit ihm.
+        private readonly List<UvAnzeigeWindow> _uvFenster = new();
+        // Laufender Zähler nur für den kaskadierten Startversatz beim Öffnen.
+        private int _uvFensterZaehler = 0;
+
         // ---- Angeheftete Pläne (mehrere Lehrer-/Klassenpläne gleichzeitig
         // sichtbar und bearbeitbar, zusätzlich zu den normalen Lehrer-/
         // Klasse-Dropdowns oben). Alle Tiles zeichnen auf derselben
@@ -105,20 +114,6 @@ namespace Stundenplan_V2
         // ganz normales Zelle_Drop wie im Hauptbereich). ----
         private readonly List<(bool istLehrer, string name, Border tile, Grid grid, Canvas canvas)> _angeheftete
             = new();
-
-        // ---- Zoom (LayoutTransform auf dem Wurzel-Grid, siehe XAML) ----
-        // Design-Groesse = die urspruengliche, fest im XAML vergebene Fenstergroesse
-        // bei 100% Zoom. Fenstergroesse und ZoomTransform werden immer gemeinsam
-        // im gleichen Verhaeltnis gesetzt (SetzeZoom) - dadurch "sieht" das
-        // Wurzel-Grid intern immer die volle Design-Groesse und alle Auto-/
-        // Star-Zeilen sowie MinHeight-Angaben verhalten sich wie bei 100%,
-        // nur eben gleichmaessig kleiner gerendert.
-        private const double ZOOM_DESIGN_BREITE = 1800;
-        private const double ZOOM_DESIGN_HOEHE = 1144;
-        private const double ZOOM_MIN = 0.5;
-        private const double ZOOM_MAX = 1.2;
-        private const double ZOOM_SCHRITT = 0.05;
-        private double _zoomFaktor = 1.0;
 
         public PlanEditorDialog(
             List<(string label, int[,] belegung, List<UnterrichtsBlock> blocks)> loesungen,
@@ -132,7 +127,6 @@ namespace Stundenplan_V2
             string excelPfad = null)
         {
             InitializeComponent();
-            InitialenZoomSetzen();
 
             _loesungen = loesungen;
             _slots = slots;
@@ -156,53 +150,6 @@ namespace Stundenplan_V2
             if (CboLoesung.Items.Count > 0)
                 CboLoesung.SelectedIndex = 0;
         }
-
-        // =====================================================
-        // ZOOM (Groesse + Schrift gleichmaessig skalieren)
-        // =====================================================
-
-        // Passt den Zoom beim Oeffnen automatisch an, falls der Monitor
-        // kleiner als die Design-Groesse (1800x1144) ist. Auf ausreichend
-        // grossen Monitoren bleibt es bei 100%.
-        private void InitialenZoomSetzen()
-        {
-            const double sicherheitsabstand = 0.95; // kleiner Puffer zum Bildschirmrand
-
-            double verfügbareBreite = SystemParameters.WorkArea.Width;
-            double verfügbareHöhe = SystemParameters.WorkArea.Height;
-
-            double faktor = Math.Min(1.0, Math.Min(
-                verfügbareBreite / ZOOM_DESIGN_BREITE,
-                verfügbareHöhe / ZOOM_DESIGN_HOEHE)) * sicherheitsabstand;
-
-            SetzeZoom(faktor);
-        }
-
-        // Setzt Fenstergroesse und ZoomTransform IMMER gemeinsam im selben
-        // Verhaeltnis, damit das Wurzel-Grid intern stets die volle
-        // Design-Groesse "sieht" (siehe Kommentar bei den Zoom-Feldern oben).
-        private void SetzeZoom(double faktor)
-        {
-            faktor = Math.Max(ZOOM_MIN, Math.Min(ZOOM_MAX, faktor));
-            _zoomFaktor = faktor;
-
-            ZoomTransform.ScaleX = faktor;
-            ZoomTransform.ScaleY = faktor;
-
-            Width = ZOOM_DESIGN_BREITE * faktor;
-            Height = ZOOM_DESIGN_HOEHE * faktor;
-
-            TxtZoomWert.Text = $"{Math.Round(faktor * 100)}%";
-        }
-
-        private void BtnZoomOut_Click(object sender, RoutedEventArgs e)
-            => SetzeZoom(_zoomFaktor - ZOOM_SCHRITT);
-
-        private void BtnZoomIn_Click(object sender, RoutedEventArgs e)
-            => SetzeZoom(_zoomFaktor + ZOOM_SCHRITT);
-
-        private void BtnZoomReset_Click(object sender, RoutedEventArgs e)
-            => SetzeZoom(1.0);
 
         // =====================================================
         // Lösungs-Auswahl
@@ -253,6 +200,7 @@ namespace Stundenplan_V2
             if (!_initialisiert || _belegung == null) return;
             SpiegeleAuswahlInVm(CboLehrer, CboVmLehrer);
             AktualisiereDiagFenster();
+            AktualisiereUvFenster();
             if (_vergleichsModus) { ZeichneVergleichsModus(); return; }
             ZeichneLehrerGrid();
             ZeichneParkbereich();
@@ -270,6 +218,7 @@ namespace Stundenplan_V2
         {
             if (!_initialisiert || _belegung == null) return;
             SpiegeleAuswahlInVm(CboKlasse, CboVmKlasse);
+            AktualisiereUvFenster();
             if (_vergleichsModus) { ZeichneVergleichsModus(); return; }
             ZeichneKlasseGrid();
             ZeichneParkbereich();
@@ -338,6 +287,111 @@ namespace Stundenplan_V2
             string label1 = CboLoesung?.SelectedItem as string;
             string label2 = _vergleichsModus ? (CboVglLoesung2?.SelectedItem as string) : null;
             _diagFenster.Zeige(label1, label2, AktuellerDiagLehrer(), _vergleichsModus);
+        }
+
+        // ---- UV-Fenster ---------------------------------------------------
+
+        // Die aktuell relevante Klasse: im Vergleichsmodus aus dem VM-Dropdown,
+        // sonst aus dem normalen — analog zu AktuellerDiagLehrer().
+        private string AktuelleUvKlasse()
+            => _vergleichsModus
+                ? (CboVmKlasse?.SelectedItem as string)
+                : (CboKlasse?.SelectedItem as string);
+
+        // Öffnet JEDES MAL ein neues UV-Fenster mit der aktuellen Auswahl als
+        // Startfilter. Kein Wiederverwenden — mehrere Fenster parallel sind der
+        // eigentliche Zweck (Vergleich zweier Lehrer).
+        private void BtnUvZeigen_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(_excelPfad))
+            {
+                MessageBox.Show("Kein Excel-Pfad verfügbar – die UV kann nicht gelesen werden.",
+                    "UV anzeigen", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var fenster = new UvAnzeigeWindow(_excelPfad, AktuellerDiagLehrer(), AktuelleUvKlasse(),
+                                              SpringeZuLehrerKlasse)
+            {
+                Owner = this
+            };
+
+            // Kaskadierter Versatz, sonst liegen mehrere Fenster exakt übereinander.
+            int stufe = _uvFensterZaehler++ % 8;
+            fenster.Left = Left + 60 + stufe * 28;
+            fenster.Top = Top + 60 + stufe * 28;
+
+            _uvFenster.Add(fenster);
+            fenster.Closed += (s, ev) => _uvFenster.Remove(fenster);
+            fenster.Show();
+        }
+
+        // Aktualisiert nur die UV-Fenster, die "an Auswahl koppeln" angehakt
+        // haben. Alle übrigen behalten ihren beim Öffnen gesetzten Filter.
+        private void AktualisiereUvFenster()
+        {
+            if (_uvFenster.Count == 0) return;
+            string lehrer = AktuellerDiagLehrer();
+            string klasse = AktuelleUvKlasse();
+            foreach (var f in _uvFenster.ToList())
+                if (f.Gekoppelt)
+                    f.Zeige(lehrer, klasse);
+        }
+
+        // Rückruf aus einem UV-Fenster (Doppelklick auf Lehrer/Klasse): stellt
+        // die Master-Dropdowns um. Das löst Cbo(Lehrer|Klasse)_SelectionChanged
+        // aus, das Neuzeichnen läuft also über den normalen Weg.
+        //
+        // Wird bewusst NICHT von Activate() begleitet: das UV-Fenster soll den
+        // Fokus behalten, damit man mehrere Zeilen hintereinander durchsehen kann.
+        //
+        // Rückgabe: leer = alles gesprungen, sonst der Grund fürs Nicht-Springen.
+        // Die Dropdowns enthalten nur, was in der aktuellen Lösung als Block
+        // existiert — bei ignorierten Zeilen, Wst 0 oder aktivem Diag-Filter kann
+        // ein in UV stehender Lehrer dort schlicht fehlen.
+        private string SpringeZuLehrerKlasse(string lehrer, string klasse)
+        {
+            var probleme = new List<string>();
+
+            if (!string.IsNullOrWhiteSpace(lehrer))
+            {
+                int idx = FindeItem(CboLehrer, lehrer);
+                if (idx < 0)
+                    probleme.Add($"Lehrer „{lehrer}“ ist in dieser Lösung nicht auswählbar " +
+                                 "(ignoriert, Wst 0 oder Diag-Filter aktiv).");
+                else if (idx != CboLehrer.SelectedIndex)
+                    CboLehrer.SelectedIndex = idx;
+            }
+
+            if (!string.IsNullOrWhiteSpace(klasse))
+            {
+                int idx = FindeItem(CboKlasse, klasse);
+                if (idx < 0)
+                    probleme.Add($"Klasse „{klasse}“ ist in dieser Lösung nicht auswählbar " +
+                                 "(ignoriert oder Wst 0).");
+                else if (idx != CboKlasse.SelectedIndex)
+                    CboKlasse.SelectedIndex = idx;
+            }
+
+            return string.Join("  ", probleme);
+        }
+
+        // Index eines Eintrags im Dropdown — erst exakt, dann ohne Rücksicht auf
+        // Groß-/Kleinschreibung, damit eine abweichend geschriebene UV-Zelle
+        // ("l1" statt "L1") nicht unnötig scheitert.
+        private static int FindeItem(System.Windows.Controls.ComboBox cbo, string wert)
+        {
+            if (cbo == null || wert == null) return -1;
+
+            int idx = cbo.Items.IndexOf(wert);
+            if (idx >= 0) return idx;
+
+            for (int i = 0; i < cbo.Items.Count; i++)
+                if (cbo.Items[i] is string s &&
+                    s.Equals(wert, StringComparison.OrdinalIgnoreCase))
+                    return i;
+
+            return -1;
         }
 
         // Springt zum nächsten Eintrag im Lösungs-Dropdown (mit Umlauf)

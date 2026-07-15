@@ -519,45 +519,47 @@ namespace Stundenplan_V2
             input = ExcelLoader.Lade(excelPfad);
 
             // FT-Diagnose ausgeben: welche freien Tage aus Tabelle "FT"
-            // registriert bzw. (mit Grund) verworfen wurden.
-            if (input.FtDiagnose != null)
+            // registriert bzw. (mit Grund) verworfen wurden. Nur beim
+            // manuellen Laden (Button 1) protokollieren — bei stillen
+            // Auto-Reloads würde das Log-Fenster sonst bei jedem Zwischen-
+            // schritt unnötig mit denselben Zeilen zugemüllt.
+            if (zeigeWarnungen && input.FtDiagnose != null)
                 foreach (var zeile in input.FtDiagnose)
                     Log(zeile);
 
             // Warnung, falls UV-Zeilen ohne Fach und/oder Klasse gefunden wurden.
             // Solche Zeilen können den Solver ohne erkennbaren Grund "infeasible"
-            // melden lassen (siehe Kapitel 2.1 der Anleitung).
-            if (input.UvFachKlasseWarnungen != null && input.UvFachKlasseWarnungen.Count > 0)
+            // melden lassen (siehe Kapitel 2.1 der Anleitung). Nur beim manuellen
+            // Laden (Button 1) protokollieren/anzeigen — bei stillen Auto-Reloads
+            // wurde die Datei ohnehin schon einmal manuell geprüft.
+            if (zeigeWarnungen && input.UvFachKlasseWarnungen != null && input.UvFachKlasseWarnungen.Count > 0)
             {
                 Log($"⚠ ACHTUNG: {input.UvFachKlasseWarnungen.Count} Zeile(n) in UV ohne Fach und/oder Klasse:");
                 foreach (var w in input.UvFachKlasseWarnungen)
                     Log("   " + w);
 
-                if (zeigeWarnungen)
-                {
-                    // Betroffene UNrn kompakt in die MessageBox aufnehmen, damit man
-                    // nicht zwingend erst im Log-Fenster nachsehen muss. Bei sehr
-                    // vielen betroffenen UNrn wird die Liste gekappt (sonst wird die
-                    // MessageBox unhandlich groß) und auf das Log-Fenster verwiesen.
-                    string unrText;
-                    var unrn = input.UvFachKlasseWarnungUNrn ?? new List<int>();
-                    const int maxAnzeige = 20;
-                    if (unrn.Count == 0)
-                        unrText = "";
-                    else if (unrn.Count <= maxAnzeige)
-                        unrText = "Betroffene UNr: " + string.Join(", ", unrn) + "\n\n";
-                    else
-                        unrText = "Betroffene UNr (erste " + maxAnzeige + " von " + unrn.Count + "): " +
-                                   string.Join(", ", unrn.Take(maxAnzeige)) + ", …\n\n";
+                // Betroffene UNrn kompakt in die MessageBox aufnehmen, damit man
+                // nicht zwingend erst im Log-Fenster nachsehen muss. Bei sehr
+                // vielen betroffenen UNrn wird die Liste gekappt (sonst wird die
+                // MessageBox unhandlich groß) und auf das Log-Fenster verwiesen.
+                string unrText;
+                var unrn = input.UvFachKlasseWarnungUNrn ?? new List<int>();
+                const int maxAnzeige = 20;
+                if (unrn.Count == 0)
+                    unrText = "";
+                else if (unrn.Count <= maxAnzeige)
+                    unrText = "Betroffene UNr: " + string.Join(", ", unrn) + "\n\n";
+                else
+                    unrText = "Betroffene UNr (erste " + maxAnzeige + " von " + unrn.Count + "): " +
+                               string.Join(", ", unrn.Take(maxAnzeige)) + ", …\n\n";
 
-                    MessageBox.Show(
-                        $"Achtung: {input.UvFachKlasseWarnungen.Count} Zeile(n) in der UV haben kein Fach und/oder keine Klasse eingetragen.\n\n" +
-                        unrText +
-                        "Das ist ein Pflichtfeld und kann beim Solverlauf zu einer scheinbar unerklärlichen " +
-                        "Unlösbarkeit (Infeasible) führen.\n\n" +
-                        "Details siehe Log-Fenster.",
-                        "Warnung: UV unvollständig", MessageBoxButton.OK, MessageBoxImage.Warning);
-                }
+                MessageBox.Show(
+                    $"Achtung: {input.UvFachKlasseWarnungen.Count} Zeile(n) in der UV haben kein Fach und/oder keine Klasse eingetragen.\n\n" +
+                    unrText +
+                    "Das ist ein Pflichtfeld und kann beim Solverlauf zu einer scheinbar unerklärlichen " +
+                    "Unlösbarkeit (Infeasible) führen.\n\n" +
+                    "Details siehe Log-Fenster.",
+                    "Warnung: UV unvollständig", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
             // In-Memory-Lösungen leeren: nach dem Neuladen gelten nur noch
@@ -575,7 +577,8 @@ namespace Stundenplan_V2
                 if (lösLösungen.Count > 0)
                 {
                     letzteSolutions.AddRange(lösLösungen);
-                    Log($"{lösLösungen.Count} Lösung(en) aus Sheet 'Lös' eingelesen.");
+                    if (zeigeWarnungen)
+                        Log($"{lösLösungen.Count} Lösung(en) aus Sheet 'Lös' eingelesen.");
                 }
             }
             catch (Exception ex)
@@ -605,7 +608,8 @@ namespace Stundenplan_V2
                 if (neueGesicherte.Count > 0)
                 {
                     letzteSolutions.AddRange(neueGesicherte);
-                    Log($"{neueGesicherte.Count} gesicherte Lösung(en) aus Sheet 'Gesichert' eingelesen.");
+                    if (zeigeWarnungen)
+                        Log($"{neueGesicherte.Count} gesicherte Lösung(en) aus Sheet 'Gesichert' eingelesen.");
                 }
             }
             catch (Exception ex)
@@ -613,15 +617,17 @@ namespace Stundenplan_V2
                 Log($"Hinweis: Gesicherte Lösungen konnten nicht gelesen werden: {ex.Message}");
             }
 
-            // Statuszeile nur beim manuellen Laden (Button 1) überschreiben — bei
-            // stillen Auto-Reloads nach einem Schreibvorgang (zeigeWarnungen=false)
-            // soll die aussagekräftigere Erfolgsmeldung des jeweiligen Buttons
-            // (z.B. "Lehrerpläne für alle Lösungen erzeugt.") in der Statuszeile
-            // stehen bleiben statt sofort wieder überschrieben zu werden. Im
-            // Log-Fenster wird der Reload trotzdem immer protokolliert.
+            // Statuszeile und Log-Zeile nur beim manuellen Laden (Button 1)
+            // ausgeben — bei stillen Auto-Reloads nach einem Schreibvorgang
+            // (zeigeWarnungen=false) soll weder die Statuszeile mit der
+            // aussagekräftigeren Erfolgsmeldung des jeweiligen Buttons
+            // überschrieben noch das Log-Fenster bei jedem Zwischenschritt
+            // mit derselben Zeile zugemüllt werden.
             if (zeigeWarnungen)
+            {
                 TxtStatus.Text = $"Excel erfolgreich eingelesen um {DateTime.Now:HH:mm:ss} Uhr.";
-            Log($"Excel-Datei '{System.IO.Path.GetFileName(excelPfad)}' eingelesen um {DateTime.Now:HH:mm:ss} Uhr.");
+                Log($"Excel-Datei '{System.IO.Path.GetFileName(excelPfad)}' eingelesen um {DateTime.Now:HH:mm:ss} Uhr.");
+            }
         }
 
         // =====================================================
@@ -640,7 +646,7 @@ namespace Stundenplan_V2
             // und nicht das der vorherigen Läufe mit angehängt wird.
             TxtLog.Clear();
 
-            var fenster = new SucheStatusFenster { Owner = this };
+            var fenster = new SucheStatusFenster(excelPfad) { Owner = this };
             var cts = new System.Threading.CancellationTokenSource();
             fenster.AbbruchGewuenscht += () => { cts.Cancel(); fenster.MarkiereAbbrechend(); };
             fenster.Show();

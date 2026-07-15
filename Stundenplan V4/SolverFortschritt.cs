@@ -10,6 +10,10 @@ namespace Stundenplan_V2
         public string Phase { get; set; } = "";
         public bool HatZielwert { get; set; }
         public double BesterZielwert { get; set; }
+
+        // BadUnits (späte päd. Einheiten) der aktuell besten Zwischenlösung
+        // der laufenden Phase. Nur gültig, wenn HatZielwert == true.
+        public int AktuelleBadUnits { get; set; }
         public System.TimeSpan Zeit { get; set; }
         public int GefundeneLösungen { get; set; }
 

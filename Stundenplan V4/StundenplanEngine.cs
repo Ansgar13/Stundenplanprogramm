@@ -29,6 +29,7 @@ namespace Stundenplan_V2
             private string _phase = "Start";
             private int _gefunden = 0;
             private double _bester = 0;
+            private int _besterBad = 0;
             private bool _hatZielwert = false;
             private readonly List<(string label, int quality, int badUnits)> _lösungen = new();
 
@@ -37,15 +38,22 @@ namespace Stundenplan_V2
             // Neue Phase: Zielwert der letzten Phase verwerfen.
             public void SetzePhase(string phase)
             {
-                lock (_lock) { _phase = phase; _hatZielwert = false; }
+                lock (_lock) { _phase = phase; _hatZielwert = false; _besterBad = 0; }
                 Emit(force: true);
             }
 
-            public void MeldeZielwert(double z)
+            // badUnits: BadUnits der Zwischenlösung, zu der der gemeldete Zielwert z gehört
+            // (optional, da nicht jeder Aufrufer sie kennt).
+            public void MeldeZielwert(double z, int? badUnits = null)
             {
                 lock (_lock)
                 {
-                    if (!_hatZielwert || z > _bester) { _bester = z; _hatZielwert = true; }
+                    if (!_hatZielwert || z > _bester)
+                    {
+                        _bester = z;
+                        _hatZielwert = true;
+                        if (badUnits.HasValue) _besterBad = badUnits.Value;
+                    }
                 }
                 Emit(force: false);
             }
@@ -85,6 +93,7 @@ namespace Stundenplan_V2
                         Phase = _phase,
                         HatZielwert = _hatZielwert,
                         BesterZielwert = _bester,
+                        AktuelleBadUnits = _besterBad,
                         Zeit = _sw.Elapsed,
                         GefundeneLösungen = _gefunden,
                         Lösungen = new List<(string, int, int)>(_lösungen)
@@ -100,16 +109,53 @@ namespace Stundenplan_V2
         {
             private readonly FortschrittReporter _rep;
             private readonly System.Threading.CancellationToken _tok;
+            private readonly List<BoolVar> _badVars;
 
-            public FortschrittCallback(FortschrittReporter rep, System.Threading.CancellationToken tok)
+            // Optionale Live-Export-Anbindung: schreibt bei Verbesserung
+            // (gedrosselt über _liveState) den aktuellen Zwischenstand als
+            // eigene Excel-Datei, damit man während des laufenden Solvers
+            // von außen reinschauen kann (siehe LiveExporter.cs).
+            private readonly LiveExportState _liveState;
+            private readonly BoolVar[,] _x;
+            private readonly List<UnterrichtsBlock> _blocks;
+            private readonly List<ZeitSlot> _slots;
+            private readonly string _labelPrefix;
+            private readonly Action<string> _log;
+
+            public FortschrittCallback(FortschrittReporter rep, System.Threading.CancellationToken tok, List<BoolVar> badVars = null,
+                LiveExportState liveState = null, BoolVar[,] x = null, List<UnterrichtsBlock> blocks = null,
+                List<ZeitSlot> slots = null, string labelPrefix = null, Action<string> log = null)
             {
                 _rep = rep;
                 _tok = tok;
+                _badVars = badVars;
+                _liveState = liveState;
+                _x = x;
+                _blocks = blocks;
+                _slots = slots;
+                _labelPrefix = labelPrefix;
+                _log = log;
             }
 
             public override void OnSolutionCallback()
             {
-                _rep?.MeldeZielwert(ObjectiveValue());
+                double zielwert = ObjectiveValue();
+                int? bad = _badVars != null ? _badVars.Count(v => Value(v) == 1) : (int?)null;
+                _rep?.MeldeZielwert(zielwert, bad);
+
+                if (_liveState != null && _x != null && _liveState.SollSchreiben(zielwert))
+                {
+                    int B = _blocks.Count, S = _slots.Count;
+                    var belegung = new int[B, S];
+                    for (int b = 0; b < B; b++)
+                        for (int s = 0; s < S; s++)
+                            belegung[b, s] = (int)Value(_x[b, s]);
+
+                    LiveExporter.SchreibeSnapshot(
+                        _liveState, belegung, _blocks, _slots,
+                        $"{_labelPrefix}_live", (int)zielwert, bad ?? 0, _log);
+                }
+
                 if (_tok.IsCancellationRequested)
                     StopSearch();
             }
@@ -1562,6 +1608,13 @@ namespace Stundenplan_V2
 
             var reporter = fortschritt != null ? new FortschrittReporter(fortschritt) : null;
 
+            // Live-Export: schreibt während des Laufs periodisch den aktuell
+            // besten Zwischenstand in eine eigene, nummerierte Excel-Datei im
+            // "_live"-Unterordner neben der Zieldatei (siehe LiveExporter.cs).
+            // Einmal pro Gesamtlauf angelegt, damit die Nummerierung über alle
+            // Phasen hinweg fortläuft.
+            var liveState = new LiveExportState(excelPfad, log);
+
             // --------------------------------------------------
             // Checkup FixUNrn: vorab alle Konflikte in den
             // FixUNrn prüfen und in Excel-Sheet schreiben
@@ -1625,7 +1678,7 @@ namespace Stundenplan_V2
                 strafeMinus2Lehrer: strafeMinus2Lehrer,
                 lehrerFreiTageMinus2: lehrerFreiTageMinus2,
                 lehrerFreiTageMinus3: lehrerFreiTageMinus3,
-                reporter: reporter, abbruch: abbruch);
+                reporter: reporter, abbruch: abbruch, liveState: liveState);
             if (reporter != null)
                 foreach (var l in ohneLösungen)
                     reporter.MeldeGefundeneLösung(l.label, l.quality, l.badUnits);
@@ -1733,7 +1786,7 @@ namespace Stundenplan_V2
                             strafeMinus2Lehrer: strafeMinus2Lehrer,
                             lehrerFreiTageMinus2: lehrerFreiTageMinus2,
                             lehrerFreiTageMinus3: lehrerFreiTageMinus3,
-                            reporter: reporter, abbruch: abbruch);
+                            reporter: reporter, abbruch: abbruch, liveState: liveState);
                         if (lösungen.Count > 0)
                         {
                             log($"  Lösung gefunden mit Seed {seed}.");
@@ -1940,7 +1993,8 @@ namespace Stundenplan_V2
             Dictionary<int, int> ausgangsplan = null,
             int stabilitaetsGewicht = 0,
             FortschrittReporter reporter = null,
-            System.Threading.CancellationToken abbruch = default)
+            System.Threading.CancellationToken abbruch = default,
+            LiveExportState liveState = null)
         {
             var model = new CpModel();
             int B = blocks.Count;
@@ -2728,7 +2782,14 @@ namespace Stundenplan_V2
                 : "T_" + tauschKey;
 
             // Fortschritts-/Abbruch-Callback (nur wenn ein Reporter vorliegt).
-            var progressCb = reporter != null ? new FortschrittCallback(reporter, abbruch) : null;
+            // liveState ist optional unabhängig vom reporter: der Callback
+            // wird auch gebraucht, wenn nur Live-Export, aber keine
+            // UI-Fortschrittsanzeige gewünscht ist.
+            var progressCb = (reporter != null || liveState != null)
+                ? new FortschrittCallback(reporter, abbruch, badEinheiten,
+                    liveState: liveState, x: x, blocks: blocks, slots: slots,
+                    labelPrefix: labelPrefix, log: log)
+                : null;
 
             // Phase 1: Beste Lösung
             var status = progressCb != null ? solver.Solve(model, progressCb) : solver.Solve(model);
