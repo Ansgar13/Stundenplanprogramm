@@ -63,6 +63,14 @@ namespace Stundenplan_V2
             var aktivUNrn = new HashSet<int>();
             // UNrn die nur i-Zeilen haben → komplett ignoriert (für Fix-UNrn-Filter)
             var ignorierteUNrn = new HashSet<int>();
+            // Warnungen zu UV-Zeilen ohne Fach und/oder ohne Klasse (Pflichtfelder,
+            // siehe Kapitel 2.1 der Anleitung) — fehlen diese, kann der Solver
+            // scheinbar grundlos "infeasible" melden.
+            var uvFachKlasseWarnungen = new List<string>();
+            // Reine UNr-Werte parallel zu obiger Liste, dedupliziert (eine UNr kann
+            // mehrere Teilzeilen mit fehlendem Fach/Klasse haben, soll aber nur
+            // einmal in der kompakten UNr-Liste erscheinen).
+            var uvFachKlasseWarnungUNrn = new HashSet<int>();
 
             // Erst-Durchlauf: welche UNrn haben aktive Zeilen?
             foreach (var row in rows1)
@@ -111,6 +119,21 @@ namespace Stundenplan_V2
                     .Split(',', StringSplitOptions.RemoveEmptyEntries)
                     .Select(k => k.Trim())
                     .ToList();
+
+                // Pflichtfelder Fach/Klasse prüfen (siehe Kapitel 2.1 der Anleitung).
+                // Fehlt eines davon, kann der Solver später ohne erkennbaren Grund
+                // "infeasible" melden — daher hier früh und deutlich warnen.
+                bool fehltFach = string.IsNullOrWhiteSpace(fach);
+                bool fehltKlasse = klassenListe.Count == 0;
+                if (fehltFach || fehltKlasse)
+                {
+                    string was = fehltFach && fehltKlasse ? "Fach UND Klasse fehlen"
+                               : fehltFach ? "Fach fehlt"
+                               : "Klasse fehlt";
+                    uvFachKlasseWarnungen.Add(
+                        $"UNr {uNr}: {was} (Lehrer '{lehrer}', Wst {wst}).");
+                    uvFachKlasseWarnungUNrn.Add(uNr);
+                }
 
                 alleTeile.Add(new TeilUnterricht
                 {
@@ -306,10 +329,13 @@ namespace Stundenplan_V2
             // B1 = ZeitlimitSekunden
             // B3 = AnzahlLösungenOhneTausch
             // B4 = AnzahlLösungenMitTausch
+            // "Mindestabstand Lösungen" = Mindestanzahl Blöcke, die sich
+            // zwischen zwei ausgegebenen Lösungen unterscheiden müssen.
             // =====================================================
             int zeitlimit = 30;
             int anzahlOhne = 2;
             int anzahlMit = 2;
+            int mindestAbstandBloecke = 5;
             var nichtFreieTage = new HashSet<string>();
             int gewichtFrüh = 1;
             int gewichtSpät = 5;
@@ -345,6 +371,8 @@ namespace Stundenplan_V2
                         int.TryParse(wert, out anzahlOhne);
                     else if (label.Contains("mit tausch"))
                         int.TryParse(wert, out anzahlMit);
+                    else if (label.Contains("mindestabstand"))
+                        int.TryParse(wert, out mindestAbstandBloecke);
                     else if (label.Contains("nichtfreieta") || label.Contains("freiet"))
                     {
                         if (!string.IsNullOrWhiteSpace(wert))
@@ -471,6 +499,9 @@ namespace Stundenplan_V2
                 ZeitlimitSekunden = zeitlimit,
                 AnzahlLösungenOhneTausch = anzahlOhne,
                 AnzahlLösungenMitTausch = anzahlMit,
+                MindestAbstandLösungenBloecke = mindestAbstandBloecke,
+                UvFachKlasseWarnungen = uvFachKlasseWarnungen,
+                UvFachKlasseWarnungUNrn = uvFachKlasseWarnungUNrn.OrderBy(u => u).ToList(),
                 NichtFreieTage = nichtFreieTage,
                 GewichtFrüheDoppel = gewichtFrüh,
                 GewichtSpäteDoppel = gewichtSpät,

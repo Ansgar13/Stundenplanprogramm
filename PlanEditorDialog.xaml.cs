@@ -39,6 +39,11 @@ namespace Stundenplan_V2
 
         private bool _initialisiert = false;
 
+        // ---- Diag-Filter (Lehrer-Auswahlliste auf Diag-Auffällige beschränken) ----
+        // null = kein Filter aktiv (volle Lehrerliste)
+        private List<int> _diagFilterKriterien = null;
+        private bool _diagFilterUnd = false;
+
         // ---- Vergleichsmodus (2 Lösungen nebeneinander, reine Ansicht) ----
         private bool _vergleichsModus = false;
         private bool _vmSyncLaeuft = false;        // verhindert Sync-Schleife zwischen Cbo(Vm)Lehrer/Klasse
@@ -92,6 +97,43 @@ namespace Stundenplan_V2
         // Modeless Fenster mit den Diag-Zeilen des aktuellen Lehrers.
         private DiagAnzeigeWindow _diagFenster;
 
+        // Modeless UV-Fenster (rein lesend). Bewusst eine LISTE statt eines
+        // einzelnen Fensters wie bei _diagFenster: jeder Klick auf "UV anzeigen"
+        // öffnet ein weiteres Fenster, damit sich z.B. zwei Lehrer nebeneinander
+        // vergleichen lassen. Die Fenster sind Owned Windows dieses Dialogs und
+        // schließen sich daher automatisch mit ihm.
+        private readonly List<UvAnzeigeWindow> _uvFenster = new();
+        // Laufender Zähler nur für den kaskadierten Startversatz beim Öffnen.
+        private int _uvFensterZaehler = 0;
+
+        // ---- Angeheftete Pläne (mehrere Lehrer-/Klassenpläne gleichzeitig
+        // sichtbar und bearbeitbar, zusätzlich zu den normalen Lehrer-/
+        // Klasse-Dropdowns oben). Alle Tiles zeichnen auf derselben
+        // _belegung/_blocks-Arbeitskopie, Drag&Drop funktioniert also über
+        // Tile-Grenzen hinweg (Tausch zwischen zwei angehefteten Plänen ist
+        // ganz normales Zelle_Drop wie im Hauptbereich). ----
+        private readonly List<(bool istLehrer, string name, Border tile, Grid grid, Canvas canvas)> _angeheftete
+            = new();
+
+        // ---- Farbcode: Hintergrundfarben je Klasse bzw. je Fach ----
+        // Quelle/Persistenz: Sheet "Farben" der Excel-Datei (siehe Farbcode.cs).
+        // Wirkt ausschliesslich dort, wo eine Stunde sonst normal hellblau
+        // waere — Gelb (Warnung) und Rot (spaete paed. Einheit) behalten
+        // Vorrang, damit der Farbcode nie eine Warnung uebermalt.
+        // Welche der beiden Zuordnungen greift, entscheidet der Umschalter
+        // "Farbe nach: Klasse / Fach / aus" (RbFarbeKlasse/RbFarbeFach/RbFarbeAus).
+        private Dictionary<string, Color> _farbenKlassen = new(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, Color> _farbenFaecher = new(StringComparer.OrdinalIgnoreCase);
+
+        // Ein SolidColorBrush je Farbe statt einer Neuanlage pro Zelle:
+        // BaueTeilbereich laeuft bei jedem Neuzeichnen ueber alle Zellen.
+        private readonly Dictionary<Color, SolidColorBrush> _farbBrushCache = new();
+
+        // Breite des farbigen Randes im Modus "Klasse+Fach". Ersetzt dort das
+        // sonst uebliche Padding von 2 px der Teilbereich-Border; kostet also
+        // oben/unten je 3 px Texthoehe.
+        private const double FarbRandBreite = 5;
+
         public PlanEditorDialog(
             List<(string label, int[,] belegung, List<UnterrichtsBlock> blocks)> loesungen,
             List<ZeitSlot> slots,
@@ -114,6 +156,20 @@ namespace Stundenplan_V2
             _bewParam = bewParam ?? new BewertungsParameter();
             _ignorierteUnterrichte = ignorierteUnterrichte ?? new List<IgnorierterUnterricht>();
             _excelPfad = excelPfad;
+
+            // Farbcode aus dem Sheet "Farben" lesen. Rein optisch: fehlt die
+            // Datei oder das Sheet, bleibt der Farbcode leer und der Editor
+            // oeffnet trotzdem ganz normal.
+            if (!string.IsNullOrWhiteSpace(_excelPfad))
+            {
+                try
+                {
+                    var (k, f) = Farbcode.Lade(_excelPfad);
+                    _farbenKlassen = k;
+                    _farbenFaecher = f;
+                }
+                catch { /* bewusst geschluckt: Farben sind nur Kosmetik */ }
+            }
 
             // Tage in Eingabereihenfolge, Stunden sortiert
             _tage = _slots.Select(z => z.WTag).Distinct().ToList();
@@ -177,6 +233,7 @@ namespace Stundenplan_V2
             if (!_initialisiert || _belegung == null) return;
             SpiegeleAuswahlInVm(CboLehrer, CboVmLehrer);
             AktualisiereDiagFenster();
+            AktualisiereUvFenster();
             if (_vergleichsModus) { ZeichneVergleichsModus(); return; }
             ZeichneLehrerGrid();
             ZeichneParkbereich();
@@ -194,6 +251,7 @@ namespace Stundenplan_V2
         {
             if (!_initialisiert || _belegung == null) return;
             SpiegeleAuswahlInVm(CboKlasse, CboVmKlasse);
+            AktualisiereUvFenster();
             if (_vergleichsModus) { ZeichneVergleichsModus(); return; }
             ZeichneKlasseGrid();
             ZeichneParkbereich();
@@ -221,6 +279,145 @@ namespace Stundenplan_V2
         {
             if (!_initialisiert || _belegung == null) return;
             ZeichneParkbereich();
+        }
+
+        // =====================================================
+        // FARBCODE
+        // =====================================================
+
+        // Button "Farbcode": Farben festlegen und dauerhaft ins Sheet "Farben"
+        // schreiben. Ein Neuladen der Excel-Daten im MainWindow ist bewusst
+        // nicht noetig — die Farben beruehren weder Solver noch Exporte.
+        private void BtnFarbcode_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(_excelPfad))
+            {
+                SetStatus("Farbcode nicht verfuegbar: kein Excel-Pfad bekannt.", true);
+                return;
+            }
+            if (_blocks == null) return;
+
+            // Auswahllisten aus der aktuellen Loesung. Im Sheet gespeicherte
+            // Namen, die hier nicht vorkommen, ergaenzt der Dialog selbst.
+            var klassen = _blocks.SelectMany(b => b.Teile)
+                                 .SelectMany(t => t.Klassen)
+                                 .Where(k => !string.IsNullOrWhiteSpace(k))
+                                 .Select(k => k.Trim())
+                                 .Distinct(StringComparer.OrdinalIgnoreCase)
+                                 .ToList();
+            var faecher = _blocks.SelectMany(b => b.Teile)
+                                 .Select(t => t.Fach)
+                                 .Where(f => !string.IsNullOrWhiteSpace(f))
+                                 .Select(f => f.Trim())
+                                 .Distinct(StringComparer.OrdinalIgnoreCase)
+                                 .ToList();
+
+            var dlg = new FarbcodeDialog(_excelPfad, klassen, faecher, _farbenKlassen, _farbenFaecher)
+            {
+                Owner = this
+            };
+            if (dlg.ShowDialog() != true) return;
+
+            _farbenKlassen = dlg.Klassenfarben;
+            _farbenFaecher = dlg.Fachfarben;
+            _farbBrushCache.Clear();
+
+            ZeichneNachFarbwechsel();
+            SetStatus(RbFarbeAus.IsChecked == true
+                ? "Farbcode gespeichert — Anzeige ueber \"Farbe nach: Klasse/Fach\" einschalten."
+                : "Farbcode gespeichert.", false);
+        }
+
+        // Umschalter "Farbe nach: Klasse / Fach / aus".
+        // Achtung: Checked feuert schon aus InitializeComponent heraus
+        // (RbFarbeAus hat IsChecked="True") — der _initialisiert-Guard steckt
+        // in ZeichneNachFarbwechsel.
+        private void FarbModus_Changed(object sender, RoutedEventArgs e)
+        {
+            ZeichneNachFarbwechsel();
+        }
+
+        private void ZeichneNachFarbwechsel()
+        {
+            if (!_initialisiert || _belegung == null) return;
+            // ZeichneBeideGrids zieht die angehefteten Kacheln mit; im
+            // Vergleichsmodus zeichnet ZeichneVergleichsModus alle vier Grids.
+            if (_vergleichsModus) ZeichneVergleichsModus();
+            else ZeichneBeideGrids();
+        }
+
+        // Farbcode-Farben eines Blocks gemaess Umschalter, aufgeteilt in die
+        // beiden Zonen einer Zelle:
+        //   rand    = Hintergrund der aeusseren Border (der farbige Rahmen).
+        //             null = kein Rand -> Zelle bleibt einfarbig wie bisher.
+        //   flaeche = Hintergrund der Textflaeche. null = kein Farbcode -> der
+        //             Aufrufer nimmt sein Hellblau.
+        //
+        // Nur der Modus "Klasse+Fach" liefert ueberhaupt einen Rand (Klasse) und
+        // faerbt die Flaeche nach Fach. Hat eine der beiden Zonen keine Farbe,
+        // faellt die Zelle bewusst auf den einfarbigen Aufbau zurueck: ein
+        // 5-px-Rahmen ohne Fuellung (oder umgekehrt) waere mehr Unruhe als Info.
+        private (Brush rand, Brush flaeche) FarbcodeZonen(UnterrichtsBlock block)
+        {
+            if (RbFarbeBeide?.IsChecked == true)
+            {
+                var rand = FarbeAusZuordnung(block, nachKlasse: true);
+                var flaeche = FarbeAusZuordnung(block, nachKlasse: false);
+                // Nur Fach gefaerbt -> kein Rand, Fachfarbe fuellt die Zelle.
+                // Nur Klasse gefaerbt -> Rand traegt die Klassenfarbe, die
+                // Flaeche bleibt hellblau (siehe Aufrufer).
+                return (rand, flaeche);
+            }
+            if (RbFarbeKlasse?.IsChecked == true)
+                return (null, FarbeAusZuordnung(block, nachKlasse: true));
+            if (RbFarbeFach?.IsChecked == true)
+                return (null, FarbeAusZuordnung(block, nachKlasse: false));
+
+            return (null, null); // "aus"
+        }
+
+        // Farbe eines Blocks aus einer der beiden Zuordnungen.
+        // Massgeblich ist immer der ERSTE Teil des Blocks (Teile[0]): bei
+        // mehrteiligen Bloecken (mehrere Klassen/Faecher in einem Block) waere
+        // jede andere Wahl willkuerlich.
+        private Brush FarbeAusZuordnung(UnterrichtsBlock block, bool nachKlasse)
+        {
+            if (block == null || block.Teile == null || block.Teile.Count == 0) return null;
+            var teil = block.Teile[0];
+
+            string schluessel;
+            Dictionary<string, Color> quelle;
+
+            if (nachKlasse)
+            {
+                if (teil.Klassen == null || teil.Klassen.Count == 0) return null;
+                schluessel = teil.Klassen[0];
+                quelle = _farbenKlassen;
+            }
+            else
+            {
+                schluessel = teil.Fach;
+                quelle = _farbenFaecher;
+            }
+
+            if (string.IsNullOrWhiteSpace(schluessel)) return null;
+            if (!quelle.TryGetValue(schluessel.Trim(), out var farbe)) return null;
+            return HoleFarbBrush(farbe);
+        }
+
+        // Standard-Hintergrund einer belegten Zelle ohne Farbcode und ohne Warnung.
+        private static SolidColorBrush Hellblau()
+            => new SolidColorBrush(Color.FromRgb(0xE8, 0xF0, 0xFE));
+
+        private SolidColorBrush HoleFarbBrush(Color farbe)
+        {
+            if (!_farbBrushCache.TryGetValue(farbe, out var brush))
+            {
+                brush = new SolidColorBrush(farbe);
+                brush.Freeze();
+                _farbBrushCache[farbe] = brush;
+            }
+            return brush;
         }
 
         // ---- Diag-Werte-Fenster ------------------------------------------
@@ -262,6 +459,111 @@ namespace Stundenplan_V2
             string label1 = CboLoesung?.SelectedItem as string;
             string label2 = _vergleichsModus ? (CboVglLoesung2?.SelectedItem as string) : null;
             _diagFenster.Zeige(label1, label2, AktuellerDiagLehrer(), _vergleichsModus);
+        }
+
+        // ---- UV-Fenster ---------------------------------------------------
+
+        // Die aktuell relevante Klasse: im Vergleichsmodus aus dem VM-Dropdown,
+        // sonst aus dem normalen — analog zu AktuellerDiagLehrer().
+        private string AktuelleUvKlasse()
+            => _vergleichsModus
+                ? (CboVmKlasse?.SelectedItem as string)
+                : (CboKlasse?.SelectedItem as string);
+
+        // Öffnet JEDES MAL ein neues UV-Fenster mit der aktuellen Auswahl als
+        // Startfilter. Kein Wiederverwenden — mehrere Fenster parallel sind der
+        // eigentliche Zweck (Vergleich zweier Lehrer).
+        private void BtnUvZeigen_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(_excelPfad))
+            {
+                MessageBox.Show("Kein Excel-Pfad verfügbar – die UV kann nicht gelesen werden.",
+                    "UV anzeigen", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var fenster = new UvAnzeigeWindow(_excelPfad, AktuellerDiagLehrer(), AktuelleUvKlasse(),
+                                              SpringeZuLehrerKlasse)
+            {
+                Owner = this
+            };
+
+            // Kaskadierter Versatz, sonst liegen mehrere Fenster exakt übereinander.
+            int stufe = _uvFensterZaehler++ % 8;
+            fenster.Left = Left + 60 + stufe * 28;
+            fenster.Top = Top + 60 + stufe * 28;
+
+            _uvFenster.Add(fenster);
+            fenster.Closed += (s, ev) => _uvFenster.Remove(fenster);
+            fenster.Show();
+        }
+
+        // Aktualisiert nur die UV-Fenster, die "an Auswahl koppeln" angehakt
+        // haben. Alle übrigen behalten ihren beim Öffnen gesetzten Filter.
+        private void AktualisiereUvFenster()
+        {
+            if (_uvFenster.Count == 0) return;
+            string lehrer = AktuellerDiagLehrer();
+            string klasse = AktuelleUvKlasse();
+            foreach (var f in _uvFenster.ToList())
+                if (f.Gekoppelt)
+                    f.Zeige(lehrer, klasse);
+        }
+
+        // Rückruf aus einem UV-Fenster (Doppelklick auf Lehrer/Klasse): stellt
+        // die Master-Dropdowns um. Das löst Cbo(Lehrer|Klasse)_SelectionChanged
+        // aus, das Neuzeichnen läuft also über den normalen Weg.
+        //
+        // Wird bewusst NICHT von Activate() begleitet: das UV-Fenster soll den
+        // Fokus behalten, damit man mehrere Zeilen hintereinander durchsehen kann.
+        //
+        // Rückgabe: leer = alles gesprungen, sonst der Grund fürs Nicht-Springen.
+        // Die Dropdowns enthalten nur, was in der aktuellen Lösung als Block
+        // existiert — bei ignorierten Zeilen, Wst 0 oder aktivem Diag-Filter kann
+        // ein in UV stehender Lehrer dort schlicht fehlen.
+        private string SpringeZuLehrerKlasse(string lehrer, string klasse)
+        {
+            var probleme = new List<string>();
+
+            if (!string.IsNullOrWhiteSpace(lehrer))
+            {
+                int idx = FindeItem(CboLehrer, lehrer);
+                if (idx < 0)
+                    probleme.Add($"Lehrer „{lehrer}“ ist in dieser Lösung nicht auswählbar " +
+                                 "(ignoriert, Wst 0 oder Diag-Filter aktiv).");
+                else if (idx != CboLehrer.SelectedIndex)
+                    CboLehrer.SelectedIndex = idx;
+            }
+
+            if (!string.IsNullOrWhiteSpace(klasse))
+            {
+                int idx = FindeItem(CboKlasse, klasse);
+                if (idx < 0)
+                    probleme.Add($"Klasse „{klasse}“ ist in dieser Lösung nicht auswählbar " +
+                                 "(ignoriert oder Wst 0).");
+                else if (idx != CboKlasse.SelectedIndex)
+                    CboKlasse.SelectedIndex = idx;
+            }
+
+            return string.Join("  ", probleme);
+        }
+
+        // Index eines Eintrags im Dropdown — erst exakt, dann ohne Rücksicht auf
+        // Groß-/Kleinschreibung, damit eine abweichend geschriebene UV-Zelle
+        // ("l1" statt "L1") nicht unnötig scheitert.
+        private static int FindeItem(System.Windows.Controls.ComboBox cbo, string wert)
+        {
+            if (cbo == null || wert == null) return -1;
+
+            int idx = cbo.Items.IndexOf(wert);
+            if (idx >= 0) return idx;
+
+            for (int i = 0; i < cbo.Items.Count; i++)
+                if (cbo.Items[i] is string s &&
+                    s.Equals(wert, StringComparison.OrdinalIgnoreCase))
+                    return i;
+
+            return -1;
         }
 
         // Springt zum nächsten Eintrag im Lösungs-Dropdown (mit Umlauf)
@@ -616,15 +918,21 @@ namespace Stundenplan_V2
                 string lehrerTxt = string.Join(",", teile.Select(t => t.Lehrer).Distinct());
                 string ersteZeile = lehrerAnsicht ? klassen : (block.Zeilentext ?? "");
 
+                var (randFarbe, flaecheFarbe) = FarbcodeZonen(block);
+                // Gelb (unterschiedliche Belegung) hat Vorrang wie die Warnfarben
+                // im normalen Editor -> dann kein Farbrand.
+                bool zweizonig = !unterschiedlich && randFarbe != null;
+
                 var inner = new Border
                 {
                     // Bei Unterschied transparent lassen, damit das gelbe
-                    // Zellen-Background durchscheint; sonst das normale Hellblau.
+                    // Zellen-Background durchscheint; sonst Farbcode (zweizonig:
+                    // Rand = Klasse), ersatzweise das normale Hellblau.
                     Background = unterschiedlich
                         ? Brushes.Transparent
-                        : new SolidColorBrush(Color.FromRgb(0xE8, 0xF0, 0xFE)),
+                        : (zweizonig ? randFarbe : (flaecheFarbe ?? Hellblau())),
                     BorderBrush = Brushes.Gray, BorderThickness = new Thickness(0.5),
-                    Padding = new Thickness(2), Cursor = System.Windows.Input.Cursors.Hand,
+                    Padding = new Thickness(zweizonig ? FarbRandBreite : 2), Cursor = System.Windows.Input.Cursors.Hand,
                     HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch
                 };
                 var tb = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
@@ -632,7 +940,9 @@ namespace Stundenplan_V2
                 tb.Inlines.Add(new System.Windows.Documents.Run(faecher + "\n"));
                 tb.Inlines.Add(new System.Windows.Documents.Run(lehrerTxt + "\n") { Foreground = Brushes.DarkSlateGray, FontWeight = FontWeights.SemiBold });
                 tb.Inlines.Add(new System.Windows.Documents.Run("UNr " + block.UNr) { FontSize = 10, Foreground = Brushes.Gray });
-                inner.Child = tb;
+                inner.Child = zweizonig
+                    ? new Border { Background = flaecheFarbe ?? Hellblau(), Child = tb }
+                    : (UIElement)tb;
 
                 // Klick-Synchronisation (reine Navigation, kein Drag)
                 int blockKopie = b;
@@ -708,18 +1018,57 @@ namespace Stundenplan_V2
         // Optionale Parameter behaltenLehrer/behaltenKlasse: falls gesetzt und
         // in der neuen Lösung vorhanden, wird diese Auswahl beibehalten statt
         // auf den ersten Eintrag zurückzuspringen.
+        // =====================================================
+        // Sortierung der Klassen-Auswahllisten.
+        // AGs sind keine echten Klassen und stuenden alphabetisch ganz vorne
+        // (vor "5a"), obwohl man sie am seltensten braucht. Sie wandern deshalb
+        // geschlossen ans Ende; innerhalb der beiden Gruppen bleibt es bei der
+        // bisherigen alphabetischen Reihenfolge.
+        // =====================================================
+        private static IEnumerable<string> SortiereKlassen(IEnumerable<string> klassen)
+            => klassen.OrderBy(k => IstAG(k) ? 1 : 0).ThenBy(k => k);
+
+        private static bool IstAG(string klasse)
+            => klasse != null &&
+               klasse.TrimStart().StartsWith("AG", StringComparison.OrdinalIgnoreCase);
+
         private void FuelleLehrerKlasseDropdowns(string behaltenLehrer = null, string behaltenKlasse = null)
         {
             CboLehrer.Items.Clear();
-            foreach (var l in _blocks.SelectMany(b => b.Teile.Select(t => t.Lehrer))
+
+            var lehrerKandidaten = _blocks.SelectMany(b => b.Teile.Select(t => t.Lehrer))
                                      .Where(s => !string.IsNullOrWhiteSpace(s))
-                                     .Distinct().OrderBy(s => s))
+                                     .Distinct().OrderBy(s => s).ToList();
+
+            // Diag-Filter anwenden, falls aktiv: nur Lehrer behalten, die (je nach
+            // Verknüpfung) mindestens eines bzw. alle gewählten Diag-Kriterien der
+            // AKTUELL angezeigten Lösung verletzen. Gleiche Berechnungsgrundlage
+            // wie das "Diag-Werte"-Fenster / der Diagnose-Diff (LehrerDiagnose.Berechne).
+            if (_diagFilterKriterien != null && _diagFilterKriterien.Count > 0)
+            {
+                var p = _bewParam;
+                var diagListe = LehrerDiagnose.Berechne(_belegung, _blocks, _slots,
+                    p.LehrerStammdaten, p.StrafeHohl, p.StrafeDoppelHohl, p.StrafeDreifachHohl,
+                    p.StrafeStdFolge, true, p.ExtraFreieTage, p.LehrerFreiTageMinus2)
+                    .ToDictionary(d => d.Lehrer, d => d);
+
+                bool ErfülltFilter(string lehrer)
+                {
+                    if (!diagListe.TryGetValue(lehrer, out var diag)) return false;
+                    var treffer = _diagFilterKriterien.Select(i => DiagFilterDialog.Kriterien[i].Trifft(diag));
+                    return _diagFilterUnd ? treffer.All(x => x) : treffer.Any(x => x);
+                }
+
+                lehrerKandidaten = lehrerKandidaten.Where(ErfülltFilter).ToList();
+            }
+
+            foreach (var l in lehrerKandidaten)
                 CboLehrer.Items.Add(l);
 
             CboKlasse.Items.Clear();
-            foreach (var k in _blocks.SelectMany(b => b.Teile.SelectMany(t => t.Klassen))
-                                     .Where(s => !string.IsNullOrWhiteSpace(s))
-                                     .Distinct().OrderBy(s => s))
+            foreach (var k in SortiereKlassen(_blocks.SelectMany(b => b.Teile.SelectMany(t => t.Klassen))
+                                                     .Where(s => !string.IsNullOrWhiteSpace(s))
+                                                     .Distinct()))
                 CboKlasse.Items.Add(k);
 
             if (CboLehrer.Items.Count > 0)
@@ -735,6 +1084,46 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
+        // Diag-Filter: Lehrer-Auswahlliste auf Diag-Auffällige beschränken
+        // =====================================================
+        private void BtnDiagFilter_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new DiagFilterDialog(_diagFilterKriterien, _diagFilterUnd) { Owner = this };
+            if (dlg.ShowDialog() != true) return;
+
+            if (dlg.FilterAufgehoben)
+            {
+                _diagFilterKriterien = null;
+                BtnDiagFilter.Content = "Diag-Filter";
+                BtnDiagFilter.ClearValue(Button.BackgroundProperty);
+            }
+            else
+            {
+                _diagFilterKriterien = dlg.GewählteIndizes;
+                _diagFilterUnd = dlg.UndVerknüpfung;
+                BtnDiagFilter.Content = $"Diag-Filter ({_diagFilterKriterien.Count})";
+                BtnDiagFilter.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xE0, 0x90));
+            }
+
+            string behaltenLehrer = CboLehrer.SelectedItem as string;
+            string behaltenKlasse = CboKlasse.SelectedItem as string;
+            FuelleLehrerKlasseDropdowns(behaltenLehrer, behaltenKlasse);
+
+            if (_diagFilterKriterien != null && CboLehrer.Items.Count == 0)
+            {
+                MessageBox.Show(
+                    "Kein Lehrer erfüllt die gewählten Diag-Kriterien in der aktuellen Lösung. Filter wird wieder aufgehoben.",
+                    "Diag-Filter", MessageBoxButton.OK, MessageBoxImage.Information);
+                _diagFilterKriterien = null;
+                BtnDiagFilter.Content = "Diag-Filter";
+                BtnDiagFilter.ClearValue(Button.BackgroundProperty);
+                FuelleLehrerKlasseDropdowns(behaltenLehrer, behaltenKlasse);
+            }
+
+            ZeichneLehrerGrid();
+        }
+
+        // =====================================================
         // Grid-Aufbau (zwei Pläne)
         // =====================================================
         private void ZeichneBeideGrids()
@@ -742,6 +1131,7 @@ namespace Stundenplan_V2
             AktualisiereSpaetePaedEinheiten();
             ZeichneLehrerGrid();
             ZeichneKlasseGrid();
+            ZeichneAlleAngehefteten();
         }
 
         private void ZeichneLehrerGrid()
@@ -754,6 +1144,136 @@ namespace Stundenplan_V2
         {
             string auswahl = CboKlasse.SelectedItem as string;
             ZeichneEinGrid(KlasseGrid, auswahl, lehrerAnsicht: false);
+        }
+
+        // =====================================================
+        // Angeheftete Pläne (mehrere Lehrer-/Klassenpläne gleichzeitig)
+        // =====================================================
+
+        private void BtnLehrerAnheften_Click(object sender, RoutedEventArgs e)
+        {
+            string name = CboLehrer.SelectedItem as string;
+            if (name == null) return;
+            AnhefteTile(istLehrer: true, name);
+        }
+
+        private void BtnKlasseAnheften_Click(object sender, RoutedEventArgs e)
+        {
+            string name = CboKlasse.SelectedItem as string;
+            if (name == null) return;
+            AnhefteTile(istLehrer: false, name);
+        }
+
+        // Legt eine neue, dauerhaft sichtbare Kachel für einen Lehrer- oder
+        // Klassenplan an. Die Kachel zeichnet (wie LehrerGrid/KlasseGrid) direkt
+        // auf der gemeinsamen Arbeitskopie _belegung/_blocks — Drag&Drop
+        // zwischen einer angehefteten Kachel und jedem anderen sichtbaren Plan
+        // (Haupt-Grids oder andere Kacheln) funktioniert daher ohne weiteres
+        // Zutun, weil Zelle_Drop/Zelle_DragOver ausschliesslich mit dieser
+        // gemeinsamen Belegung arbeiten, nicht mit dem jeweiligen Grid.
+        private void AnhefteTile(bool istLehrer, string name)
+        {
+            if (_belegung == null) return;
+
+            // Gleicher Typ+Name schon angeheftet -> nichts tun, nur Hinweis.
+            if (_angeheftete.Any(t => t.istLehrer == istLehrer && t.name == name))
+            {
+                SetStatus($"{(istLehrer ? "Lehrer" : "Klasse")} '{name}' ist bereits angeheftet.", false);
+                return;
+            }
+
+            var grid = new Grid();
+            var canvas = new Canvas { IsHitTestVisible = false };
+            var innerGrid = new Grid();
+            innerGrid.Children.Add(grid);
+            innerGrid.Children.Add(canvas);
+
+            var scroll = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Content = innerGrid
+            };
+
+            var closeBtn = new Button
+            {
+                Content = "✕",
+                Width = 22,
+                Height = 22,
+                Margin = new Thickness(8, 0, 0, 0),
+                ToolTip = "Angehefteten Plan schließen"
+            };
+
+            var header = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(4),
+                Height = 32
+            };
+            header.Children.Add(new TextBlock
+            {
+                Text = (istLehrer ? "📌 Lehrer: " : "📌 Klasse: ") + name,
+                FontWeight = FontWeights.Bold,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            header.Children.Add(closeBtn);
+
+            var titel = new TextBlock
+            {
+                Text = istLehrer ? "LEHRERPLAN (angeheftet)" : "KLASSENPLAN (angeheftet)",
+                FontWeight = FontWeights.Bold,
+                Height = 20,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 2)
+            };
+
+            var dock = new DockPanel();
+            DockPanel.SetDock(header, Dock.Top);
+            DockPanel.SetDock(titel, Dock.Top);
+            dock.Children.Add(header);
+            dock.Children.Add(titel);
+            dock.Children.Add(scroll);
+
+            var tile = new Border
+            {
+                BorderBrush = Brushes.OrangeRed,
+                BorderThickness = new Thickness(1.5),
+                Margin = new Thickness(4, 0, 0, 0),
+                Background = Brushes.White,
+                Child = dock
+            };
+
+            var eintrag = (istLehrer, name, tile, grid, canvas);
+
+            closeBtn.Click += (s, e2) =>
+            {
+                _angeheftete.RemoveAll(t => t.tile == tile);
+                PnlAngeheftet.Children.Remove(tile);
+            };
+
+            _angeheftete.Add(eintrag);
+            PnlAngeheftet.Children.Add(tile);
+
+            ZeichneAngeheftetesTile(eintrag);
+            SetStatus($"{(istLehrer ? "Lehrer" : "Klasse")} '{name}' angeheftet.", false);
+        }
+
+        private void ZeichneAngeheftetesTile(
+            (bool istLehrer, string name, Border tile, Grid grid, Canvas canvas) t)
+        {
+            if (_belegung == null) return;
+            // Interaktiv wie die Haupt-Grids: gleiche BaueZelle/Zelle_Drop-Logik,
+            // nur auf ein anderes Ziel-Grid gezeichnet.
+            ZeichneEinGrid(t.grid, t.name, lehrerAnsicht: t.istLehrer);
+        }
+
+        // Wird nach jeder Änderung der Belegung aufgerufen (siehe ZeichneBeideGrids
+        // und die Tausch-Sonderfälle), damit angeheftete Kacheln nie veraltete
+        // Stunden zeigen.
+        private void ZeichneAlleAngehefteten()
+        {
+            foreach (var t in _angeheftete)
+                ZeichneAngeheftetesTile(t);
         }
 
         private const double ZellBreite = 76; // quadratisch, gross genug fuer UNr-Zeile
@@ -949,24 +1469,39 @@ namespace Stundenplan_V2
             bool spaetPaed = _spaetePaedBloecke.Contains(blockIdx);
             bool istFixiert = slotIdx >= 0 && slotIdx < _slots.Count && _slots[slotIdx].FixUNrn.Contains(block.UNr);
 
-            // Hintergrund-Priorität: spaete päd. Einheit (rot) > Warnung (gelb) > normal (hellblau)
+            // ---- Farbcode-Zonen ----
+            // Zweizonig (Rand = Klasse, Flaeche = Fach) nur im Modus
+            // "Klasse+Fach" und nur, wenn die Klasse ueberhaupt eine Farbe hat.
+            // Bei Warnung/spaeter paed. Einheit bleibt die Zelle einfarbig: ein
+            // Farbrand wuerde die Warnflaeche sonst optisch zerschneiden.
+            var (randFarbe, flaecheFarbe) = FarbcodeZonen(block);
+            bool zweizonig = !spaetPaed && !warnung && randFarbe != null;
+
+            // Hintergrund-Priorität: spaete päd. Einheit (rot) > Warnung (gelb) >
+            // Farbcode (Klasse/Fach) > normal (hellblau).
+            // Der Farbcode steht bewusst UNTER den Warnfarben: er darf nie eine
+            // Warnung uebermalen, sondern nur das sonst neutrale Hellblau ersetzen.
             Brush hintergrund;
             if (spaetPaed)
                 hintergrund = new SolidColorBrush(Color.FromRgb(0xFF, 0xC1, 0xC1)); // rot
             else if (warnung)
                 hintergrund = new SolidColorBrush(Color.FromRgb(0xFF, 0xF3, 0x99)); // gelb
+            else if (zweizonig)
+                hintergrund = randFarbe;                    // Rand = Klassenfarbe
             else
-                hintergrund = new SolidColorBrush(Color.FromRgb(0xE8, 0xF0, 0xFE)); // hellblau
+                hintergrund = flaecheFarbe ?? Hellblau();   // einfarbig wie bisher
 
             var innerBorder = new Border
             {
                 Background = hintergrund,
                 BorderBrush = hervorheben
-                    ? new SolidColorBrush(Color.FromRgb(0xFF, 0x6A, 0x00)) // kräftiges Orange
+                    ? new SolidColorBrush(Color.FromRgb(0xE3, 0x1A, 0x1A)) // kräftiges Rot (päd. Einheit hervorgehoben)
                     : Brushes.Gray,
                 BorderThickness = hervorheben ? new Thickness(2.5) : new Thickness(0.5),
                 Margin = new Thickness(0),
-                Padding = new Thickness(2),
+                // Zweizonig ist der Padding-Rahmen selbst der farbige Rand
+                // (Klasse); sonst wie bisher nur Textabstand.
+                Padding = new Thickness(zweizonig ? FarbRandBreite : 2),
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Stretch
             };
@@ -988,12 +1523,14 @@ namespace Stundenplan_V2
             tb.Inlines.Add(new System.Windows.Documents.Run(lehrer + "\n") { Foreground = Brushes.DarkSlateGray, FontWeight = FontWeights.SemiBold });
             tb.Inlines.Add(new System.Windows.Documents.Run("UNr " + block.UNr + "  " + block.Zeilentext) { FontSize = 10, Foreground = Brushes.Gray });
 
+            FrameworkElement inhalt = tb;
+
             if (istFixiert)
             {
                 // Kleines blaues "F" oben rechts: zeigt, dass diese Stunde im
                 // Fix-UNr-Plan steht (nur im Plan-Editor-Grid sichtbar).
-                var inhalt = new Grid();
-                inhalt.Children.Add(tb);
+                var fixGrid = new Grid();
+                fixGrid.Children.Add(tb);
                 var fLabel = new TextBlock
                 {
                     Text = "F",
@@ -1004,12 +1541,26 @@ namespace Stundenplan_V2
                     VerticalAlignment = VerticalAlignment.Top,
                     Margin = new Thickness(0, -2, 1, 0)
                 };
-                inhalt.Children.Add(fLabel);
-                innerBorder.Child = inhalt;
+                fixGrid.Children.Add(fLabel);
+                inhalt = fixGrid;
+            }
+
+            // Zweizonig: Textflaeche als eigene Border (Fachfarbe) INNERHALB der
+            // Teilbereich-Border, deren Padding als Klassenfarbe stehen bleibt.
+            // Hat nur die Klasse eine Farbe, ist die Flaeche hellblau.
+            // Maus-Handler bleiben auf der aeusseren Border: die Events der
+            // inneren Border blubbern dorthin, Drag&Drop/Klick aendern sich nicht.
+            if (zweizonig)
+            {
+                innerBorder.Child = new Border
+                {
+                    Background = flaecheFarbe ?? Hellblau(),
+                    Child = inhalt
+                };
             }
             else
             {
-                innerBorder.Child = tb;
+                innerBorder.Child = inhalt;
             }
 
             // Tag: [blockIdx, slotIdx, lehrerAnsicht(0/1)]
@@ -1021,6 +1572,49 @@ namespace Stundenplan_V2
                 innerBorder.ContextMenuOpening += Teilbereich_ContextMenuOpening;
             }
 
+            return innerBorder;
+        }
+
+        // =====================================================
+        // "Ignoriert"-Karte im Parkbereich im selben Look wie ein echtes
+        // Plan-Feld (siehe BaueTeilbereich): gleicher Aufbau — erste Zeile
+        // fett (Klassen bzw. Fach als Ersatz für ZeilenText, da ignorierte
+        // Zeilen keinen eigenen ZeilenText mitbringen), Fach, Lehrer, UNr.
+        // Graue statt farbige Füllung markiert "nicht eingeplant"; keine
+        // Maus-Handler — reine Anzeige, nicht ziehbar, nicht anklickbar.
+        // =====================================================
+        private Border BauePseudoZelleIgnoriert(IgnorierterUnterricht iu, bool lehrerAnsicht)
+        {
+            var innerBorder = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(0xE4, 0xE4, 0xE4)), // grau statt hellblau
+                BorderBrush = Brushes.Gray,
+                BorderThickness = new Thickness(0.5),
+                Margin = new Thickness(2),
+                Padding = new Thickness(2),
+                Width = ZellBreite,
+                // Keine feste Height: die Karte zeigt mehr Textzeilen als eine
+                // normale Plan-Zelle (zusätzlich "Wst: X"), daher hier auf
+                // Inhalt wachsen lassen statt bei ZellBreite abzuschneiden.
+                MinHeight = ZellBreite,
+                ToolTip = "Ignoriert (i/x in UV) — Wst " + iu.Wst
+            };
+
+            string klassen = string.Join(",", iu.Klassen);
+
+            // Erste Zeile: Lehreransicht -> Klassen, Klassenansicht -> Fach
+            // (ignorierte Zeilen haben keinen eigenen ZeilenText).
+            string ersteZeile = lehrerAnsicht ? klassen : iu.Fach;
+
+            var tb = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
+            tb.Inlines.Add(new System.Windows.Documents.Run(ersteZeile + "\n") { FontWeight = FontWeights.Bold });
+            if (lehrerAnsicht)
+                tb.Inlines.Add(new System.Windows.Documents.Run(iu.Fach + "\n"));
+            tb.Inlines.Add(new System.Windows.Documents.Run(iu.Lehrer + "\n") { Foreground = Brushes.DarkSlateGray, FontWeight = FontWeights.SemiBold });
+            tb.Inlines.Add(new System.Windows.Documents.Run("UNr " + iu.UNr + "  (ignoriert)\n") { FontSize = 10, Foreground = Brushes.Gray });
+            tb.Inlines.Add(new System.Windows.Documents.Run("Wst: " + iu.Wst) { FontSize = 10, Foreground = Brushes.Gray });
+
+            innerBorder.Child = tb;
             return innerBorder;
         }
 
@@ -1129,9 +1723,17 @@ namespace Stundenplan_V2
         // =====================================================
         private List<Tauschkette> _aktuelleKetten = new();
 
+        // Zuletzt angeklickte Zelle, fuer die die Tauschvorschlaege berechnet
+        // wurden. Nur dafuer da, die Liste beim Umschalten des Verletzungs-Filters
+        // ohne erneuten Klick neu aufbauen zu koennen.
+        private int _letzterTauschBlock = -1;
+        private int _letzterTauschSlot = -1;
+
         private void LeereTauschvorschlaege()
         {
             _aktuelleKetten = new();
+            _letzterTauschBlock = -1;
+            _letzterTauschSlot = -1;
             _fixierteKette = null;
             _fixierteZeile = null;
             _letzterDragOverSlot = -2;
@@ -1155,11 +1757,38 @@ namespace Stundenplan_V2
             if (klasse == null) return;
 
             var ausgangsSlots = ErmittleTauschSlots(blockIdx, slotIdx);
+            _letzterTauschBlock = blockIdx;
+            _letzterTauschSlot = slotIdx;
             _aktuelleKetten = SucheTauschketten(blockIdx, ausgangsSlots, klasse);
 
             // Liste in Standardreihenfolge zeichnen (kein Feld hervorgehoben)
             ZeichneTauschliste(null);
         }
+
+        // Checkbox "ohne Tagesregel-/Freie-Tage-Verletzungen": beide Vorschlags-
+        // listen fuer die zuletzt getroffene Auswahl neu berechnen. Der Filter
+        // greift schon in den Such-Methoden, damit auch die Anzahl im Kopf der
+        // jeweiligen Liste stimmt.
+        private void ChkFilterVerletzungen_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_initialisiert || _belegung == null || _blocks == null) return;
+
+            // Reihenfolge wie im normalen Ablauf: erst die Tauschketten, dann die
+            // Verschiebungen — deren Suche filtert Duplikate gegen _aktuelleKetten.
+            // Nach einem Loesungswechsel zeigen die gemerkten Indizes ins Leere.
+            if (GueltigerBlock(_letzterTauschBlock) && GueltigerSlot(_letzterTauschSlot))
+                ZeigeTauschvorschlaege(_letzterTauschBlock, _letzterTauschSlot);
+
+            if (GueltigerBlock(_letzteVerschiebungBlock) &&
+                _letzteVerschiebungAlt != null && _letzteVerschiebungZiel != null)
+                ZeigeVerschiebungen(_letzteVerschiebungBlock, _letzteVerschiebungAlt, _letzteVerschiebungZiel);
+        }
+
+        private bool GueltigerBlock(int blockIdx)
+            => _blocks != null && blockIdx >= 0 && blockIdx < _blocks.Count;
+
+        private bool GueltigerSlot(int slotIdx)
+            => _slots != null && slotIdx >= 0 && slotIdx < _slots.Count;
 
         // Zeichnet die Tauschliste. Wenn hervorgehobenerZielSlot gesetzt ist, werden
         // die Ketten, bei denen NUR der Ausgangsunterricht auf diesen Slot wandert,
@@ -1458,6 +2087,7 @@ namespace Stundenplan_V2
                 {
                     CboKlasse.SelectedIndex = idx; // ZeichneKlasseGrid via SelectionChanged
                     ZeichneLehrerGrid();
+                    ZeichneAlleAngehefteten();
                     ZeichneParkbereich();
                     PruefeUndZeigeWarnungen();
                     return;
@@ -1806,7 +2436,7 @@ namespace Stundenplan_V2
             var geaenderteKlassen = ErmittleGeaenderteKlassen(_belegung, _vglProbe);
 
             CboVglKlasse.Items.Clear();
-            foreach (var k in geaenderteKlassen.OrderBy(x => x))
+            foreach (var k in SortiereKlassen(geaenderteKlassen))
                 CboVglKlasse.Items.Add(k);
 
             if (CboVglKlasse.Items.Count == 0)
@@ -2059,6 +2689,12 @@ namespace Stundenplan_V2
             // Hervorhebung: alle Blöcke der pädagogischen Einheit des angeklickten Blocks.
             // Päd. Einheit = gleiche Klasse UND gleiches Fach (irgendein Teil-Match).
             _highlightBloecke = BerechnePaedEinheit(blockIdx);
+
+            // Angeheftete Kacheln zeigen dieselbe Hervorhebung wie die Hauptpläne –
+            // unabhängig davon, ob ihr Lehrer/ihre Klasse Teil der päd. Einheit ist
+            // (ZeichneAngeheftetesTile zeichnet ohnehin komplett neu, betroffene
+            // Zellen bekommen so denselben roten Rahmen wie in Lehrer-/Klassenplan).
+            ZeichneAlleAngehefteten();
 
             _syncLaeuft = true;
             try
@@ -2353,6 +2989,14 @@ namespace Stundenplan_V2
                 var linkeSignaturen = new HashSet<string>(_aktuelleKetten.Select(BildeSignaturAusKette));
                 ergebnis = ergebnis.Where(v => !linkeSignaturen.Contains(BildeSignaturAusVerschiebung(v))).ToList();
             }
+
+            // Optionaler Filter (Checkbox ueber der linken Liste, gilt fuer beide):
+            // Vorschlaege aussortieren, die eine neue Tagesregel- oder
+            // Freie-Tage-Verletzung einfuehren wuerden. Bewusst erst hier, wenn
+            // die Liste durch Duplikat-Filterung schon klein ist - der Validator
+            // laeuft je verbleibendem Vorschlag einmal ueber den ganzen Plan.
+            if (ChkFilterVerletzungen?.IsChecked == true)
+                ergebnis = FiltereVerletzungsverschiebungen(ergebnis);
 
             return ergebnis;
         }
@@ -2787,9 +3431,19 @@ namespace Stundenplan_V2
         // ===== Anzeige der Verschiebung-mit-Ausweich-Vorschlaege =====
         private List<VerschiebungMitAusweich> _aktuelleVerschiebungen = new();
 
+        // Zuletzt gezogene Verschiebung (Analog zu _letzterTauschBlock/-Slot):
+        // nur noetig, um die Liste beim Umschalten des Verletzungs-Filters ohne
+        // erneuten Drag neu aufbauen zu koennen.
+        private int _letzteVerschiebungBlock = -1;
+        private List<int> _letzteVerschiebungAlt;
+        private List<int> _letzteVerschiebungZiel;
+
         private void LeereVerschiebungen()
         {
             _aktuelleVerschiebungen = new();
+            _letzteVerschiebungBlock = -1;
+            _letzteVerschiebungAlt = null;
+            _letzteVerschiebungZiel = null;
             _fixierteVerschiebung = null;
             _fixierteVerschiebungZeile = null;
             if (PnlVerschieb != null) PnlVerschieb.Children.Clear();
@@ -2801,6 +3455,9 @@ namespace Stundenplan_V2
             if (PnlVerschieb == null) return;
 
             _aktuelleVerschiebungen = SucheVerschiebungMitAusweich(hauptBlock, altSlots, zielSlots);
+            _letzteVerschiebungBlock = hauptBlock;
+            _letzteVerschiebungAlt = altSlots;
+            _letzteVerschiebungZiel = zielSlots;
             ZeichneVerschiebungsliste();
         }
 
@@ -3093,7 +3750,114 @@ namespace Stundenplan_V2
                     }
                 }
 
+            // Optionaler Filter (Checkbox ueber der Liste): Ketten aussortieren,
+            // die eine neue Tagesregel- oder Freie-Tage-Verletzung einfuehren.
+            // Bewusst erst hier und nicht in BaueUndPruefeKette: dort liefe der
+            // Validator ueber jede einzelne Permutation, hier nur ueber die
+            // wenigen Ketten, die die harte Konfliktpruefung ueberlebt haben.
+            if (ChkFilterVerletzungen?.IsChecked == true)
+                ergebnis = FiltereVerletzungsketten(ergebnis);
+
             return ergebnis;
+        }
+
+        // =====================================================
+        // Filter "ohne Tagesregel-/Freie-Tage-Verletzungen"
+        // Sortiert alle Vorschlaege aus, die gegenueber dem AKTUELLEN Plan eine
+        // NEUE Verletzung einfuehren wuerden. Bereits vorher bestehende
+        // Verletzungen filtern bewusst nicht: sonst bliebe fuer einen ohnehin
+        // auffaelligen Lehrer gar kein Vorschlag mehr uebrig, obwohl der Tausch
+        // daran nichts verschlechtert (gleiche Logik wie bei den gelben
+        // Drag-Warnungen, siehe FindeNeueWeicheVerletzung).
+        // Greift in BEIDEN Listen: Tauschvorschlaege (Ketten) und Verschiebung
+        // mit Ausweich - beide liefern eine fertige ProbeBelegung, der Kern ist
+        // deshalb derselbe.
+        // =====================================================
+        private List<Tauschkette> FiltereVerletzungsketten(List<Tauschkette> ketten)
+        {
+            if (ketten.Count == 0) return ketten;
+            if (!ErmittleVergleichsbasis(out int trVor, out var freiVorCache)) return ketten;
+
+            return ketten.Where(k => !BringtNeueVerletzung(
+                                    k.ProbeBelegung,
+                                    k.Glieder.Select(g => g.blockIdx),
+                                    trVor, freiVorCache))
+                         .ToList();
+        }
+
+        private List<VerschiebungMitAusweich> FiltereVerletzungsverschiebungen(
+            List<VerschiebungMitAusweich> verschiebungen)
+        {
+            if (verschiebungen.Count == 0) return verschiebungen;
+            if (!ErmittleVergleichsbasis(out int trVor, out var freiVorCache)) return verschiebungen;
+
+            return verschiebungen.Where(v => !BringtNeueVerletzung(
+                                        v.ProbeBelegung,
+                                        new[] { v.HauptBlock }.Concat(v.Ausweiche.Select(a => a.block)),
+                                        trVor, freiVorCache))
+                                 .ToList();
+        }
+
+        // Vergleichsbasis des aktuellen Plans: Anzahl der Tagesregel-Verletzungen
+        // plus ein (zunaechst leerer) Cache fuer die freien Tage je Lehrer - die
+        // sind "vorher" konstant und wuerden sonst pro Vorschlag neu ueber alle
+        // Bloecke und Slots gezaehlt.
+        // false = Validator hat versagt -> im Zweifel lieber alles anzeigen als nichts.
+        private bool ErmittleVergleichsbasis(out int trVor, out Dictionary<string, int> freiVorCache)
+        {
+            freiVorCache = new Dictionary<string, int>();
+            trVor = 0;
+            try
+            {
+                trVor = PlanValidator.Prüfe(_belegung, _blocks, _slots, _grossePausen)
+                                     .Count(v => v.Kategorie == "Tagesregel");
+            }
+            catch
+            {
+                return false;
+            }
+            return true;
+        }
+
+        private bool BringtNeueVerletzung(int[,] probe, IEnumerable<int> beteiligteBloecke,
+                                          int trVor, Dictionary<string, int> freiVorCache)
+        {
+            if (probe == null) return false;
+
+            // --- Tagesregel: die plan-weite Anzahl darf nicht steigen ---
+            try
+            {
+                int trNach = PlanValidator.Prüfe(probe, _blocks, _slots, _grossePausen)
+                                          .Count(v => v.Kategorie == "Tagesregel");
+                if (trNach > trVor) return true;
+            }
+            catch { /* Validator-Fehler: Vorschlag nicht ausfiltern */ }
+
+            // --- Freie Tage: nur die Lehrer der beteiligten Bloecke koennen
+            //     betroffen sein, denn nur deren Stunden wandern ueberhaupt. ---
+            if (_bewParam?.ExtraFreieTage == null || _bewParam.ExtraFreieTage.Count == 0)
+                return false;
+
+            foreach (var lehrer in beteiligteBloecke
+                         .Where(b => b >= 0 && b < _blocks.Count)
+                         .SelectMany(b => _blocks[b].Teile.Select(t => t.Lehrer))
+                         .Where(l => !string.IsNullOrWhiteSpace(l))
+                         .Distinct())
+            {
+                if (!_bewParam.ExtraFreieTage.TryGetValue(lehrer, out int gefordert) || gefordert <= 0)
+                    continue;
+
+                if (!freiVorCache.TryGetValue(lehrer, out int vor))
+                {
+                    vor = ZaehleFreieTage(lehrer, _belegung);
+                    freiVorCache[lehrer] = vor;
+                }
+
+                int nach = ZaehleFreieTage(lehrer, probe);
+                if (nach < gefordert && nach < vor) return true;
+            }
+
+            return false;
         }
 
         // Baut die Probe-Belegung einer Kette und prüft alle Glieder auf harte Konflikte.
@@ -4236,7 +5000,9 @@ namespace Stundenplan_V2
             // Optional: ignorierte Unterrichte — kontextabhängig gefiltert.
             // Nach Klick in eine Lehrer-Zelle nur die des aktuellen Lehrers,
             // nach Klick in eine Klassen-Zelle nur die der aktuellen Klasse.
-            // Nur Anzeige (grau/kursiv), nicht ziehbar, nicht anklickbar.
+            // Optik identisch zu einem normalen Plan-Feld (BaueTeilbereich):
+            // gleicher Aufbau/Inhalt, nur grau statt farbig — nicht ziehbar,
+            // nicht anklickbar (reine Anzeige).
             if (ChkIgnorierteZeigen?.IsChecked == true)
             {
                 foreach (var iu in _ignorierteUnterrichte)
@@ -4246,29 +5012,7 @@ namespace Stundenplan_V2
                         : (aktKlasse != null && iu.Klassen.Contains(aktKlasse));
                     if (!passt) continue;
 
-                    string iKlassen = string.Join(",", iu.Klassen);
-                    string iZeile2 = "Fach: " + iu.Fach + "  |  Kl: " + iKlassen + "  |  L: " + iu.Lehrer + "  |  Wst: " + iu.Wst;
-
-                    var bd = new Border
-                    {
-                        Background = new SolidColorBrush(Color.FromRgb(0xEE, 0xEE, 0xEE)),
-                        BorderBrush = Brushes.DarkGray,
-                        BorderThickness = new Thickness(1),
-                        Margin = new Thickness(2),
-                        Padding = new Thickness(4)
-                    };
-                    var tb = new TextBlock
-                    {
-                        TextWrapping = TextWrapping.Wrap,
-                        FontSize = 12,
-                        FontStyle = FontStyles.Italic,
-                        Foreground = Brushes.DimGray
-                    };
-                    tb.Inlines.Add(new System.Windows.Documents.Run("UNr " + iu.UNr + "  ") { FontWeight = FontWeights.Bold });
-                    tb.Inlines.Add(new System.Windows.Documents.Run("(ignoriert)\n"));
-                    tb.Inlines.Add(new System.Windows.Documents.Run(iZeile2) { FontWeight = FontWeights.Bold });
-                    bd.Child = tb;
-                    ParkPanel.Children.Add(bd);
+                    ParkPanel.Children.Add(BauePseudoZelleIgnoriert(iu, _parkKontextLehrer));
                 }
             }
 

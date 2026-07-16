@@ -1,0 +1,106 @@
+<Window x:Class="Stundenplan_V2.VerbesserungsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Plan verbessern"
+        Height="640" Width="480"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Lösung wählen -->
+        <GroupBox Grid.Row="0" Header="Lösung" Margin="0,0,0,8">
+            <ComboBox x:Name="CmbLösung" Margin="5"/>
+        </GroupBox>
+
+        <!-- Algorithmus -->
+        <GroupBox Grid.Row="1" Header="Algorithmus" Margin="0,0,0,8">
+            <StackPanel Margin="5">
+                <RadioButton x:Name="RbHillClimbing" Content="Hill Climbing" IsChecked="True" Margin="0,2"/>
+                <RadioButton x:Name="RbSimAnnealing" Content="Simulated Annealing" Margin="0,2"/>
+                <RadioButton x:Name="RbLns" Content="Large Neighborhood Search (LNS)" Margin="0,2"/>
+                <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                    <TextBlock Text="Zeitlimit (Sek.):" VerticalAlignment="Center" Width="120"/>
+                    <TextBox x:Name="TxtZeitlimit" Text="30" Width="60"/>
+                </StackPanel>
+            </StackPanel>
+        </GroupBox>
+
+        <!-- Ziel -->
+        <GroupBox Grid.Row="2" Header="Verbesserungsziel" Margin="0,0,0,8">
+            <StackPanel Margin="5">
+                <RadioButton x:Name="RbZielGesamt" Content="Gesamtqualität" IsChecked="True" Margin="0,2"/>
+                <RadioButton x:Name="RbZielHohl" Content="Hohlstunden minimieren" Margin="0,2"/>
+                <RadioButton x:Name="RbZielSpätDoppel" Content="Späte Doppelstunden reduzieren" Margin="0,2"/>
+                <RadioButton x:Name="RbZielPäd" Content="Späte pädagogische Einheiten reduzieren" Margin="0,2"/>
+                <RadioButton x:Name="RbZielEinzel" Content="Einzelstunden reduzieren" Margin="0,2"/>
+                <RadioButton x:Name="RbZielHauptfach" Content="Hauptfach (D,E,M,F) nicht zu spät" Margin="0,2"/>
+            </StackPanel>
+        </GroupBox>
+
+        <!-- Einschränkungen -->
+        <GroupBox Grid.Row="3" Header="Einschränkungen" Margin="0,0,0,8">
+            <Grid Margin="5">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="130"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Nur Lehrer:" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="0" Grid.Column="1" x:Name="TxtNurLehrer"
+                         ToolTip="Kommagetrennte Kürzel, leer = alle"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Nur Klassen:" VerticalAlignment="Center" Margin="0,5,0,0"/>
+                <TextBox Grid.Row="1" Grid.Column="1" x:Name="TxtNurKlassen" Margin="0,5,0,0"
+                         ToolTip="Kommagetrennte Klassen, leer = alle"/>
+
+                <CheckBox Grid.Row="2" Grid.ColumnSpan="2" x:Name="ChkFixUNrn"
+                          Content="Fix UNrn respektieren" IsChecked="True" Margin="0,8,0,0"/>
+
+                <CheckBox Grid.Row="3" Grid.ColumnSpan="2" x:Name="ChkAlsNeue"
+                          Content="Als neue Lösung speichern (nicht überschreiben)" IsChecked="True" Margin="0,4,0,0"/>
+            </Grid>
+        </GroupBox>
+
+        <!-- SA Erweitert -->
+        <GroupBox Grid.Row="4" Header="Simulated Annealing – Erweitert" Margin="0,0,0,8">
+            <Grid Margin="5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Starttemperatur:" VerticalAlignment="Center"/>
+                <TextBox Grid.Column="1" x:Name="TxtStartTemp" Text="100" Width="60"/>
+                <TextBlock Grid.Column="2" Text="Abkühlrate:" VerticalAlignment="Center"/>
+                <TextBox Grid.Column="3" x:Name="TxtAbkühlrate" Text="0.995" Width="60"/>
+            </Grid>
+        </GroupBox>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="6" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button x:Name="BtnOk" Content="Verbessern"
+                    Width="100" Margin="0,0,8,0"
+                    Click="BtnOk_Click"/>
+            <Button Content="Abbrechen" Width="100"
+                    Click="BtnAbbrechen_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

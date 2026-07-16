@@ -1,0 +1,52 @@
+<Window x:Class="Stundenplan_V2.ZeitwunschExportDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Zeitwünsche als GPU016.TXT exportieren"
+        Width="560" Height="560"
+        MinWidth="420" MinHeight="380"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResizeWithGrip">
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap"
+                   Text="Lehrer und/oder Klassen wählen, deren Zeitwünsche exportiert werden sollen. Mehrfachauswahl per Strg/Umschalt-Klick, oder die Schnellauswahl-Buttons unten nutzen."/>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Column="0" Grid.Row="0" Text="Lehrer" FontWeight="Bold" Margin="2"/>
+            <ListBox  Grid.Column="0" Grid.Row="1" x:Name="LstLehrer" SelectionMode="Extended" Margin="2"/>
+            <StackPanel Grid.Column="0" Grid.Row="2" Orientation="Horizontal" Margin="2,6,2,0">
+                <Button x:Name="BtnAlleLehrer" Content="Alle" Padding="8,3" Click="BtnAlleLehrer_Click"/>
+                <Button x:Name="BtnKeineLehrer" Content="Keine" Padding="8,3" Margin="6,0,0,0" Click="BtnKeineLehrer_Click"/>
+            </StackPanel>
+
+            <TextBlock Grid.Column="1" Grid.Row="0" Text="Klassen" FontWeight="Bold" Margin="2"/>
+            <ListBox  Grid.Column="1" Grid.Row="1" x:Name="LstKlassen" SelectionMode="Extended" Margin="2"/>
+            <StackPanel Grid.Column="1" Grid.Row="2" Orientation="Horizontal" Margin="2,6,2,0">
+                <Button x:Name="BtnAlleKlassen" Content="Alle" Padding="8,3" Click="BtnAlleKlassen_Click"/>
+                <Button x:Name="BtnKeineKlassen" Content="Keine" Padding="8,3" Margin="6,0,0,0" Click="BtnKeineKlassen_Click"/>
+            </StackPanel>
+        </Grid>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <TextBlock x:Name="TxtAnzahl" VerticalAlignment="Center" Margin="0,0,16,0" Foreground="Gray"/>
+            <Button x:Name="BtnExportieren" Content="Exportieren" Width="100" Margin="0,0,6,0" Click="BtnExportieren_Click"/>
+            <Button x:Name="BtnAbbrechen" Content="Abbrechen" Width="90" IsCancel="True" Click="BtnAbbrechen_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>
