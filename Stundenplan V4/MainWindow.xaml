@@ -54,32 +54,47 @@
             <Button Grid.Row="0" Grid.Column="0" Content="1. Excel-Datei einlesen" Margin="0,0,6,10" Click="BtnPfad_Click"/>
             <Button Grid.Row="0" Grid.Column="1" Content="2. Zeitwünsche einlesen/exportieren" Margin="6,0,0,10" Click="BtnZeitwuensche_Click"/>
 
-            <Button Grid.Row="1" Grid.Column="0" Content="3. Gezielt ignorieren" Margin="0,0,6,10" Click="BtnIgnorieren_Click"/>
-            <Button Grid.Row="1" Grid.Column="1" Content="4. Gezielt fixieren" Margin="6,0,0,10" Click="BtnFixieren_Click"/>
+            <!-- Drei Buttons nebeneinander (etwas schmaler als die zweispaltigen Buttons) -->
+            <Grid Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Button Grid.Column="0" Margin="0,0,4,0" Click="BtnPlanImportieren_Click">
+                    <TextBlock Text="3. Plan importieren" TextWrapping="Wrap" TextAlignment="Center" FontSize="13"/>
+                </Button>
+                <Button Grid.Column="1" Margin="4,0,4,0" Click="BtnUnrPlan_Click">
+                    <TextBlock Text="4. Plan bewerten" TextWrapping="Wrap" TextAlignment="Center" FontSize="13"/>
+                </Button>
+                <Button Grid.Column="2" Margin="4,0,0,0" Click="BtnPlanPrüfen_Click">
+                    <TextBlock Text="5. Plan prüfen (Verletzungen)" TextWrapping="Wrap" TextAlignment="Center" FontSize="13"/>
+                </Button>
+            </Grid>
 
-            <Button Grid.Row="2" Grid.Column="0" Content="5. UNr-Plan bewerten" Margin="0,0,6,10" Click="BtnUnrPlan_Click"/>
-            <Button Grid.Row="2" Grid.Column="1" Content="6. UNr-Plan prüfen (Verletzungen)" Margin="6,0,0,10" Click="BtnPlanPrüfen_Click"/>
+            <Button Grid.Row="2" Grid.Column="0" Content="6. UV als GPU importieren" Margin="0,0,6,10" Click="BtnGpuImport_Click"/>
+            <Button Grid.Row="2" Grid.Column="1" Content="7. UV als GPU exportieren" Margin="6,0,0,10" Click="BtnGpuExport_Click"/>
 
-            <Button Grid.Row="3" Grid.Column="0" Content="7. Stundenplanerstellung" Margin="0,0,6,10" Click="BtnSchritt2_Click"/>
-            <Button Grid.Row="3" Grid.Column="1" Content="8. Plan-Editor (interaktiv)" Margin="6,0,0,10" Click="BtnPlanEditor_Click"/>
+            <Button Grid.Row="3" Grid.Column="0" Content="8. Gezielt fixieren und ignorieren" Margin="0,0,6,10" Click="BtnFixierenIgnorieren_Click"/>
+            <Button Grid.Row="3" Grid.Column="1" Content="9. PM-Parameter bearbeiten" Margin="6,0,0,10" Click="BtnPmBearbeiten_Click"/>
 
-            <Button Grid.Row="4" Grid.Column="0" Content="9. Lösung sichern" Margin="0,0,6,10" Click="BtnLoesungSichern_Click"/>
-            <Button Grid.Row="4" Grid.Column="1" Content="10. Gesicherte Lösung löschen" Margin="6,0,0,10" Click="BtnGesicherteLoesungLoeschen_Click"/>
+            <Button Grid.Row="4" Grid.Column="0" Content="10. Stundenplanerstellung" Margin="0,0,6,10" Click="BtnSchritt2_Click"/>
+            <Button Grid.Row="4" Grid.Column="1" Content="11. Plan-Editor (interaktiv)" Margin="6,0,0,10" Click="BtnPlanEditor_Click"/>
 
-            <Button Grid.Row="5" Grid.Column="0" Content="11. Plan verbessern" Margin="0,0,6,10" Click="BtnPlanVerbessern_Click"/>
-            <Button Grid.Row="5" Grid.Column="1" Content="12. Minimale Änderungen (Solver)" Margin="6,0,0,10" Click="BtnMinimalAenderung_Click"/>
+            <Button Grid.Row="5" Grid.Column="0" Content="12. Lösung sichern" Margin="0,0,6,10" Click="BtnLoesungSichern_Click"/>
+            <Button Grid.Row="5" Grid.Column="1" Content="13. Gesicherte Lösung löschen" Margin="6,0,0,10" Click="BtnGesicherteLoesungLoeschen_Click"/>
 
-            <Button Grid.Row="6" Grid.Column="0" Content="13. Fix/Lösung → Plan exportieren" Margin="0,0,6,10" Click="BtnFixExport_Click"/>
-            <Button Grid.Row="6" Grid.Column="1" Content="14. Diagnose an Diag anhängen" Margin="6,0,0,10" Click="BtnDiagAnhaengen_Click"/>
+            <Button Grid.Row="6" Grid.Column="0" Content="14. Lösung verbessern" Margin="0,0,6,10" Click="BtnPlanVerbessern_Click"/>
+            <Button Grid.Row="6" Grid.Column="1" Content="15. Minimale Änderungen (Solver)" Margin="6,0,0,10" Click="BtnMinimalAenderung_Click"/>
 
-            <Button Grid.Row="7" Grid.Column="0" Content="15. Klassenpläne erzeugen" Margin="0,0,6,10" Click="BtnKlassenplaene_Click"/>
-            <Button Grid.Row="7" Grid.Column="1" Content="15b. Klassenpläne EF / Q1 / Q2" Margin="6,0,0,10" Click="BtnKlassenplaeneOberstufe_Click"/>
+            <Button Grid.Row="7" Grid.Column="0" Content="16. Fix/Lösung in Tabelle Plan exportieren" Margin="0,0,6,10" Click="BtnFixExport_Click"/>
+            <Button Grid.Row="7" Grid.Column="1" Content="17. Diagnose an Diag anhängen" Margin="6,0,0,10" Click="BtnDiagAnhaengen_Click"/>
 
-            <Button Grid.Row="8" Grid.Column="0" Content="16. Lehrerpläne erzeugen" Margin="0,0,6,10" Click="BtnLehrerplaene_Click"/>
-            <Button Grid.Row="8" Grid.Column="1" Content="17. PM-Parameter bearbeiten" Margin="6,0,0,10" Click="BtnPmBearbeiten_Click"/>
+            <Button Grid.Row="8" Grid.Column="0" Content="18. Klassenpläne erzeugen" Margin="0,0,6,10" Click="BtnKlassenplaene_Click"/>
+            <Button Grid.Row="8" Grid.Column="1" Content="19. Klassenpläne EF / Q1 / Q2" Margin="6,0,0,10" Click="BtnKlassenplaeneOberstufe_Click"/>
 
-            <Button Grid.Row="9" Grid.Column="0" Content="18. UV als GPU002.TXT exportieren" Margin="0,0,6,10" Click="BtnGpuExport_Click"/>
-            <Button Grid.Row="9" Grid.Column="1" Content="19. GPU002.TXT in UV importieren" Margin="6,0,0,10" Click="BtnGpuImport_Click"/>
+            <Button Grid.Row="9" Grid.Column="0" Content="20. Lehrerpläne erzeugen" Margin="0,0,6,10" Click="BtnLehrerplaene_Click"/>
+            <Button Grid.Row="9" Grid.Column="1" Content="21. Stammdaten (StD) bearbeiten" Margin="6,0,0,10" Click="BtnStammdaten_Click"/>
         </Grid>
 
         <!-- Meldefenster (Protokoll-Log): bekommt durch die zweispaltigen Buttons

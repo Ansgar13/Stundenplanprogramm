@@ -78,6 +78,13 @@
                 <DataGridTextColumn Header="Klasse" Binding="{Binding Klasse}" Width="110" IsReadOnly="True"/>
                 <DataGridTextColumn Header="Fach"   Binding="{Binding Fach}"   Width="90"  IsReadOnly="True"/>
                 <DataGridTextColumn Header="Lehrer" Binding="{Binding Lehrer}" Width="110" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Wst" Binding="{Binding Wst}" Width="50" IsReadOnly="True">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="HorizontalAlignment" Value="Right"/>
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
                 <DataGridTextColumn Header="ZeilenText-2" Binding="{Binding Zt2}" Width="100" IsReadOnly="True"/>
                 <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*"   IsReadOnly="True"/>
             </DataGrid.Columns>

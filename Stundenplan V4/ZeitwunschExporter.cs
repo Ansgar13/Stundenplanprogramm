@@ -13,7 +13,7 @@ namespace Stundenplan_V2
             if (!File.Exists(textPfad))
                 throw new Exception("Zeitwunsch-Datei nicht gefunden.");
 
-            var zeilen = File.ReadAllLines(textPfad);
+            var zeilen = GpuImportExport.LiesTextdateiAutoEncoding(textPfad);
 
             var lehrerDaten = new Dictionary<string, Dictionary<(int, int), int>>();
             var klassenDaten = new Dictionary<string, Dictionary<(int, int), int>>();

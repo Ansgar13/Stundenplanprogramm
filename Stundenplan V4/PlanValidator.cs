@@ -15,7 +15,8 @@ namespace Stundenplan_V2
             string Lehrer,
             string Fach,
             string Details,
-            string Klasse = "");
+            string Klasse = "",
+            string ZeilenText = "");
 
         public static List<Verletzung> Prüfe(
             int[,] belegung,
@@ -35,6 +36,12 @@ namespace Stundenplan_V2
 
             // Hilfsfunktionen
             string TagStunde(int s) => $"{slots[s].WTag} Std{slots[s].Stunde}";
+
+            // Fach eines Blocks: alle distinkten Fächer der Teile (Pflichtfeld,
+            // daher immer vorhanden). Mehrere Teile eines Blocks können
+            // theoretisch unterschiedliche Fächer haben — dann alle auflisten.
+            string FachWert(UnterrichtsBlock block)
+                => string.Join(" / ", block.Teile.Select(t => t.Fach).Distinct());
 
             // Belegung: block → liste der Slot-Indizes
             var blockSlots = new Dictionary<int, List<int>>();
@@ -63,8 +70,9 @@ namespace Stundenplan_V2
                         "", 0, blocks[b].UNr,
                         string.Join(", ", blocks[b].Teile.Select(t => t.Lehrer).Distinct())
                             + " | " + string.Join(", ", blocks[b].Teile.SelectMany(t => t.Klassen).Distinct()),
-                        blocks[b].Zeilentext,
-                        $"Soll={sollWst}, Ist={istWst} → Slots: {slotsTxt}"));
+                        FachWert(blocks[b]),
+                        $"Soll={sollWst}, Ist={istWst} → Slots: {slotsTxt}",
+                        ZeilenText: blocks[b].Zeilentext));
                 }
             }
 
@@ -105,8 +113,10 @@ namespace Stundenplan_V2
                     verletzungen.Add(new Verletzung(
                         "Lehrer-Konflikt",
                         slots[s].WTag, slots[s].Stunde,
-                        0, kv.Key, "",
-                        $"Blöcke: {string.Join(", ", kv.Value.Select(p => $"UNr{blocks[p.b].UNr}"))}"));
+                        0, kv.Key,
+                        string.Join(" / ", kv.Value.Select(p => FachWert(blocks[p.b])).Distinct()),
+                        $"Blöcke: {string.Join(", ", kv.Value.Select(p => $"UNr{blocks[p.b].UNr}"))}",
+                        ZeilenText: string.Join(" / ", kv.Value.Select(p => blocks[p.b].Zeilentext).Where(z => !string.IsNullOrWhiteSpace(z)).Distinct())));
                 }
             }
 
@@ -144,8 +154,8 @@ namespace Stundenplan_V2
                         {
                             var (b1, k1, wg1) = liste[i];
                             var (b2, k2, wg2) = liste[j];
-                            // Gleiches nicht-leeres KKK → kein Konflikt
-                            if (!string.IsNullOrEmpty(k1) && k1 == k2) continue;
+                            // Gleiches nicht-leeres KKK → kein Konflikt (case-insensitiv)
+                            if (!string.IsNullOrEmpty(k1) && string.Equals(k1, k2, StringComparison.OrdinalIgnoreCase)) continue;
                             // A↔B → kein Konflikt
                             if ((wg1 == "A" && wg2 == "B") || (wg1 == "B" && wg2 == "A")) continue;
                             echterKonflikt = true;
@@ -156,8 +166,10 @@ namespace Stundenplan_V2
                     verletzungen.Add(new Verletzung(
                         "Klassen-Konflikt",
                         slots[s].WTag, slots[s].Stunde,
-                        0, "", kv.Key,
-                        $"Blöcke: {string.Join(", ", kv.Value.Select(x => $"UNr{blocks[x.b].UNr}"))}"));
+                        0, kv.Key,
+                        string.Join(" / ", kv.Value.Select(x => FachWert(blocks[x.b])).Distinct()),
+                        $"Blöcke: {string.Join(", ", kv.Value.Select(x => $"UNr{blocks[x.b].UNr}"))}",
+                        ZeilenText: string.Join(" / ", kv.Value.Select(x => blocks[x.b].Zeilentext).Where(z => !string.IsNullOrWhiteSpace(z)).Distinct())));
                 }
             }
 
@@ -175,8 +187,9 @@ namespace Stundenplan_V2
                             verletzungen.Add(new Verletzung(
                                 "Zeitwunsch Lehrer",
                                 slots[s].WTag, slots[s].Stunde,
-                                blocks[b].UNr, t.Lehrer, blocks[b].Zeilentext,
-                                $"Lehrer {t.Lehrer} hat -3 Sperre"));
+                                blocks[b].UNr, t.Lehrer, FachWert(blocks[b]),
+                                $"Lehrer {t.Lehrer} hat -3 Sperre",
+                                ZeilenText: blocks[b].Zeilentext));
 
                         // Klassen-Sperre
                         foreach (var k in t.Klassen)
@@ -184,8 +197,9 @@ namespace Stundenplan_V2
                                 verletzungen.Add(new Verletzung(
                                     "Zeitwunsch Klasse",
                                     slots[s].WTag, slots[s].Stunde,
-                                    blocks[b].UNr, t.Lehrer, k,
-                                    $"Klasse {k} hat -3 Sperre"));
+                                    blocks[b].UNr, t.Lehrer, FachWert(blocks[b]),
+                                    $"Klasse {k} hat -3 Sperre",
+                                    ZeilenText: blocks[b].Zeilentext));
                     }
                 }
             }
@@ -217,16 +231,18 @@ namespace Stundenplan_V2
                         "", 0, blocks[b].UNr,
                         string.Join(", ", blocks[b].Teile.Select(t => t.Lehrer).Distinct())
                             + " | " + string.Join(", ", blocks[b].Teile.SelectMany(t => t.Klassen).Distinct()),
-                        blocks[b].Zeilentext,
-                        $"minD={minD}, maxD={maxD}, tatsächlich={doppelCount}"));
+                        FachWert(blocks[b]),
+                        $"minD={minD}, maxD={maxD}, tatsächlich={doppelCount}",
+                        ZeilenText: blocks[b].Zeilentext));
                 else if (doppelCount > maxD)
                     verletzungen.Add(new Verletzung(
                         "Doppelstunden",
                         "", 0, blocks[b].UNr,
                         string.Join(", ", blocks[b].Teile.Select(t => t.Lehrer).Distinct())
                             + " | " + string.Join(", ", blocks[b].Teile.SelectMany(t => t.Klassen).Distinct()),
-                        blocks[b].Zeilentext,
-                        $"minD={minD}, maxD={maxD}, tatsächlich={doppelCount}"));
+                        FachWert(blocks[b]),
+                        $"minD={minD}, maxD={maxD}, tatsächlich={doppelCount}",
+                        ZeilenText: blocks[b].Zeilentext));
             }
 
             // =====================================================
@@ -257,8 +273,9 @@ namespace Stundenplan_V2
                                 blocks[b].UNr,
                                 string.Join(", ", blocks[b].Teile.Select(t => t.Lehrer).Distinct())
                                     + " | " + string.Join(", ", blocks[b].Teile.SelectMany(t => t.Klassen).Distinct()),
-                                blocks[b].Zeilentext,
-                                $"Doppelstunde über Pause {slots[s1].Stunde}→{slots[s2].Stunde}"));
+                                FachWert(blocks[b]),
+                                $"Doppelstunde über Pause {slots[s1].Stunde}→{slots[s2].Stunde}",
+                                ZeilenText: blocks[b].Zeilentext));
                     }
                 }
             }
@@ -294,8 +311,9 @@ namespace Stundenplan_V2
                             kv.Key, 0, blocks[b].UNr,
                             string.Join(", ", blocks[b].Teile.Select(t => t.Lehrer).Distinct())
                                 + " | " + string.Join(", ", blocks[b].Teile.SelectMany(t => t.Klassen).Distinct()),
-                            blocks[b].Zeilentext,
-                            $"{anzahl} Stunden an {kv.Key} (max {limit})"));
+                            FachWert(blocks[b]),
+                            $"{anzahl} Stunden an {kv.Key} (max {limit})",
+                            ZeilenText: blocks[b].Zeilentext));
                         continue;
                     }
 
@@ -313,29 +331,62 @@ namespace Stundenplan_V2
                                 kv.Key, 0, blocks[b].UNr,
                                 string.Join(", ", blocks[b].Teile.Select(t => t.Lehrer).Distinct())
                                     + " | " + string.Join(", ", blocks[b].Teile.SelectMany(t => t.Klassen).Distinct()),
-                                blocks[b].Zeilentext,
-                                $"2 Einzelstunden an {kv.Key} ({slots[s1].Stunde}, {slots[s2].Stunde}) statt einer Doppelstunde"));
+                                FachWert(blocks[b]),
+                                $"2 Einzelstunden an {kv.Key} ({slots[s1].Stunde}, {slots[s2].Stunde}) statt einer Doppelstunde",
+                                ZeilenText: blocks[b].Zeilentext));
                     }
                 }
             }
 
             // =====================================================
             // 8. FACHRAUM-LIMIT: pro Slot max 'limit' Blöcke je Fachgruppe
+            // A-Woche- und B-Woche-Blöcke kollidieren nie (14-tägiger
+            // Wechsel) und teilen sich denselben Fachraum — sie dürfen daher
+            // NICHT gemeinsam gegen das Limit gezählt werden. Blöcke ohne
+            // Wochengruppe (jede Woche) zählen zu BEIDEN Wochen dazu. Diese
+            // Zählung muss exakt der Solver-Constraint in RoomConstraint.cs
+            // entsprechen, sonst meldet die Prüfung Verletzungen, die der
+            // Solver gar nicht als solche behandelt (falscher Alarm).
             // =====================================================
             if (fachraumLimit != null && fachraumLimit.Count > 0)
             {
                 for (int s = 0; s < S; s++)
                     foreach (var kv in fachraumLimit)
                     {
-                        int anzahl = 0;
+                        int anzahlA = 0, anzahlB = 0;
+                        bool hatWochenTrennung = false;
                         for (int b = 0; b < B; b++)
-                            if (belegung[b, s] == 1 && blocks[b].Teile.Any(t => t.FachGruppe == kv.Key))
-                                anzahl++;
-                        if (anzahl > kv.Value)
+                        {
+                            if (belegung[b, s] != 1) continue;
+                            if (!blocks[b].Teile.Any(t => t.FachGruppe == kv.Key)) continue;
+                            string wg = (blocks[b].WochenGruppe ?? "").Trim();
+                            if (wg == "A" || wg == "B") hatWochenTrennung = true;
+                            if (wg != "B") anzahlA++; // A-Woche + ohne Wochengruppe
+                            if (wg != "A") anzahlB++; // B-Woche + ohne Wochengruppe
+                        }
+
+                        if (!hatWochenTrennung)
+                        {
+                            // Keine A/B-Wochen im Spiel -> anzahlA == anzahlB, eine
+                            // einzige Meldung genügt (wie zuvor, ohne Wochen-Zusatz).
+                            if (anzahlA > kv.Value)
+                                verletzungen.Add(new Verletzung(
+                                    "Fachraum-Limit", slots[s].WTag, slots[s].Stunde, 0,
+                                    "", kv.Key,
+                                    $"{anzahlA} Blöcke der Fachgruppe '{kv.Key}' gleichzeitig in {TagStunde(s)} (max {kv.Value})"));
+                            continue;
+                        }
+
+                        if (anzahlA > kv.Value)
                             verletzungen.Add(new Verletzung(
                                 "Fachraum-Limit", slots[s].WTag, slots[s].Stunde, 0,
                                 "", kv.Key,
-                                $"{anzahl} Blöcke der Fachgruppe '{kv.Key}' gleichzeitig in {TagStunde(s)} (max {kv.Value})"));
+                                $"{anzahlA} Blöcke der Fachgruppe '{kv.Key}' gleichzeitig in {TagStunde(s)} (A-Woche, max {kv.Value})"));
+                        if (anzahlB > kv.Value)
+                            verletzungen.Add(new Verletzung(
+                                "Fachraum-Limit", slots[s].WTag, slots[s].Stunde, 0,
+                                "", kv.Key,
+                                $"{anzahlB} Blöcke der Fachgruppe '{kv.Key}' gleichzeitig in {TagStunde(s)} (B-Woche, max {kv.Value})"));
                     }
             }
 
@@ -351,8 +402,9 @@ namespace Stundenplan_V2
                         verletzungen.Add(new Verletzung(
                             "Keine 3 in Folge", slots[s].WTag, slots[s].Stunde, blocks[b].UNr,
                             string.Join(", ", blocks[b].Teile.Select(t => t.Lehrer).Distinct()),
-                            blocks[b].Zeilentext,
-                            $"3 Stunden in Folge an {slots[s].WTag} (Std {slots[s].Stunde}-{slots[s + 2].Stunde})"));
+                            FachWert(blocks[b]),
+                            $"3 Stunden in Folge an {slots[s].WTag} (Std {slots[s].Stunde}-{slots[s + 2].Stunde})",
+                            ZeilenText: blocks[b].Zeilentext));
                         break; // eine Meldung pro Block genügt
                     }
 
@@ -361,27 +413,60 @@ namespace Stundenplan_V2
             // =====================================================
             {
                 var fachZähler = new Dictionary<(string klasse, string tag, string fach), int>();
-                for (int b = 0; b < B; b++)
-                    for (int s = 0; s < S; s++)
+                for (int s = 0; s < S; s++)
+                {
+                    string tag = slots[s].WTag;
+
+                    // Pro (Klasse,Fach) in diesem Slot: welche Blöcke sind hier aktiv?
+                    var blockeProKlasseFach = new Dictionary<(string klasse, string fach), HashSet<int>>();
+                    for (int b = 0; b < B; b++)
                     {
                         if (belegung[b, s] != 1) continue;
-                        string tag = slots[s].WTag;
-
-                        // Mehrere Teile desselben Blocks im selben Slot (z.B. parallele
-                        // Gruppen/Lehrer derselben Klasse im selben Fach) sind EINE
-                        // Unterrichtsstunde, keine mehrfache - deshalb pro Block+Slot
-                        // je (Klasse, Fach) nur einmal zählen statt pro Teil.
-                        var distinktInSlot = new HashSet<(string klasse, string fach)>();
                         foreach (var t in blocks[b].Teile)
                             foreach (var k in t.Klassen)
-                                distinktInSlot.Add((k, t.Fach));
-
-                        foreach (var kf in distinktInSlot)
-                        {
-                            var key = (kf.klasse, tag, kf.fach);
-                            fachZähler[key] = fachZähler.TryGetValue(key, out int c) ? c + 1 : 1;
-                        }
+                            {
+                                var key = (k, t.Fach);
+                                if (!blockeProKlasseFach.TryGetValue(key, out var set))
+                                    blockeProKlasseFach[key] = set = new HashSet<int>();
+                                set.Add(b);
+                            }
                     }
+
+                    // Innerhalb jedes (Klasse,Fach) in diesem Slot: mehrere Teile
+                    // DESSELBEN Blocks (z.B. Doppelbesetzung/Team-Teaching) sind
+                    // über die HashSet-Dedupe oben bereits auf einen Block reduziert.
+                    // Zusätzlich: mehrere VERSCHIEDENE Blöcke mit gleichem,
+                    // nicht-leerem KKK dürfen laut Klassenregel-Ausnahme denselben
+                    // Slot belegen (z.B. Religion/Ethik parallel, zwei KKK-
+                    // Fördergruppen) und zählen dann als EINE gemeinsame Stunde,
+                    // nicht als mehrere — sonst würde ein einzelner KKK-Parallel-
+                    // Slot bereits 2 vom Tageslimit verbrauchen (siehe analoger
+                    // Bugfix im Solver: BaueFachKlasseTagVars in StundenplanEngine.cs).
+                    foreach (var kv in blockeProKlasseFach)
+                    {
+                        var vergeben = new HashSet<int>();
+                        int gruppenAnzahl = 0;
+                        foreach (var b in kv.Value)
+                        {
+                            if (vergeben.Contains(b)) continue;
+                            string kkk = (blocks[b].KKK ?? "").Trim();
+                            if (string.IsNullOrEmpty(kkk))
+                            {
+                                vergeben.Add(b);
+                            }
+                            else
+                            {
+                                foreach (var b2 in kv.Value.Where(x => !vergeben.Contains(x) &&
+                                    string.Equals((blocks[x].KKK ?? "").Trim(), kkk, StringComparison.OrdinalIgnoreCase)))
+                                    vergeben.Add(b2);
+                            }
+                            gruppenAnzahl++;
+                        }
+
+                        var key2 = (kv.Key.klasse, tag, kv.Key.fach);
+                        fachZähler[key2] = fachZähler.TryGetValue(key2, out int c) ? c + gruppenAnzahl : gruppenAnzahl;
+                    }
+                }
                 foreach (var kv in fachZähler)
                     if (kv.Value > 2)
                         verletzungen.Add(new Verletzung(
@@ -525,7 +610,7 @@ namespace Stundenplan_V2
             var sheet = wb.Worksheets.Add(sheetName);
 
             // Header
-            var headers = new[] { "Kategorie", "Tag", "Stunde", "UNr", "Lehrer/Klasse", "Fach/ZeilenText", "Details" };
+            var headers = new[] { "Kategorie", "Tag", "Stunde", "UNr", "Lehrer/Klasse", "Fach", "ZeilenText", "Details" };
             for (int i = 0; i < headers.Length; i++)
             {
                 sheet.Cell(1, i + 1).Value = headers[i];
@@ -568,7 +653,8 @@ namespace Stundenplan_V2
                     sheet.Cell(zeile, 4).Value = v.UNr > 0 ? v.UNr.ToString() : "";
                     sheet.Cell(zeile, 5).Value = v.Lehrer;
                     sheet.Cell(zeile, 6).Value = v.Fach;
-                    sheet.Cell(zeile, 7).Value = v.Details;
+                    sheet.Cell(zeile, 7).Value = v.ZeilenText;
+                    sheet.Cell(zeile, 8).Value = v.Details;
 
                     for (int c = 1; c <= headers.Length; c++)
                         sheet.Cell(zeile, c).Style.Fill.BackgroundColor = farbe;

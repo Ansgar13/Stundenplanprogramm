@@ -25,7 +25,8 @@ namespace Stundenplan_V2
     /// Zwei Zuordnungen sind nur Bestwerte (im Code markiert) und sollten bei
     /// Bedarf angepasst werden:
     ///   - UV-Spalte "Wert =" -> Feld 36 "Wert bzw. Faktor"
-    ///   - UV-Spalte "U-Gruppen" -> Feld 45 "Zeilen-Unterrichtsgruppe"
+    ///   - UV-Spalte "U-Gruppen" -> Feld 12 "Gruppe" (verifiziert anhand einer
+    ///     echten Untis-GPU002.TXT; NICHT Feld 45 "Zeilen-Unterrichtsgruppe")
     /// </summary>
     public static class GpuExporter
     {
@@ -124,7 +125,7 @@ namespace Stundenplan_V2
                     f[35] = wertFaktor;                                            // 36 Wert bzw. Faktor (Bestwert, s. Klassendoku)
                     f[38] = Quote(zeilenText2);                                    // 39 Zeilentext-2
                     f[41] = Quote(schuelergruppe);                                 // 42 Schülergruppe
-                    f[44] = Quote(uGruppen);                                       // 45 Zeilen-Unterrichtsgruppe (Bestwert, s. Klassendoku)
+                    f[11] = Quote(uGruppen);                                        // 12 Gruppe (A-/B-Woche)
 
                     zeilen.Add(string.Join(";", f) + ";");
                 }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Controls;
 using ClosedXML.Excel;
 
 namespace Stundenplan_V2
@@ -9,10 +10,17 @@ namespace Stundenplan_V2
     /// <summary>
     /// Liest die komplette Tabelle "PM" (Spalte A = Parameter-Beschriftung,
     /// Spalte B = Wert) ein und macht Spalte B direkt in einer Tabelle
-    /// bearbeitbar. "Speichern" schreibt alle Werte zurück in die Excel-Datei
-    /// und stößt danach — wie jeder andere Schreibvorgang im Programm — über
-    /// den übergebenen Callback ein automatisches Neuladen der Excel-Daten an,
-    /// damit z.B. die Solver-Parameter sofort aktuell sind.
+    /// bearbeitbar. "Speichern und schließen" schreibt alle Werte zurück in die
+    /// Excel-Datei, stößt danach — wie jeder andere Schreibvorgang im Programm —
+    /// über den übergebenen Callback ein automatisches Neuladen der Excel-Daten
+    /// an, damit z.B. die Solver-Parameter sofort aktuell sind, und schließt
+    /// das Fenster.
+    ///
+    /// Bewusst KEIN "Schließen"-Button: Änderungen werden nie verworfen, der
+    /// einzige reguläre Weg aus dem Dialog ist das Speichern. Das X in der
+    /// Titelleiste bleibt als Notausgang erhalten. Im Fehlerfall (Sheet "PM"
+    /// fehlt, Datei durch Excel gesperrt) bleibt das Fenster offen, damit die
+    /// Eingaben nicht verlorengehen.
     /// </summary>
     public partial class PMParameterDialog : Window
     {
@@ -85,6 +93,12 @@ namespace Stundenplan_V2
 
         private void BtnSpeichern_Click(object sender, RoutedEventArgs e)
         {
+            // Läuft noch eine Zellbearbeitung, steht der zuletzt getippte Wert
+            // dank UpdateSourceTrigger=PropertyChanged zwar schon im PMZeile-
+            // Objekt; da das Fenster gleich zugeht, wird die Bearbeitung hier
+            // trotzdem sauber abgeschlossen, statt sich darauf zu verlassen.
+            DgParameter.CommitEdit(DataGridEditingUnit.Row, true);
+
             try
             {
                 using var wb = new XLWorkbook(_excelPfad);
@@ -102,6 +116,8 @@ namespace Stundenplan_V2
             }
             catch (Exception ex)
             {
+                // Fenster bewusst offen lassen: die Eingaben sind noch nicht in
+                // der Datei und wären beim Schließen verloren.
                 MessageBox.Show("Fehler beim Speichern: " + ex.Message,
                     "Fehler", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
@@ -109,19 +125,11 @@ namespace Stundenplan_V2
 
             // Wie bei jedem anderen Schreibvorgang: Excel-Daten sofort neu
             // einlesen, damit z.B. der nächste Solverlauf die neuen
-            // Parameterwerte auch tatsächlich verwendet.
+            // Parameterwerte auch tatsächlich verwendet. Die Erfolgsmeldung
+            // schreibt der Aufrufer (MainWindow) ins Log-Fenster — eine
+            // MessageBox wäre hier nur ein zusätzlicher Klick.
             _nachSpeichernReload?.Invoke();
 
-            // Tabelle mit den frisch gespeicherten (und ggf. von Excel neu
-            // formatierten) Werten neu aufbauen, damit die Anzeige konsistent bleibt.
-            LadeZeilen();
-
-            MessageBox.Show("PM-Parameter gespeichert.", "Gespeichert",
-                MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-
-        private void BtnSchliessen_Click(object sender, RoutedEventArgs e)
-        {
             Close();
         }
     }

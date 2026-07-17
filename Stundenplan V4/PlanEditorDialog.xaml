@@ -13,8 +13,12 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Kopfzeile: Loesung + Modus -->
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+        <!-- Kopfzeile: Loesung + Farbcode + Modus.
+             WrapPanel statt StackPanel: die Zeile ist mit dem Farbcode-Block
+             breiter als 1800 px geworden und wuerde in einem StackPanel rechts
+             abgeschnitten. Solange Platz da ist, sieht das Layout unveraendert
+             aus; erst danach wird umgebrochen (Row Height="Auto" waechst mit). -->
+        <WrapPanel Grid.Row="0" Margin="0,0,0,8">
             <TextBlock Text="Loesung:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
             <Button x:Name="BtnVorigeLoesung" Content="&#9664;" Width="28" VerticalAlignment="Center"
                     Margin="0,0,2,0" ToolTip="Vorige Loesung" Click="BtnVorigeLoesung_Click"/>
@@ -31,6 +35,23 @@
                     Padding="8,2" ToolTip="UV-Zeilen des aktuellen Lehrers/der aktuellen Klasse in eigenem Fenster anzeigen (nur lesend). Mehrfach klickbar — jedes Fenster behaelt seinen Filter."
                     Click="BtnUvZeigen_Click"/>
 
+            <!-- Farbcode: Farben festlegen (Dialog) + Umschalter, wonach gefaerbt wird.
+                 Der Umschalter startet auf "aus" und ist eine reine Sitzungs-
+                 einstellung; die Farben selbst liegen im Sheet "Farben". -->
+            <Button x:Name="BtnFarbcode" Content="Farbcode" VerticalAlignment="Center" Margin="0,0,8,0"
+                    Padding="8,2" ToolTip="Hintergrundfarben für Klassen und Fächer festlegen (wird dauerhaft im Sheet 'Farben' der Excel-Datei gespeichert)"
+                    Click="BtnFarbcode_Click"/>
+            <TextBlock Text="Farbe nach:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
+            <RadioButton x:Name="RbFarbeKlasse" Content="Klasse" GroupName="Farbcode"
+                         VerticalAlignment="Center" Margin="0,0,8,0" Checked="FarbModus_Changed"/>
+            <RadioButton x:Name="RbFarbeFach" Content="Fach" GroupName="Farbcode"
+                         VerticalAlignment="Center" Margin="0,0,8,0" Checked="FarbModus_Changed"/>
+            <RadioButton x:Name="RbFarbeBeide" Content="Klasse+Fach" GroupName="Farbcode"
+                         VerticalAlignment="Center" Margin="0,0,8,0" Checked="FarbModus_Changed"
+                         ToolTip="Zweizonig: farbiger Rand = Klasse, Textfläche = Fach. Hat nur eine der beiden eine Farbe, wird die Zelle wie gewohnt einfarbig."/>
+            <RadioButton x:Name="RbFarbeAus" Content="aus" GroupName="Farbcode" IsChecked="True"
+                         VerticalAlignment="Center" Margin="0,0,30,0" Checked="FarbModus_Changed"/>
+
             <TextBlock Text="Modus:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
             <RadioButton x:Name="RbBlock"  Content="Block (ganzer Tag)" GroupName="Modus"
                          VerticalAlignment="Center" Margin="0,0,10,0"/>
@@ -43,6 +64,11 @@
             <CheckBox x:Name="ChkKlassenVergleich" Content="Klassenvergleich zeigen"
                       VerticalAlignment="Center" Margin="0,0,20,0" Checked="ChkKlassenVergleich_Changed" Unchecked="ChkKlassenVergleich_Changed"/>
 
+            <CheckBox x:Name="ChkFachgruppenPlan" Content="Fachgruppenplan zeigen"
+                      VerticalAlignment="Center" Margin="0,0,20,0"
+                      ToolTip="Zusaetzlicher Plan (reine Ansicht): zeigt je Zeitslot alle Bloecke einer Fachgruppe (Sheet FGR) und die Raum-Auslastung. Klick auf einen Unterricht stellt Lehrer- und Klassenplan darauf um."
+                      Checked="ChkFachgruppenPlan_Changed" Unchecked="ChkFachgruppenPlan_Changed"/>
+
             <CheckBox x:Name="ChkVergleichsModus" Content="Vergleichsmodus (2 Lösungen)"
                       VerticalAlignment="Center" Margin="0,0,10,0" Checked="ChkVergleichsModus_Changed" Unchecked="ChkVergleichsModus_Changed"/>
             <TextBlock x:Name="LblVglLoesung" Text="2. Lösung:" FontWeight="Bold" VerticalAlignment="Center"
@@ -53,11 +79,15 @@
                       SelectionChanged="CboVglLoesung2_SelectionChanged" Visibility="Collapsed"/>
             <Button x:Name="BtnNaechsteVglLoesung2" Content="&#9654;" Width="28" VerticalAlignment="Center"
                     ToolTip="Nächste 2. Lösung" Click="BtnNaechsteVglLoesung2_Click" Visibility="Collapsed"/>
-        </StackPanel>
+        </WrapPanel>
 
         <!-- Hinweiszeile -->
-        <TextBlock Grid.Row="1" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="#555"
-                   Text="Links Lehrerplan, rechts Klassenplan. Klick auf eine Zelle zeigt im anderen Plan die zugehoerige Klasse bzw. den Lehrer. Ziehen: leere Zelle = verschieben, belegte Zelle gleicher Stundenzahl = tauschen, Parkbereich = entplanen. Ressourcenkonflikte werden hart gesperrt; Qualitaetsprobleme gelb gewarnt."/>
+        <TextBlock Grid.Row="1" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="#555">
+            <Run Text="Links Lehrerplan, rechts Klassenplan. Klick auf eine Zelle zeigt im anderen Plan die zugehoerige Klasse bzw. den Lehrer. Ziehen: leere Zelle = verschieben, belegte Zelle gleicher Stundenzahl = tauschen, Parkbereich = entplanen. Ressourcenkonflikte werden hart gesperrt; Qualitaetsprobleme gelb gewarnt."/>
+            <LineBreak/>
+            <Run FontWeight="SemiBold" Foreground="#333"
+                 Text="Rechtsklick auf eine Stunde (nur im Modus &quot;Einzelstunde&quot;): fixieren bzw. Fixierung entfernen. Das wird sofort in die Tabelle &quot;Fix UNrn&quot; und in die UV-Spalte &quot;Fix (X)&quot; geschrieben; die Excel-Datei wird nach dem Schliessen des Editors automatisch neu eingelesen."/>
+        </TextBlock>
 
         <!-- Hauptbereich: Lehrerplan | Klassenplan | Vergleich-Vorher | Vergleich-Nachher | KlVgl-Vorher | KlVgl-Nachher -->
         <!-- Stundenplan UND Parkbereich gemeinsam in RowPlaene. Der Splitter
@@ -79,13 +109,45 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
             <!-- ANGEHEFTETE PLAENE (beliebig viele Lehrer-/Klassenpläne
                  zusätzlich zur normalen Auswahl oben, nebeneinander scrollbar
                  über ScrollEditAnsicht, alle live editierbar auf derselben
                  _belegung — siehe AnhefteTile()/ZeichneAlleAngehefteten(). -->
-            <StackPanel x:Name="PnlAngeheftet" Grid.Column="6" Orientation="Horizontal"/>
+            <StackPanel x:Name="PnlAngeheftet" Grid.Column="7" Orientation="Horizontal"/>
+
+            <!-- FACHGRUPPEN-PLAN (reine Ansicht, siehe ZeichneEinFachgruppenGrid).
+                 Zeigt je Zeitslot ALLE Bloecke, die einen Raum der gewaehlten
+                 Fachgruppe belegen, plus das Auslastungs-Badge belegt/Limit
+                 (Limit = Spalte B im Sheet FGR). Kein Drop-Ziel, keine
+                 Tauschliste: entzerrt wird im Lehrer-/Klassenplan, auf den
+                 ein Klick hier umstellt. -->
+            <Border Grid.Column="6" x:Name="BrdFachgruppenPlan" BorderBrush="#CCC" BorderThickness="1"
+                    Margin="4,0,4,0" Background="#FBFBFB" Visibility="Collapsed">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4" Height="32">
+                        <TextBlock Text="Fachgruppe:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <Button x:Name="BtnVorigeFachgruppe" Content="&#9664;" Width="28" VerticalAlignment="Center"
+                                Margin="0,0,2,0" ToolTip="Vorige Fachgruppe" Click="BtnVorigeFachgruppe_Click"/>
+                        <ComboBox x:Name="CboFachgruppe" Width="140" VerticalAlignment="Center" Margin="0,0,2,0"
+                                  SelectionChanged="CboFachgruppe_SelectionChanged"/>
+                        <Button x:Name="BtnNaechsteFachgruppe" Content="&#9654;" Width="28" VerticalAlignment="Center"
+                                ToolTip="Naechste Fachgruppe" Click="BtnNaechsteFachgruppe_Click"/>
+                        <Button x:Name="BtnFachgruppeAnheften" Content="📌" Width="28" VerticalAlignment="Center"
+                                Margin="8,0,0,0"
+                                ToolTip="Diesen Fachgruppenplan zusätzlich anheften (bleibt sichtbar, auch wenn oben eine andere Fachgruppe gewählt wird)"
+                                Click="BtnFachgruppeAnheften_Click"/>
+                    </StackPanel>
+                    <TextBlock x:Name="LblFachgruppenKopf" DockPanel.Dock="Top" Text="FACHGRUPPENPLAN"
+                               FontWeight="Bold" Height="20"
+                               HorizontalAlignment="Center" Margin="0,0,0,2"/>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <Grid x:Name="FachgruppenGrid"/>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
 
             <!-- LEHRER-PLAN -->
             <Border Grid.Column="0" BorderBrush="#CCC" BorderThickness="1" Margin="0,0,4,0">
@@ -347,6 +409,11 @@
                 <Border Grid.Column="0" BorderBrush="#EEE" BorderThickness="0,0,1,0" Padding="0,0,6,0">
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Top" Text="Tauschvorschlaege:" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <CheckBox DockPanel.Dock="Top" x:Name="ChkFilterVerletzungen" Margin="0,0,0,4"
+                                  Checked="ChkFilterVerletzungen_Changed" Unchecked="ChkFilterVerletzungen_Changed"
+                                  ToolTip="Gilt für beide Listen (Tauschvorschläge und Verschiebung mit Ausweich): blendet Vorschläge aus, die gegenüber dem aktuellen Plan eine neue Tagesregel-Verletzung erzeugen oder einem Lehrer einen geforderten freien Tag nehmen würden. Bereits vorher bestehende Verletzungen filtern nicht.">
+                            <TextBlock Text="ohne Tagesregel-/Freie-Tage-Verletzungen (beide Listen)" TextWrapping="Wrap" FontSize="11"/>
+                        </CheckBox>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <StackPanel x:Name="PnlTausch"/>
                         </ScrollViewer>
@@ -360,6 +427,16 @@
                 <Border Grid.Column="2" BorderBrush="#EEE" BorderThickness="0,0,1,0" Padding="6,0,6,0">
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Top" Text="Verschiebung mit Ausweich:" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <!-- Standardmäßig AUS: die Suche läuft bei jeder überfahrenen
+                             Zelle neu und ist der mit Abstand teuerste Teil des
+                             Drag&Drop (siehe SucheVerschiebungMitAusweich) — beim
+                             blossen Ziehen ohne Bedarf an Vorschlägen macht sie den
+                             Editor spürbar träge. -->
+                        <CheckBox DockPanel.Dock="Top" x:Name="ChkAusweichSuche" Margin="0,0,0,4"
+                                  Checked="ChkAusweichSuche_Changed" Unchecked="ChkAusweichSuche_Changed"
+                                  ToolTip="Sucht beim Ziehen live nach Wegen, den Unterricht auf ein belegtes Feld zu bekommen, indem die Hindernis-Blöcke klassenintern ausweichen. Rechenintensiv: läuft bei jeder überfahrenen Zelle neu. Abgeschaltet bleibt das Ziehen flüssig, die roten und gelben Warnungen am Zielfeld kommen weiterhin.">
+                            <TextBlock Text="Ausweichsuche beim Ziehen (rechenintensiv)" TextWrapping="Wrap" FontSize="11"/>
+                        </CheckBox>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <StackPanel x:Name="PnlVerschieb"/>
                         </ScrollViewer>

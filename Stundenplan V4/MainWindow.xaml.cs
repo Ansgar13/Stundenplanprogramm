@@ -201,7 +201,7 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
-        // BUTTON 18 – UV ALS GPU002.TXT EXPORTIEREN
+        // BUTTON 7 – UV ALS GPU002.TXT EXPORTIEREN
         // =====================================================
         private void BtnGpuExport_Click(object sender, RoutedEventArgs e)
         {
@@ -399,10 +399,11 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
-        // BUTTON 19 – GPU002.TXT IN UV IMPORTIEREN
-        // Nur auf ausdrücklichen Wunsch: fragt vor jedem Schritt nach und
-        // schreibt ausschließlich NEUE Zeilen ans Ende von UV — bestehende
-        // Zeilen werden nie verändert.
+        // BUTTON 6 – GPU002.TXT IN UV IMPORTIEREN
+        // Nur auf ausdrücklichen Wunsch: fragt vor jedem Schritt nach. Es kann
+        // gewählt werden, ob die GPU002-Zeilen als NEUE Zeilen ans Ende von UV
+        // angehängt werden (bestehende Zeilen bleiben unverändert) oder ob die
+        // komplette bisherige UV (bis auf die Kopfzeile) überschrieben wird.
         // =====================================================
         private void BtnGpuImport_Click(object sender, RoutedEventArgs e)
         {
@@ -418,6 +419,19 @@ namespace Stundenplan_V2
                 Title = "GPU002.TXT zum Import in UV wählen"
             };
             if (dlgOpen.ShowDialog() != true) return;
+
+            // Modus wählen: Anhängen (bestehende UV bleibt unverändert) oder
+            // Überschreiben (bestehende UV-Datenzeilen werden vorher gelöscht).
+            var modus = MessageBox.Show(
+                "Wie soll importiert werden?\n\n" +
+                "Ja = Bestehende UV ÜBERSCHREIBEN (alle bisherigen Datenzeilen werden gelöscht, " +
+                "danach wird UV ausschließlich aus der gewählten Datei neu befüllt)\n\n" +
+                "Nein = Nur ANHÄNGEN (bestehende Zeilen bleiben unverändert, die Datei wird als " +
+                "neue Zeilen ans Ende von UV angehängt)",
+                "Import-Modus wählen", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+
+            if (modus == MessageBoxResult.Cancel) return;
+            bool ueberschreiben = modus == MessageBoxResult.Yes;
 
             List<string> fehlendeHeader;
             try
@@ -458,22 +472,32 @@ namespace Stundenplan_V2
 
             // Ausdrückliche Bestätigung unmittelbar vor dem eigentlichen
             // Schreibvorgang — "nur auf Wunsch" gilt für den ganzen Import,
-            // nicht nur für das Ergänzen der Spaltenköpfe.
-            var bestaetigung = MessageBox.Show(
-                $"Die Zeilen aus\n{dlgOpen.FileName}\n\nwerden als NEUE Zeilen ans Ende von UV angehängt " +
-                "(bestehende Zeilen bleiben unverändert). Fortfahren?",
-                "Import bestätigen", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            // nicht nur für das Ergänzen der Spaltenköpfe. Beim Überschreiben
+            // zusätzlich deutliche Warnung, da bestehende Daten verloren gehen.
+            var bestaetigung = ueberschreiben
+                ? MessageBox.Show(
+                    $"ACHTUNG: Die komplette bisherige UV (alle Datenzeilen) wird GELÖSCHT " +
+                    $"und anschließend ausschließlich aus\n{dlgOpen.FileName}\n\nneu befüllt. " +
+                    "Dieser Schritt kann nicht rückgängig gemacht werden. Fortfahren?",
+                    "Überschreiben bestätigen", MessageBoxButton.YesNo, MessageBoxImage.Warning)
+                : MessageBox.Show(
+                    $"Die Zeilen aus\n{dlgOpen.FileName}\n\nwerden als NEUE Zeilen ans Ende von UV angehängt " +
+                    "(bestehende Zeilen bleiben unverändert). Fortfahren?",
+                    "Import bestätigen", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (bestaetigung != MessageBoxResult.Yes) return;
 
             try
             {
-                int anzahl = GpuImportExport.ImportiereInUv(excelPfad, dlgOpen.FileName);
-                TxtStatus.Text = $"{anzahl} Zeile(n) aus GPU002.TXT in UV importiert.";
-                Log($"GPU002-Import: {anzahl} Zeile(n) aus '{dlgOpen.FileName}' ans Ende von UV angehängt.");
-                MessageBox.Show($"{anzahl} Zeile(n) wurden in UV importiert.\n\n" +
-                    "Bitte Button 1 (Excel-Datei einlesen) erneut ausführen, um die neuen Daten zu übernehmen.",
-                    "Import fertig", MessageBoxButton.OK, MessageBoxImage.Information);
+                int anzahl = GpuImportExport.ImportiereInUv(excelPfad, dlgOpen.FileName, ueberschreiben);
+                string modusText = ueberschreiben ? "importiert (UV überschrieben)" : "in UV importiert (angehängt)";
+                TxtStatus.Text = $"{anzahl} UV-Zeile(n) aus GPU002.TXT {modusText}.";
+                Log(ueberschreiben
+                    ? $"GPU002-Import: UV überschrieben, {anzahl} UV-Zeile(n) aus '{dlgOpen.FileName}' neu eingetragen (Zeilen mit gleicher UNr+Lehrer wurden zusammengeführt, Klassen kommagetrennt)."
+                    : $"GPU002-Import: {anzahl} UV-Zeile(n) aus '{dlgOpen.FileName}' ans Ende von UV angehängt (Zeilen mit gleicher UNr+Lehrer wurden zusammengeführt, Klassen kommagetrennt).");
                 LadeExcelDatenNeu(zeigeWarnungen: false);
+                MessageBox.Show($"{anzahl} UV-Zeile(n) wurden {modusText}.\n\n" +
+                    "Die Excel-Datei wurde automatisch neu eingelesen.",
+                    "Import fertig", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
@@ -482,7 +506,97 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
-        // BUTTON 17 – PM-PARAMETER BEARBEITEN
+        // BUTTON 3 – GPU001.TXT IN SHEET "PLAN" IMPORTIEREN (UNr-Plan importieren)
+        // Importiert die Datei ins Sheet "Plan" und trägt den importierten
+        // Plan anschließend automatisch als Lösung "Plan" in die Lösungen-,
+        // Rank- und Diagnose-Tabellen ein (wie Button 4 – UNr-Plan bewerten).
+        // Liest eine aus Untis exportierte GPU001.TXT (Stundenplan-Zeitraster)
+        // und überträgt die enthaltenen UNr/Tag/Stunde-Zuordnungen direkt ins
+        // Sheet "Plan". Das Sheet "Plan" wird dabei komplett überschrieben —
+        // nach Bestätigung durch den Nutzer.
+        // =====================================================
+        private void BtnPlanImportieren_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(excelPfad))
+            {
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 1).");
+                return;
+            }
+
+            var dlgOpen = new Microsoft.Win32.OpenFileDialog
+            {
+                Filter = "Untis GPU001 (*.txt)|*.txt",
+                Title = "GPU001.TXT zum Import in Sheet 'Plan' wählen"
+            };
+            if (dlgOpen.ShowDialog() != true) return;
+
+            var bestaetigung = MessageBox.Show(
+                $"Die Datei\n{dlgOpen.FileName}\n\nwird ins Sheet 'Plan' importiert. " +
+                "Der bisherige Inhalt von 'Plan' wird dabei VOLLSTÄNDIG ÜBERSCHRIEBEN. Fortfahren?",
+                "Import bestätigen", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (bestaetigung != MessageBoxResult.Yes) return;
+
+            try
+            {
+                int anzahl = GpuImportExport.ImportiereGpu001NachPlan(excelPfad, dlgOpen.FileName);
+                Log($"[Diag] Schritt 1/4: Sheet 'Plan' mit {anzahl} Zeitraster-Zeile(n) aus '{dlgOpen.FileName}' neu geschrieben (vollständiges Raster inkl. freier Slots, Sheet vorher geleert).");
+
+                LadeExcelDatenNeu(zeigeWarnungen: false);
+                Log($"[Diag] Schritt 2/4: Excel neu eingelesen. Blocks={input?.Blocks?.Count ?? -1}, " +
+                    $"Slots={input?.Slots?.Count ?? -1}, letzteSolutions vor Bewertung: " +
+                    $"[{string.Join(", ", letzteSolutions.Select(s => s.label))}]");
+
+                // Importierten Plan sofort als Lösung "Plan" bewerten und in
+                // Lösungen/Rank/Diagnose eintragen (dieselbe Logik wie Button 4).
+                BtnUnrPlan_Click(null, null);
+
+                Log($"[Diag] Schritt 3/4: Nach Bewertung — letzteSolutions: " +
+                    $"[{string.Join(", ", letzteSolutions.Select(s => s.label))}]");
+
+                // Direkte, unabhängige Kontrolle: Was steht WIRKLICH auf der Platte
+                // in "Lös" (frisches Öffnen der Datei, ohne jegliches Caching)?
+                try
+                {
+                    using var kontrollWb = new ClosedXML.Excel.XLWorkbook(excelPfad);
+                    if (kontrollWb.Worksheets.Any(ws => ws.Name == "Lös"))
+                    {
+                        var kontrollSheet = kontrollWb.Worksheet("Lös");
+                        var headerZellen = new List<string>();
+                        int maxCol = kontrollSheet.Row(1).LastCellUsed()?.Address.ColumnNumber ?? 2;
+                        for (int c = 3; c <= maxCol; c++)
+                        {
+                            string h = kontrollSheet.Cell(1, c).GetString().Trim();
+                            if (!string.IsNullOrEmpty(h)) headerZellen.Add(h);
+                        }
+                        Log($"[Diag] Schritt 4/4: Kontroll-Lesung 'Lös' DIREKT VON DER PLATTE — " +
+                            $"Spaltenköpfe ab Spalte C: [{string.Join(", ", headerZellen)}]");
+                    }
+                    else
+                    {
+                        Log("[Diag] Schritt 4/4: Sheet 'Lös' existiert laut Kontroll-Lesung NICHT in der Datei!");
+                    }
+                }
+                catch (Exception diagEx)
+                {
+                    Log($"[Diag] Schritt 4/4 fehlgeschlagen: {diagEx.Message}");
+                }
+
+                TxtStatus.Text = $"{anzahl} Slot(s) aus GPU001.TXT importiert und als Lösung 'Plan' eingetragen.";
+                MessageBox.Show($"{anzahl} Slot(s) wurden ins Sheet 'Plan' importiert " +
+                    "und automatisch als Lösung 'Plan' in die Lösungen-Tabelle eingetragen.\n\n" +
+                    "Die Excel-Datei wurde automatisch neu eingelesen.\n\n" +
+                    "Details zum Ablauf stehen jetzt im Log-Fenster (Zeilen mit '[Diag]').",
+                    "Import fertig", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                Log($"[Diag] AUSNAHME in BtnPlanImportieren_Click: {ex.Message}\n{ex.StackTrace}");
+                MessageBox.Show("Fehler beim Import: " + ex.Message);
+            }
+        }
+
+        // =====================================================
+        // BUTTON 9 – PM-PARAMETER BEARBEITEN
         // =====================================================
         private void BtnPmBearbeiten_Click(object sender, RoutedEventArgs e)
         {
@@ -492,8 +606,44 @@ namespace Stundenplan_V2
                 return;
             }
 
-            var dialog = new PMParameterDialog(excelPfad, () => LadeExcelDatenNeu(zeigeWarnungen: false))
-                { Owner = this };
+            // Der Dialog schließt sich nach dem Speichern selbst. Die
+            // Bestätigung landet deshalb hier im Log-Fenster statt in einer
+            // MessageBox im Dialog — der Callback läuft ausschließlich nach
+            // einem erfolgreichen Schreibvorgang.
+            var dialog = new PMParameterDialog(excelPfad, () =>
+            {
+                LadeExcelDatenNeu(zeigeWarnungen: false);
+                Log("PM-Parameter gespeichert und Excel-Daten neu eingelesen.");
+            })
+            { Owner = this };
+            dialog.ShowDialog();
+        }
+
+        // =====================================================
+        // STAMMDATEN (StD) BEARBEITEN / IMPORTIEREN / EXPORTIEREN
+        // =====================================================
+        private void BtnStammdaten_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(excelPfad))
+            {
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 1).");
+                return;
+            }
+
+            // "Speichern und schließen" schließt den Dialog wie beim PM-Dialog.
+            // Der Callback kann hier trotzdem mehrfach laufen: ein Import
+            // schreibt sofort und lässt das Fenster offen, damit man das
+            // Ergebnis durchsehen und die hart-Flags setzen kann.
+            // zeigeWarnungen: true ist bewusst gesetzt — nach jedem Schreiben
+            // steht die StD-Diagnose im Log, man sieht also sofort, welche
+            // harten Regeln man sich eingehandelt hat und welche Flags mangels
+            // Wert ignoriert wurden.
+            var dialog = new StammdatenDialog(excelPfad, () =>
+            {
+                LadeExcelDatenNeu(zeigeWarnungen: true);
+                Log("Stammdaten (StD) gespeichert und Excel-Daten neu eingelesen.");
+            })
+            { Owner = this };
             dialog.ShowDialog();
         }
 
@@ -518,6 +668,21 @@ namespace Stundenplan_V2
 
             input = ExcelLoader.Lade(excelPfad);
 
+            // PM-Warnungen: Werte, die sich nicht als Zahl lesen ließen oder
+            // gerundet werden mussten. Bewusst NICHT über zeigeWarnungen
+            // gesteuert, sondern immer — anders als die übrigen Diagnosen
+            // beschreiben sie keinen Datenbestand, sondern einen stillen
+            // Unterschied zwischen dem, was in PM steht, und dem, womit der
+            // Solver rechnet. Genau nach dem Speichern im PM-Dialog (der mit
+            // zeigeWarnungen: false neu lädt) will man das sehen. Solange in PM
+            // saubere Zahlen stehen, ist die Liste leer und es erscheint nichts.
+            if (input.PmWarnungen != null && input.PmWarnungen.Count > 0)
+            {
+                Log($"⚠ {input.PmWarnungen.Count} Hinweis(e) zur Tabelle PM:");
+                foreach (var w in input.PmWarnungen)
+                    Log("   " + w);
+            }
+
             // FT-Diagnose ausgeben: welche freien Tage aus Tabelle "FT"
             // registriert bzw. (mit Grund) verworfen wurden. Nur beim
             // manuellen Laden (Button 1) protokollieren — bei stillen
@@ -525,6 +690,14 @@ namespace Stundenplan_V2
             // schritt unnötig mit denselben Zeilen zugemüllt.
             if (zeigeWarnungen && input.FtDiagnose != null)
                 foreach (var zeile in input.FtDiagnose)
+                    Log(zeile);
+
+            // StD-Diagnose: welche "hart"-Flags aus dem Sheet StD registriert
+            // wurden und welche mangels Wert ignoriert werden mussten. Jedes
+            // harte Flag kann den Lauf infeasible machen — man sollte im Log
+            // sehen, welche überhaupt scharf sind.
+            if (zeigeWarnungen && input.StdDiagnose != null)
+                foreach (var zeile in input.StdDiagnose)
                     Log(zeile);
 
             // Warnung, falls UV-Zeilen ohne Fach und/oder Klasse gefunden wurden.
@@ -676,6 +849,22 @@ namespace Stundenplan_V2
             {
                 MessageBox.Show("Keine Lösung gefunden – weder mit noch ohne Tausch.\n\n" + debug);
                 TxtStatus.Text = "Planung fehlgeschlagen.";
+
+                var fixAnzahl = input.Slots.SelectMany(s => s.FixUNrn).Distinct().Count();
+                if (fixAnzahl > 0)
+                {
+                    var antwortFix = MessageBox.Show(
+                        $"Es sind {fixAnzahl} UNr(n) fixiert (Sheet 'Fix UNrn'). Soll geprüft werden, ob und welche " +
+                        "dieser Fixierungen die Unlösbarkeit verursachen? Dazu wird testweise geprüft, ob das " +
+                        "Modell ohne jegliche Fixierung lösbar wird, und bei Erfolg per Einzeltest eingegrenzt, " +
+                        "welche UNr(n) verantwortlich sind.\n\n" +
+                        "Das kann je nach Anzahl der Fixierungen mehrere zusätzliche Solver-Läufe und damit " +
+                        "einige Zeit benötigen.",
+                        "FixUNr-Ursachensuche starten?", MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+                    if (antwortFix == MessageBoxResult.Yes)
+                        await StarteFixUNrUrsachensuche();
+                }
                 return;
             }
 
@@ -757,6 +946,56 @@ namespace Stundenplan_V2
 
             TxtStatus.Text = "Stundenverteilung abgeschlossen.";
             LadeExcelDatenNeu(zeigeWarnungen: false);
+        }
+
+        // =====================================================
+        // FIXUNR-URSACHENSUCHE (auf Wunsch nach Infeasible-Meldung)
+        // Ruft StundenplanEngine.ErmittleFixUNrVerursacher im Hintergrund
+        // auf, protokolliert den Fortschritt im Log-Fenster und zeigt am
+        // Ende eine Zusammenfassung als MessageBox.
+        // =====================================================
+        private async System.Threading.Tasks.Task StarteFixUNrUrsachensuche()
+        {
+            Log("Starte FixUNr-Ursachensuche (auf Nutzerwunsch)...");
+            TxtStatus.Text = "FixUNr-Ursachensuche läuft...";
+
+            Action<string> logUi = s => Dispatcher.BeginInvoke(new Action(() => Log("  [FixUNr-Suche] " + s)));
+
+            List<string> ergebnis = null;
+            Cursor = System.Windows.Input.Cursors.Wait;
+            try
+            {
+                await System.Threading.Tasks.Task.Run(() =>
+                {
+                    ergebnis = StundenplanEngine.ErmittleFixUNrVerursacher(
+                        input.Blocks, input.Slots,
+                        input.Blocks.Count, input.Slots.Count,
+                        ignoriereLehrerSperren: new HashSet<string>(),
+                        fachraumLimit: input.Fachraeume,
+                        grossePausen: input.GrossePausen,
+                        verbotSpäteDoppel: input.VerbotSpäteDoppel,
+                        log: logUi);
+                });
+            }
+            catch (Exception ex)
+            {
+                Log($"FixUNr-Ursachensuche fehlgeschlagen: {ex.Message}");
+                MessageBox.Show("Fehler bei der FixUNr-Ursachensuche: " + ex.Message);
+                return;
+            }
+            finally
+            {
+                Cursor = null;
+                TxtStatus.Text = "FixUNr-Ursachensuche abgeschlossen.";
+            }
+
+            foreach (var zeile in ergebnis)
+                Log("  [FixUNr-Suche] Ergebnis: " + zeile);
+
+            MessageBox.Show(
+                "FixUNr-Ursachensuche abgeschlossen:\n\n" + string.Join("\n\n", ergebnis) +
+                "\n\nDetails auch im Log-Fenster.",
+                "FixUNr-Ursachensuche", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         // =====================================================
@@ -889,6 +1128,7 @@ namespace Stundenplan_V2
 
             if (input == null)
             {
+                Log("UNr-Plan bewerten: 'input' ist null (keine Excel-Datei geladen) — abgebrochen.");
                 if (!automatisch)
                     MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
                 return;
@@ -901,6 +1141,10 @@ namespace Stundenplan_V2
 
                 if (belegung == null)
                 {
+                    // Auch beim automatischen Aufruf (z. B. durch Knopf 3) NICHT
+                    // stillschweigend abbrechen — sonst bleibt ein fehlgeschlagenes
+                    // Eintragen in 'Lös' für den Nutzer unsichtbar.
+                    Log("UNr-Plan bewerten: Kein Sheet 'Plan' gefunden — nichts in 'Lös' eingetragen.");
                     if (!automatisch)
                         MessageBox.Show("Kein UNr-Plan gefunden. Bitte zuerst die Tabelle 'Unr-Plan' befüllen.");
                     return;
@@ -1491,15 +1735,15 @@ namespace Stundenplan_V2
 
         // Schreibt/ersetzt das Companion-Sheet "LösLehrer" komplett neu -
         // analog zu SchreibeInExcel für "Lös" (gleiche Spaltenreihenfolge/
-        // -labels, gleiches 10-Lösungen-Limit). Wird direkt nach jedem
-        // SchreibeInExcel(...)-Aufruf ausgeführt. Existiert für keine der
-        // Lösungen eine Lehrer-Abweichung, wird das Sheet (falls vorhanden)
-        // ersatzlos gelöscht, um die Datei nicht unnötig aufzublähen.
+        // -labels). Wird direkt nach jedem SchreibeInExcel(...)-Aufruf
+        // ausgeführt. Existiert für keine der Lösungen eine Lehrer-
+        // Abweichung, wird das Sheet (falls vorhanden) ersatzlos gelöscht,
+        // um die Datei nicht unnötig aufzublähen.
         private void SchreibeLehrerAbweichungenLös(
             List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> solutions)
         {
             const string sheetName = "LösLehrer";
-            int anzahl = Math.Min(10, solutions.Count);
+            int anzahl = solutions.Count;
 
             using var wb = new XLWorkbook(excelPfad);
             if (wb.Worksheets.Any(ws => ws.Name == sheetName))
@@ -1800,7 +2044,154 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
-        // TOP-PLÄNE IN TABELLE 2 SCHREIBEN
+        // UV-SPALTE "Fix (X)" FÜR EINE UNR SETZEN/LÖSCHEN
+        // Ergänzung zum Rechtsklick im Plan-Editor: dort wird immer nur EINE
+        // Einzelstunde in "Fix UNrn" ein-/ausgetragen; das "X" in der UV gilt
+        // dagegen für die ganze UNr und damit für ALLE UV-Zeilen dieser UNr
+        // (eine UNr kann mehrere Zeilen haben, z.B. mehrere Beteiligte).
+        // Daraus ergibt sich die Semantik:
+        //   fixieren = true  -> "X" in alle UV-Zeilen dieser UNr, sobald
+        //                       mindestens ein Slot fixiert ist.
+        //   fixieren = false -> "X" NUR entfernen, wenn die UNr nach dem
+        //                       Entfixieren in "Fix UNrn" nirgends mehr
+        //                       vorkommt. Sonst bliebe eine weiterhin fixierte
+        //                       Stunde in der UV unsichtbar.
+        // Wird direkt NACH dem Schreiben in "Fix UNrn" aufgerufen und liest
+        // deshalb bereits den aktualisierten Stand dieses Sheets.
+        //
+        // Hinweis zur Wirkung: Der Solver selbst wertet die UV-Spalte "Fix (X)"
+        // nicht aus (er liest ausschließlich "Fix UNrn"). Das "X" ist Marker
+        // für den GPU-Export (Kennzeichen), die UV-Anzeige und die Statusfarben
+        // im Unterrichte-Dialog — es geht hier also um Konsistenz der Anzeige.
+        //
+        // Rückgabe: Anzahl der geänderten UV-Zellen (0 = nichts zu tun).
+        // =====================================================
+        private int SetzeUvFixKennzeichen(int unr, bool fixieren)
+        {
+            using var wb = new XLWorkbook(excelPfad);
+
+            if (!wb.Worksheets.Any(ws => ws.Name == "UV"))
+            {
+                Log("UV-Fix: Tabelle 'UV' nicht gefunden — 'Fix (X)' nicht geändert.");
+                return 0;
+            }
+
+            var sheet = wb.Worksheet("UV");
+            var headerRow = sheet.Row(1);
+
+            int colFix = -1, colUNr = -1;
+            foreach (var c in headerRow.CellsUsed())
+            {
+                string hdr = c.GetString().Trim();
+                if (string.Equals(hdr, "Fix (X)", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(hdr, "Fix", StringComparison.OrdinalIgnoreCase))
+                    colFix = c.Address.ColumnNumber;
+                else if (string.Equals(hdr, "U-Nr", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(hdr, "UNr", StringComparison.OrdinalIgnoreCase))
+                    colUNr = c.Address.ColumnNumber;
+            }
+
+            if (colFix < 0 || colUNr < 0)
+            {
+                Log("UV-Fix: Spalte 'Fix (X)' und/oder 'U-Nr' in UV nicht gefunden — 'X' nicht geändert.");
+                return 0;
+            }
+
+            // Entfixieren: solange die UNr noch an irgendeinem Slot fixiert ist,
+            // bleibt das "X" stehen.
+            if (!fixieren && UNrNochInFixUNrn(wb, unr))
+                return 0;
+
+            // Gleiche robuste UNr-Lesung wie im Unterrichte-Dialog: erst als Zahl,
+            // sonst als Text (UNr kann je nach Zellformat beides sein).
+            bool TryUNr(IXLRow row, out int gelesen)
+            {
+                gelesen = 0;
+                try { gelesen = row.Cell(colUNr).GetValue<int>(); return gelesen > 0; }
+                catch
+                {
+                    return int.TryParse(row.Cell(colUNr).GetString().Trim(), out gelesen) && gelesen > 0;
+                }
+            }
+
+            int geaendert = 0;
+
+            foreach (var row in sheet.RowsUsed().Skip(1))
+            {
+                if (!TryUNr(row, out int zeilenUNr) || zeilenUNr != unr)
+                    continue;
+
+                string aktuell = row.Cell(colFix).GetString().Trim();
+                bool istX = string.Equals(aktuell, "X", StringComparison.OrdinalIgnoreCase);
+
+                if (fixieren && !istX)
+                {
+                    row.Cell(colFix).Value = "X";
+                    geaendert++;
+                }
+                else if (!fixieren && istX)
+                {
+                    row.Cell(colFix).Value = "";
+                    geaendert++;
+                }
+            }
+
+            if (geaendert > 0)
+                wb.Save();
+
+            return geaendert;
+        }
+
+        // Bequemer Wrapper um SetzeUvFixKennzeichen für den Plan-Editor:
+        // liefert den Zusatztext für die Log-Zeile und fängt Fehler ab, damit ein
+        // Problem beim UV-Schreiben (z.B. Datei gerade in Excel geöffnet) nie die
+        // eigentliche Fixierung in "Fix UNrn" zerreißt — die ist zu diesem
+        // Zeitpunkt bereits sauber gespeichert.
+        private string UvFixKennzeichenNachziehen(int unr, bool fixieren)
+        {
+            try
+            {
+                int geaendert = SetzeUvFixKennzeichen(unr, fixieren);
+                if (geaendert == 0)
+                    return fixieren ? "" : " ('X' in UV bleibt — UNr ist noch an anderer Stelle fixiert.)";
+
+                return fixieren
+                    ? $" 'X' in {geaendert} UV-Zeile(n) gesetzt."
+                    : $" 'X' in {geaendert} UV-Zeile(n) entfernt.";
+            }
+            catch (Exception ex)
+            {
+                return $" ⚠ 'Fix (X)' in UV konnte nicht geschrieben werden: {ex.Message}";
+            }
+        }
+
+        // Prüft im bereits geöffneten Workbook, ob die UNr im Sheet "Fix UNrn"
+        // noch an mindestens einem Slot eingetragen ist. Grundlage für die
+        // Entscheidung, ob das "X" in der UV entfernt werden darf.
+        private static bool UNrNochInFixUNrn(XLWorkbook wb, int unr)
+        {
+            if (!wb.Worksheets.Any(ws => ws.Name == "Fix UNrn"))
+                return false;
+
+            var sheet = wb.Worksheet("Fix UNrn");
+
+            foreach (var row in sheet.RowsUsed().Skip(1))
+            {
+                int lastCol = row.LastCellUsed()?.Address.ColumnNumber ?? 2;
+                for (int col = 3; col <= lastCol; col++)
+                    if (int.TryParse(row.Cell(col).GetString().Trim(), out int v) && v == unr)
+                        return true;
+            }
+
+            return false;
+        }
+
+        // =====================================================
+        // ALLE LÖSUNGEN IN TABELLE "LÖS" SCHREIBEN
+        // (früher auf die ersten 10 Lösungen begrenzt — das führte dazu,
+        // dass z.B. eine neu hinzugefügte "Plan"-Lösung lautlos wegfiel,
+        // sobald bereits 10 andere Lösungen vorhanden waren. Jetzt werden
+        // alle Einträge aus "solutions" geschrieben.)
         // =====================================================
         private void SchreibeInExcel(
             List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> solutions)
@@ -1819,7 +2210,7 @@ namespace Stundenplan_V2
             sheet.Cell(1, 1).Value = "WTag";
             sheet.Cell(1, 2).Value = "Stunde";
 
-            for (int p = 0; p < Math.Min(10, solutions.Count); p++)
+            for (int p = 0; p < solutions.Count; p++)
                 sheet.Cell(1, 3 + p).Value = solutions[p].label;
 
             for (int s = 0; s < input.Slots.Count; s++)
@@ -1827,7 +2218,7 @@ namespace Stundenplan_V2
                 sheet.Cell(s + 2, 1).Value = input.Slots[s].WTag;
                 sheet.Cell(s + 2, 2).Value = input.Slots[s].Stunde;
 
-                for (int p = 0; p < Math.Min(10, solutions.Count); p++)
+                for (int p = 0; p < solutions.Count; p++)
                 {
                     var belegung = solutions[p].belegung;
                     var unrList = new List<int>();
@@ -1853,7 +2244,7 @@ namespace Stundenplan_V2
             sheet.Cell(qualRow + 3, 1).Value = "päd. Einheiten spät";
             sheet.Cell(qualRow + 4, 1).Value = "späte LK-Stunden";
 
-            for (int p = 0; p < Math.Min(10, solutions.Count); p++)
+            for (int p = 0; p < solutions.Count; p++)
             {
                 try
                 {
@@ -2184,9 +2575,15 @@ namespace Stundenplan_V2
                 MeldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0
             };
 
+            // Merker: wurde im Editor überhaupt etwas fixiert/entfixiert? Nur dann
+            // wird die Excel-Datei nach dem Schließen des Editors neu eingelesen
+            // (siehe unten hinter ShowDialog).
+            bool fixAenderungImEditor = false;
+
             // Callback: einzelne Stunde im Plan-Editor fixieren/entfixieren
             // (Rechtsklick-Kontextmenü, nur Einzelstunden-Modus). Schreibt direkt
-            // in die Excel-Tabelle "Fix UNrn" und aktualisiert input.Slots, damit
+            // in die Excel-Tabellen "Fix UNrn" (slotgenau) und "UV" (Spalte
+            // "Fix (X)", für die ganze UNr) und aktualisiert input.Slots, damit
             // das blaue "F" im Editor sofort ohne Neuladen erscheint/verschwindet.
             Action<int, int, bool> aendereFixUNr = (slotIdx, unr, fixieren) =>
             {
@@ -2196,14 +2593,18 @@ namespace Stundenplan_V2
                     SchreibeFixUNrn(new Dictionary<int, List<int>> { [slotIdx] = new List<int> { unr } });
                     if (!slot.FixUNrn.Contains(unr))
                         slot.FixUNrn.Add(unr);
-                    Log($"Plan-Editor: UNr {unr} in {slot.WTag} Std{slot.Stunde} fixiert.");
+                    Log($"Plan-Editor: UNr {unr} in {slot.WTag} Std{slot.Stunde} fixiert." +
+                        UvFixKennzeichenNachziehen(unr, true));
                 }
                 else
                 {
                     EntferneAusFixUNrnSlot(slotIdx, unr);
                     slot.FixUNrn.Remove(unr);
-                    Log($"Plan-Editor: Fixierung von UNr {unr} in {slot.WTag} Std{slot.Stunde} entfernt.");
+                    Log($"Plan-Editor: Fixierung von UNr {unr} in {slot.WTag} Std{slot.Stunde} entfernt." +
+                        UvFixKennzeichenNachziehen(unr, false));
                 }
+
+                fixAenderungImEditor = true;
             };
 
             // Ignorierte UV-Zeilen (i/x) laden — nur für die Anzeige
@@ -2232,6 +2633,24 @@ namespace Stundenplan_V2
             { Owner = this };
 
             editor.ShowDialog();
+
+            // Wurde im Editor per Rechtsklick (oder beim Mitziehen fixierter
+            // Stunden) etwas fixiert/entfixiert, sind "Fix UNrn" und die UV-Spalte
+            // "Fix (X)" in der Datei inzwischen weiter als der Speicherstand.
+            // Deshalb hier einmal komplett neu einlesen.
+            //
+            // Bewusst erst NACH dem Schließen: LadeExcelDatenNeu ersetzt "input"
+            // durch ein neues Objekt, während der Editor noch mit der alten
+            // Slot-Liste arbeitet (das blaue "F" würde sonst nicht mehr
+            // aktualisiert). Außerdem ruft der Editor den Callback bei
+            // Tauschketten und beim Verschieben fixierter Stunden in Schleifen
+            // auf — ein Reload je Aufruf wären etliche Vollladungen hintereinander.
+            if (fixAenderungImEditor)
+            {
+                LadeExcelDatenNeu(zeigeWarnungen: false);
+                Log("Plan-Editor: Fixierungen geändert — Excel-Datei neu eingelesen.");
+                TxtStatus.Text = $"Fixierungen geändert, Excel neu eingelesen um {DateTime.Now:HH:mm:ss} Uhr.";
+            }
         }
 
         // =====================================================
@@ -3164,23 +3583,24 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
-        // BUTTON – GEZIELT IGNORIEREN
+        // BUTTON 8 – GEZIELT FIXIEREN UND IGNORIEREN
+        // (früher zwei getrennte Buttons "Gezielt ignorieren" und "Gezielt
+        // fixieren", die beide denselben Dialog öffneten — jetzt zu einem
+        // Button zusammengefasst.)
         // =====================================================
-        private void BtnIgnorieren_Click(object sender, RoutedEventArgs e) => OeffneUnterrichteDialog();
+        private void BtnFixierenIgnorieren_Click(object sender, RoutedEventArgs e) => OeffneUnterrichteDialog();
 
-        // =====================================================
-        // BUTTON – GEZIELT FIXIEREN
-        // =====================================================
-        private void BtnFixieren_Click(object sender, RoutedEventArgs e) => OeffneUnterrichteDialog();
-
-        // Gemeinsamer Einstiegspunkt für Button 3 (Gezielt ignorieren) und
-        // Button 4 (Gezielt fixieren): öffnet den kombinierten UnterrichteDialog
+        // Gemeinsamer Einstiegspunkt für Button 8 (Gezielt fixieren und
+        // ignorieren): öffnet den kombinierten UnterrichteDialog
         // (Kategorie-Filter + Einzelzeilen-Tabelle mit Checkboxen für alle vier
-        // Aktionen) und führt die vom Dialog zurückgegebene Auswahl aus. Das
-        // eigentliche Excel-Schreiben (inkl. optionaler Fix-UNrn-Übernahme über
-        // die bestehenden Methoden TrageInFixUNrnEin/EntferneAusFixUNrn) bleibt
-        // unverändert hier in MainWindow, nur die Auswahl kommt jetzt aus der
-        // neuen Tabelle statt aus einem erneuten Filter-Abgleich gegen die UV.
+        // Aktionen).
+        //
+        // Der Dialog schließt sich nach einer Aktion nicht mehr, sondern meldet
+        // sie über einen Callback und bleibt offen (mehrere Aktionen pro
+        // Sitzung, ohne die Filter jedes Mal neu zu setzen). Der Rückgabewert
+        // von ShowDialog() ist deshalb bedeutungslos geworden — ausgeführt wird
+        // in WendeUnterrichteAktionAn, sooft der Nutzer einen der vier
+        // Aktions-Buttons drückt.
         private void OeffneUnterrichteDialog()
         {
             if (input == null)
@@ -3194,15 +3614,37 @@ namespace Stundenplan_V2
                 ? letzteSolutions.Select(s => s.label).ToList()
                 : new List<string>();
 
-            var dialog = new UnterrichteDialog(excelPfad, alleKlassen, alleLehrer, alleFächer, alleZeilentext2, verfügbareLösungen)
+            // Vorwärtsdeklaration: der Callback muss den Dialog kennen, den er
+            // selbst mit erzeugt. Beim Aufruf des Lambdas (frühestens nach dem
+            // ersten Button-Klick) ist die Variable längst zugewiesen — daher
+            // null! statt null: das Projekt läuft mit <Nullable>enable</Nullable>,
+            // und die Zuweisung in der Folgezeile macht die Warnung gegenstandslos.
+            UnterrichteDialog dialog = null!;
+            dialog = new UnterrichteDialog(excelPfad, alleKlassen, alleLehrer, alleFächer,
+                                           alleZeilentext2, verfügbareLösungen,
+                                           () => WendeUnterrichteAktionAn(dialog))
                 { Owner = this };
-            if (dialog.ShowDialog() != true) return;
+            dialog.ShowDialog();
+        }
+
+        // Führt genau eine im UnterrichteDialog ausgelöste Aktion aus: schreibt
+        // die 'i'/'X'-Kennzeichen in die UV-Tabelle, übernimmt auf Wunsch die
+        // betroffenen UNrn in die Tabelle "Fix UNrn" (über die unveränderten
+        // Methoden TrageInFixUNrnEin/EntferneAusFixUNrn) und lädt die Excel-
+        // Daten am Ende neu ein.
+        //
+        // Der Code ist gegenüber der Fassung, in der er direkt hinter
+        // dialog.ShowDialog() stand, inhaltlich unverändert — er läuft jetzt
+        // nur mehrfach statt einmal. Die return-Ausstiege im Fehlerfall
+        // beenden dadurch nicht mehr den ganzen Vorgang, sondern nur diese eine
+        // Aktion; der Dialog bleibt offen und der Nutzer kann es korrigiert
+        // erneut versuchen.
+        private void WendeUnterrichteAktionAn(UnterrichteDialog dialog)
+        {
             if (dialog.AusgewählteZeilen.Count == 0) return;
 
             bool istIgnorierenAktion = dialog.Aktion == UnterrichteDialog.AktionArt.Ignorieren
                                     || dialog.Aktion == UnterrichteDialog.AktionArt.NichtIgnorieren;
-            bool istEntfernenModus = dialog.Aktion == UnterrichteDialog.AktionArt.NichtIgnorieren
-                                   || dialog.Aktion == UnterrichteDialog.AktionArt.Entfixieren;
 
             int markiert = 0;
             var getroffeneUNrn = new HashSet<int>();   // für FixUNrn-Übernahme

@@ -15,7 +15,7 @@
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap"
-                    Text="Alle Zeilen der Tabelle 'PM' (Spalte A = Parameter, Spalte B = Wert). Werte direkt in der Spalte 'Wert' bearbeiten und speichern — die Excel-Datei wird danach automatisch neu eingelesen."/>
+                    Text="Alle Zeilen der Tabelle 'PM' (Spalte A = Parameter, Spalte B = Wert). Werte direkt in der Spalte 'Wert' bearbeiten und speichern — die Excel-Datei wird danach automatisch neu eingelesen und das Fenster schließt sich."/>
 
         <DataGrid x:Name="DgParameter" Grid.Row="1"
                   AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
@@ -26,9 +26,12 @@
             </DataGrid.Columns>
         </DataGrid>
 
+        <!-- Nur ein Button: Änderungen werden nie verworfen, gespeichert wird
+             immer. Schließen erledigt der Speichern-Vorgang selbst (siehe
+             BtnSpeichern_Click). -->
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button x:Name="BtnSpeichern" Content="Speichern" Width="100" Margin="0,0,6,0" Click="BtnSpeichern_Click"/>
-            <Button x:Name="BtnSchliessen" Content="Schließen" Width="90" IsCancel="True" Click="BtnSchliessen_Click"/>
+            <Button x:Name="BtnSpeichern" Content="Speichern und schließen" Width="180"
+                    Click="BtnSpeichern_Click"/>
         </StackPanel>
     </Grid>
 </Window>

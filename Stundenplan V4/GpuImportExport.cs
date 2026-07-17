@@ -24,7 +24,10 @@ namespace Stundenplan_V2
     /// (wird nie automatisch aufgerufen). Schreibt ausschließlich in
     /// UV-Spalten, deren Kopf exakt zu einem bekannten GPU002-Feld passt.
     /// Fehlende Spaltenköpfe werden nicht geraten, können aber über
-    /// ErgaenzeUvHeader() gezielt ergänzt werden.
+    /// ErgaenzeUvHeader() gezielt ergänzt werden. Standardmäßig werden die
+    /// Zeilen ans Ende von UV angehängt (bestehende Zeilen bleiben
+    /// unverändert); optional (Parameter "ueberschreiben") können stattdessen
+    /// zuerst alle bestehenden UV-Datenzeilen gelöscht werden.
     /// </summary>
     public static class GpuImportExport
     {
@@ -42,7 +45,7 @@ namespace Stundenplan_V2
         public static List<GpuZeile> LiesGpu002(string gpuPfad)
         {
             var ergebnis = new List<GpuZeile>();
-            foreach (var zeile in File.ReadAllLines(gpuPfad, Encoding.UTF8))
+            foreach (var zeile in LiesTextdateiAutoEncoding(gpuPfad))
             {
                 if (string.IsNullOrWhiteSpace(zeile)) continue;
                 var teile = zeile.Split(';');
@@ -52,6 +55,43 @@ namespace Stundenplan_V2
                 ergebnis.Add(gz);
             }
             return ergebnis;
+        }
+
+        // Liest eine von Untis exportierte Textdatei robust ein, unabhängig
+        // davon, ob Untis sie als UTF-8 (mit/ohne BOM) oder als ANSI/Windows-
+        // 1252 geschrieben hat — je nach Export-Dialog-Einstellung in Untis
+        // liefert es beides, und ohne Erkennung führt das zu zerstörten oder
+        // fehlenden Umlauten (ä/ö/ü/ß). Erkennung:
+        //   1. UTF-8-BOM vorhanden -> UTF-8.
+        //   2. Kein BOM: strikt als UTF-8 versuchen (throwOnInvalidBytes) —
+        //      gelingt das, war es tatsächlich (BOM-loses) UTF-8.
+        //   3. Schlägt Schritt 2 fehl (ungültige UTF-8-Bytefolge, z. B. durch
+        //      einzelne Umlaut-Bytes in Windows-1252), als Windows-1252 lesen.
+        internal static string[] LiesTextdateiAutoEncoding(string pfad)
+        {
+            byte[] bytes = File.ReadAllBytes(pfad);
+
+            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+                return Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3)
+                    .Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+
+            try
+            {
+                var strictUtf8 = new UTF8Encoding(false, throwOnInvalidBytes: true);
+                string text = strictUtf8.GetString(bytes);
+                return text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            }
+            catch (ArgumentException)
+            {
+                // Keine gültige UTF-8-Bytefolge -> vermutlich Windows-1252 (ANSI).
+                // Encoding.Latin1 (ISO-8859-1, seit .NET 5 eingebaut) ist im
+                // Bytebereich 0xC0–0xFF — genau dort liegen ä/ö/ü/ß/Ä/Ö/Ü —
+                // byteidentisch zu Windows-1252, aber ohne zusätzliches NuGet-
+                // Paket (System.Text.Encoding.CodePages) nutzbar, das dieses
+                // Projekt nicht referenziert.
+                string text = Encoding.Latin1.GetString(bytes);
+                return text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            }
         }
 
         private static string Unquote(string s)
@@ -67,8 +107,12 @@ namespace Stundenplan_V2
         // Zuordnung UV-Spaltenname -> GPU002-Feldindex (0-basiert), für alle
         // Felder mit einer 1:1-Entsprechung. "Kl,Le" (Feld 3+4 kombiniert) und
         // "Dopp.Std." (Feld 28+29 kombiniert) werden gesondert behandelt.
-        // "Wert =" -> Feld 36 und "U-Gruppen" -> Feld 45 sind Bestwerte, siehe
-        // Analyse in der Chat-Historie — bei Bedarf hier anpassen.
+        // "Wert =" -> Feld 36 stimmt mit der offiziellen Untis-Doku überein.
+        // "U-Gruppen" -> Feld 12 ("Gruppe") wurde anhand einer echten, aus
+        // Untis exportierten GPU002.TXT verifiziert (dort stand "A-Woche" an
+        // Feld 12, nicht an Feld 45 "Zeilen-Unterrichtsgruppe" wie zunächst
+        // anhand der Doku vermutet — Feld 45 ist offenbar nur für gekoppelte
+        // Zeilen relevant).
         private static readonly (string uvSpalte, int gpuFeldIdx)[] FeldZuordnung = new[]
         {
             ("U-Nr", 0),
@@ -84,7 +128,7 @@ namespace Stundenplan_V2
             ("KKK", 26),
             ("Wert =", 35),
             ("Schülergruppe", 41),
-            ("U-Gruppen", 44),
+            ("U-Gruppen", 11),
         };
 
         private static Dictionary<string, int> LiesHeader(IXLWorksheet sheet)
@@ -106,7 +150,8 @@ namespace Stundenplan_V2
 
         // Alle UV-Spaltenköpfe, die der Import potenziell befüllen kann.
         public static List<string> AlleImportierbarenSpalten()
-            => FeldZuordnung.Select(f => f.uvSpalte).Append("Kl,Le").Append("Dopp.Std.").ToList();
+            => FeldZuordnung.Select(f => f.uvSpalte).Append("Kl,Le").Append("Dopp.Std.")
+                .Append("(E)").Append("Fix (X)").Append("Ignore (i)").ToList();
 
         // Prüft, welche dieser Spaltenköpfe in UV aktuell FEHLEN. Der
         // Aufrufer sollte das Ergebnis anzeigen und den Nutzer fragen, ob die
@@ -147,7 +192,12 @@ namespace Stundenplan_V2
         // GPU002-Feld passt — fehlt eine Spalte, wird das jeweilige Feld für
         // ALLE importierten Zeilen stillschweigend übersprungen (kein Raten).
         // Gibt die Anzahl importierter Zeilen zurück.
-        public static int ImportiereInUv(string excelPfad, string gpuPfad)
+        // ueberschreiben=false (Standard): bestehende Zeilen bleiben unverändert,
+        // die GPU002-Zeilen werden als NEUE Zeilen ans Ende von UV angehängt.
+        // ueberschreiben=true: alle bestehenden Datenzeilen (ab Zeile 2) werden
+        // vorher gelöscht — die Kopfzeile (Zeile 1) bleibt erhalten, UV wird
+        // danach ausschließlich aus der GPU002.TXT neu befüllt.
+        public static int ImportiereInUv(string excelPfad, string gpuPfad, bool ueberschreiben = false)
         {
             var gpuZeilen = LiesGpu002(gpuPfad);
             if (gpuZeilen.Count == 0) return 0;
@@ -156,41 +206,110 @@ namespace Stundenplan_V2
             var sheet = wb.Worksheet("UV");
             var header = LiesHeader(sheet);
 
-            int naechsteZeile = (sheet.LastRowUsed()?.RowNumber() ?? 1) + 1;
-
-            foreach (var gz in gpuZeilen)
+            int naechsteZeile;
+            if (ueberschreiben)
             {
+                int letzteZeileAlt = sheet.LastRowUsed()?.RowNumber() ?? 1;
+                if (letzteZeileAlt >= 2)
+                    sheet.Rows(2, letzteZeileAlt).Clear(XLClearOptions.All);
+                naechsteZeile = 2;
+            }
+            else
+            {
+                naechsteZeile = (sheet.LastRowUsed()?.RowNumber() ?? 1) + 1;
+            }
+
+            // Untis exportiert bei mehreren beteiligten Klassen pro Lehrer
+            // EINE Zeile je Klasse (gleiche UNr, gleicher Lehrer). Für UV
+            // müssen diese Zeilen zu EINER Zeile zusammengeführt werden, mit
+            // den Klassen kommagetrennt in "Klasse(n)" — genau umgekehrt zum
+            // Export (siehe ErzeugeGpu002: dort wird eine UV-Zeile mit
+            // mehreren Klassen in mehrere GPU002-Zeilen aufgeteilt). Zeilen
+            // mit gleicher UNr aber UNTERSCHIEDLICHEM Lehrer (z. B. echtes
+            // Team-Teaching/Teilungsgruppen) bleiben dagegen bewusst
+            // getrennte UV-Zeilen.
+            var gruppen = gpuZeilen
+                .GroupBy(gz => (gz.UNr, Lehrer: Unquote(gz.RohFelder[5] ?? "")))
+                .ToList();
+
+            foreach (var gruppe in gruppen)
+            {
+                var zeilenDerGruppe = gruppe.ToList();
+                var erste = zeilenDerGruppe[0];
                 var row = sheet.Row(naechsteZeile);
 
                 foreach (var (uvSpalte, gpuIdx) in FeldZuordnung)
                 {
                     if (!header.TryGetValue(uvSpalte, out int col)) continue;
-                    string wert = Unquote(gz.RohFelder[gpuIdx] ?? "");
+                    if (uvSpalte == "Klasse(n)") continue; // s. u. — kommagetrennt aus der ganzen Gruppe
+                    string wert = Unquote(erste.RohFelder[gpuIdx] ?? "");
                     if (uvSpalte == "Wert =") wert = wert.Replace('.', ',');
                     row.Cell(col).Value = wert;
                 }
 
-                // Kl,Le kombiniert aus Feld 3+4 (Wochenstd. Klasse/Lehrer)
+                // Klasse(n) aus Feld 5: alle distinkten Klassen der Gruppe,
+                // kommagetrennt — das eigentliche Zusammenführen dieser Fix.
+                if (header.TryGetValue("Klasse(n)", out int colKlassen))
+                {
+                    var klassen = zeilenDerGruppe
+                        .Select(gz => Unquote(gz.RohFelder[4] ?? ""))
+                        .Where(k => !string.IsNullOrWhiteSpace(k))
+                        .Distinct()
+                        .ToList();
+                    row.Cell(colKlassen).Value = string.Join(", ", klassen);
+                }
+
+                // Kl,Le kombiniert aus Feld 3+4 (Wochenstd. Klasse/Lehrer):
+                // laut Untis-Doku nur in der JEWEILS ERSTEN Zeile einer UNr
+                // ungleich 0 — daher innerhalb der Gruppe gezielt nach einer
+                // Zeile mit Wert suchen, statt blind die erste zu nehmen.
                 if (header.TryGetValue("Kl,Le", out int colKlLe))
                 {
-                    string kla = Unquote(gz.RohFelder[2] ?? "0");
-                    string le = Unquote(gz.RohFelder[3] ?? "0");
+                    var zeileMitWert = zeilenDerGruppe.FirstOrDefault(gz =>
+                        Unquote(gz.RohFelder[2] ?? "0") != "0" || Unquote(gz.RohFelder[3] ?? "0") != "0")
+                        ?? erste;
+                    string kla = Unquote(zeileMitWert.RohFelder[2] ?? "0");
+                    string le = Unquote(zeileMitWert.RohFelder[3] ?? "0");
                     row.Cell(colKlLe).Value = $"{kla}, {le}";
                 }
 
                 // Dopp.Std. kombiniert aus Feld 28+29 (Doppelstd. min/max)
                 if (header.TryGetValue("Dopp.Std.", out int colDopp))
                 {
-                    string min = Unquote(gz.RohFelder[27] ?? "0");
-                    string max = Unquote(gz.RohFelder[28] ?? "0");
+                    string min = Unquote(erste.RohFelder[27] ?? "0");
+                    string max = Unquote(erste.RohFelder[28] ?? "0");
                     row.Cell(colDopp).Value = $"{min}-{max}";
+                }
+
+                // (E), "Fix (X)" und "Ignore (i)" aus Feld 24 "Kennzeichen":
+                // Untis packt dort mehrere Ein-Buchstaben-Flags OHNE
+                // Trennzeichen zusammen (z. B. "fnX" für mehrere Kennzeichen
+                // gleichzeitig) — case-sensitiv, da Groß-/Kleinschreibung in
+                // Untis unterschiedliche Kennzeichen bedeutet (offizielle
+                // Untis-Kennzeichenliste: (E) Doppelstd. über Pause, (X)
+                // Fixiert, (i) Ignorieren — u. a. bestätigt gegen eine echte
+                // GPU002.TXT). Ein 1:1-Kopieren des ganzen Feldes wäre falsch,
+                // da es auch andere, in UV nicht abgebildete Kennzeichen
+                // enthalten kann.
+                {
+                    string kennzeichen = Unquote(erste.RohFelder[23] ?? "");
+
+                    if (header.TryGetValue("(E)", out int colE))
+                        row.Cell(colE).Value = kennzeichen.Contains("E") ? "x" : "";
+
+                    if (header.TryGetValue("Fix (X)", out int colFixImport))
+                        row.Cell(colFixImport).Value = kennzeichen.Contains("X") ? "X" : "";
+
+                    if (header.TryGetValue("Ignore (i)", out int colIgnoreImport))
+                        row.Cell(colIgnoreImport).Value =
+                            kennzeichen.IndexOf('i') >= 0 || kennzeichen.IndexOf('I') >= 0 ? "i" : "";
                 }
 
                 naechsteZeile++;
             }
 
             wb.Save();
-            return gpuZeilen.Count;
+            return gruppen.Count;
         }
 
         // ================================================================
@@ -297,6 +416,9 @@ namespace Stundenplan_V2
                 string uGruppen = Get(row, "U-Gruppen");
                 string text = Get(row, "Text");
                 string wertFaktor = Get(row, "Wert =").Replace(',', '.');
+                bool ePauseErlaubt = Get(row, "(E)").Trim().Equals("x", StringComparison.OrdinalIgnoreCase);
+                bool istFix = Get(row, "Fix (X)").Trim().Equals("X", StringComparison.OrdinalIgnoreCase);
+                bool istIgnore = Get(row, "Ignore (i)").Trim().Equals("i", StringComparison.OrdinalIgnoreCase);
 
                 string lehrer = SanitisiereKurzname(lehrerRoh, unr, "Lehrer", hinweise);
                 string fach = SanitisiereKurzname(fachRoh, unr, "Fach", hinweise);
@@ -329,7 +451,26 @@ namespace Stundenplan_V2
                     f[35] = wertFaktor;
                     f[38] = Quote(zeilenText2);
                     f[41] = Quote(schuelergruppe);
-                    f[44] = Quote(uGruppen);
+                    f[11] = Quote(uGruppen);
+                    // Feld 24 "Kennzeichen": Untis kombiniert hier mehrere
+                    // Ein-Buchstaben-Flags ohne Trennzeichen (z. B. "fnX").
+                    // Wir kennen/verwalten nur "X" (Fix), "i" (Ignore) und "E"
+                    // (Doppelstunde darf über große Pause gehen) — case-
+                    // sensitiv gemäß offizieller Untis-Kennzeichenliste.
+                    // Andere, in UV nicht abgebildete Kennzeichen (z. B. aus
+                    // den noch ungeklärten UV-Spalten "( _ )"/"(#)"/"(§)")
+                    // werden aus der Referenzzeile als Basis übernommen und
+                    // NICHT einfach überschrieben — es werden darin gezielt
+                    // nur X/i/E entfernt und gemäß aktuellem UV-Stand neu
+                    // gesetzt, alle übrigen Buchstaben bleiben erhalten.
+                    string kennzeichenBasis = refZeile != null
+                        ? Unquote(refZeile.RohFelder[23] ?? "")
+                        : "";
+                    string kennzeichenRest = new string(
+                        kennzeichenBasis.Where(c => c != 'X' && c != 'i' && c != 'I' && c != 'E').ToArray());
+                    string kennzeichenExport = kennzeichenRest
+                        + (istFix ? "X" : "") + (istIgnore ? "i" : "") + (ePauseErlaubt ? "E" : "");
+                    if (kennzeichenExport.Length > 0) f[23] = Quote(kennzeichenExport);
 
                     // Alle Felder, die aus UV leer geblieben sind (keine Spalte
                     // oder Zelle leer), aus der Referenzdatei auffüllen — 1:1,
@@ -603,6 +744,152 @@ namespace Stundenplan_V2
 
             File.WriteAllLines(zielPfad, zeilen, new UTF8Encoding(false));
             return zeilen.Count;
+        }
+
+        // ================================================================
+        // IMPORT: GPU001.TXT -> Sheet "Plan"
+        //
+        // GPU001.TXT ist das Untis-Export-Format des fertigen Stundenplans
+        // (Zeitraster je Element), Trennzeichen ';', Text in "...":
+        //   UNr;Klasse;LehrerLang;LehrerKurz;Raum;Tag;Stunde;;
+        // (Tag: 1=Mo..5=Fr). Eine UNr steht dabei über mehrere Zeilen verteilt
+        // (je Klasse/Lehrer bzw. je Einzelstunde eine eigene Zeile).
+        //
+        // Der Import schreibt NICHT in UV, sondern direkt ins Sheet "Plan"
+        // im Format WTag | Stunde | UNr | UNr | ... (wie von
+        // MainWindow.LadeUnrPlanAusExcel erwartet). Nur die UNr sowie Tag/
+        // Stunde werden ausgewertet — Klasse, Lehrer und Raum stehen bereits
+        // in UV und werden hier nicht benötigt.
+        //
+        // ACHTUNG: Das Sheet "Plan" wird dabei komplett überschrieben (alte
+        // Inhalte gehen verloren) — nur auf ausdrücklichen Wunsch des
+        // Aufrufers, der Import wird nie automatisch angestoßen.
+        // ================================================================
+
+        private static readonly string[] TagKuerzel = { "", "Mo", "Di", "Mi", "Do", "Fr" };
+
+        public class Gpu001Zeile
+        {
+            public int UNr;
+            public int Tag;    // 1=Mo..5=Fr
+            public int Stunde;
+        }
+
+        public static List<Gpu001Zeile> LiesGpu001(string gpuPfad)
+        {
+            var ergebnis = new List<Gpu001Zeile>();
+            foreach (var zeile in LiesTextdateiAutoEncoding(gpuPfad))
+            {
+                if (string.IsNullOrWhiteSpace(zeile)) continue;
+                var teile = zeile.Split(';');
+                if (teile.Length < 7) continue;
+
+                if (!int.TryParse(Unquote(teile[0]).Trim(), out int unr)) continue;
+                if (!int.TryParse(Unquote(teile[5]).Trim(), out int tag)) continue;
+                if (!int.TryParse(Unquote(teile[6]).Trim(), out int stunde)) continue;
+                if (tag < 1 || tag > 5) continue;
+
+                ergebnis.Add(new Gpu001Zeile { UNr = unr, Tag = tag, Stunde = stunde });
+            }
+            return ergebnis;
+        }
+
+        // Importiert eine GPU001.TXT direkt ins Sheet "Plan". Gruppiert die
+        // Zeilen nach (Tag, Stunde) und trägt je Slot die (eindeutigen,
+        // sortierten) UNrn ein. Das Sheet "Plan" wird dabei komplett
+        // überschrieben. Damit anschließend keine Zeitslots fehlen (Untis
+        // exportiert nur Slots mit tatsächlich verplantem Unterricht — leere
+        // Slots/Hohlstunden tauchen in der GPU001.TXT gar nicht auf), wird
+        // das VOLLSTÄNDIGE Zeitraster aus Sheet "Lös" übernommen (Spalte A/B,
+        // dieselbe Quelle wie beim regulären Plan-Export) und die aus der
+        // GPU001.TXT gelesenen UNrn werden darauf überlagert — Slots ohne
+        // Unterricht bleiben als Zeile mit leerer UNr-Liste erhalten, statt
+        // ganz zu fehlen. Gibt die Anzahl der geschriebenen Zeitraster-Zeilen
+        // zurück (nicht nur die belegten).
+        public static int ImportiereGpu001NachPlan(string excelPfad, string gpuPfad)
+        {
+            var zeilen = LiesGpu001(gpuPfad);
+
+            var belegteSlots = zeilen
+                .GroupBy(z => (z.Tag, z.Stunde))
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Select(z => z.UNr).Distinct().OrderBy(u => u).ToList());
+
+            using var wb = new XLWorkbook(excelPfad);
+
+            // Vollständiges Zeitraster aus "Lös" lesen (Spalte A = WTag,
+            // Spalte B = Stunde) — dieselbe Quelle, die auch der reguläre
+            // Plan-Export (ExportiereBelegungNachPlan) verwendet.
+            var vollesRaster = new List<(string wtag, int stunde)>();
+            if (wb.Worksheets.TryGetWorksheet("Lös", out var loesSheet))
+            {
+                int letzteZeile = loesSheet.LastRowUsed()?.RowNumber() ?? 1;
+                for (int r = 2; r <= letzteZeile; r++)
+                {
+                    string wtag = loesSheet.Cell(r, 1).GetString().Trim();
+                    if (wtag.Length == 0) continue;
+                    if (!int.TryParse(loesSheet.Cell(r, 2).GetString().Trim(), out int stunde)) continue;
+                    vollesRaster.Add((wtag, stunde));
+                }
+            }
+
+            // Tag-Kürzel -> Tag-Nummer, um belegteSlots (nach Zahl gruppiert)
+            // mit dem Zeitraster (nach Kürzel aus "Lös") abzugleichen.
+            var tagNummer = new Dictionary<string, int>();
+            for (int t = 1; t < TagKuerzel.Length; t++) tagNummer[TagKuerzel[t]] = t;
+
+            var sheet = wb.Worksheets.Any(ws => ws.Name == "Plan")
+                ? wb.Worksheet("Plan")
+                : wb.Worksheets.Add("Plan");
+
+            sheet.Clear(XLClearOptions.All); // vollständig überschreiben
+
+            sheet.Cell(1, 1).Value = "WTag";
+            sheet.Cell(1, 2).Value = "Stunde";
+            sheet.Cell(1, 3).Value = "UNrn";
+
+            int row = 2;
+
+            if (vollesRaster.Count > 0)
+            {
+                // Normalfall: komplettes Zeitraster aus "Lös" übernehmen,
+                // GPU001-Belegung darauf überlagern.
+                foreach (var (wtag, stunde) in vollesRaster)
+                {
+                    sheet.Cell(row, 1).Value = wtag;
+                    sheet.Cell(row, 2).Value = stunde;
+
+                    if (tagNummer.TryGetValue(wtag, out int tagNr) &&
+                        belegteSlots.TryGetValue((tagNr, stunde), out var unrn))
+                    {
+                        int col = 3;
+                        foreach (int unr in unrn)
+                            sheet.Cell(row, col++).Value = unr;
+                    }
+
+                    row++;
+                }
+            }
+            else
+            {
+                // Fallback, falls "Lös" (noch) kein Zeitraster enthält: wie
+                // bisher nur die tatsächlich belegten Slots schreiben.
+                foreach (var kv in belegteSlots.OrderBy(kv => kv.Key.Tag).ThenBy(kv => kv.Key.Stunde))
+                {
+                    sheet.Cell(row, 1).Value = TagKuerzel[kv.Key.Tag];
+                    sheet.Cell(row, 2).Value = kv.Key.Stunde;
+
+                    int col = 3;
+                    foreach (int unr in kv.Value)
+                        sheet.Cell(row, col++).Value = unr;
+
+                    row++;
+                }
+            }
+
+            wb.Save();
+            return row - 2;
         }
     }
 }
