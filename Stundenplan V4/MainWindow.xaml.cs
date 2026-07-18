@@ -211,118 +211,96 @@ namespace Stundenplan_V2
                 return;
             }
 
-            // ZZ-Lehrer-Trick: auf Wunsch wird pro UNr zusätzlich ein Dummy-
-            // Lehrer "ZZ<UNr>" exportiert, dessen Zeitwünsche (separate
-            // GPU016.TXT) überall außer am tatsächlichen Slot der UNr (aus
-            // einer hier gewählten Lösung) auf -3 gesetzt werden. Zweck: der
-            // Untis-Optimierer wird dadurch gezwungen, die UNr beim Neu-
-            // Verplanen an der vorgesehenen Stelle zu belassen, ohne sie
-            // manuell dorthin ziehen zu müssen. Wird ZUERST abgefragt, weil
-            // davon abhängt, ob überhaupt ein vollständiger UV-Export nötig
-            // ist (siehe nurZzZeilen unten).
-            var zzAntwort = MessageBox.Show(
-                "ZZ-Lehrer-Trick aktivieren?\n\n" +
-                "Fügt pro Unterrichtsnummer einen Dummy-Lehrer 'ZZ<UNr>' hinzu und erzeugt " +
-                "zusätzlich eine Zeitwunsch-Datei, die diesen Dummy-Lehrer überall außer am " +
-                "tatsächlichen Slot (aus einer von dir gewählten Lösung) sperrt (-3). " +
-                "Damit verplant der Untis-Optimierer die Unterrichte automatisch an die " +
-                "gewünschte Stelle, ohne manuelles Ziehen.",
-                "ZZ-Lehrer-Trick", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            // Filterlisten wie beim Fixieren/Ignorieren-Dialog aus UV lesen …
+            var (alleKlassen, alleLehrer, alleFächer, alleZeilentext2) = LeseFilterListenAusUV();
 
-            bool zzTrick = false;
+            // … plus die UNr-Attribute (für "Aus Filter uebernehmen" im Dialog).
+            var uvEintraege = LeseUvEintraegeFuerExport();
+
+            // Verfügbare Lösungen als Slot-Quelle für den ZZ-Trick.
+            var quelleLösungen = letzteSolutions.Count > 0 ? letzteSolutions : LadeLösungenAusExcel();
+            var labels = quelleLösungen.Select(s => s.label).ToList();
+
+            var dlg = new GpuExportDialog(
+                uvEintraege, alleKlassen, alleLehrer, alleFächer, alleZeilentext2, labels)
+            { Owner = this };
+            if (dlg.ShowDialog() != true) return;
+
+            bool zzTrick = dlg.ZzTrick;
+            GpuEncoding encoding = dlg.Encoding;
+
+            // UNr-Filter: null = alle exportieren.
+            HashSet<int> nurUNrn = dlg.AlleUNrn ? null : dlg.GewählteUNrn;
+
+            // Für den ZZ-Trick die gewählte Lösung auflösen und die belegten
+            // Slots je UNr bestimmen (wie bisher, nur auf die gewählten UNrn
+            // beschränkt).
             bool nurZzZeilen = false;
             (int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks) zzLösung = default;
-
-            if (zzAntwort == MessageBoxResult.Yes)
-            {
-                // Lösung wählen — wird für den ZZ-Trick in JEDEM Fall benötigt
-                // (voll oder nur ZZ-Zeilen), da sie bestimmt, welcher Slot je
-                // UNr NICHT gesperrt werden darf.
-                var quelleLösungen = letzteSolutions.Count > 0 ? letzteSolutions : LadeLösungenAusExcel();
-                if (quelleLösungen.Count == 0)
-                {
-                    MessageBox.Show("Keine Lösung verfügbar — ZZ-Lehrer-Trick wird deaktiviert, " +
-                        "normaler Export läuft weiter. Bitte zuerst Button 7 (Stundenplanerstellung) ausführen.");
-                }
-                else
-                {
-                    var labels = quelleLösungen.Select(s => s.label).ToList();
-                    string gewählt = ZeigeAuswahlDialog(
-                        "ZZ-Lehrer-Trick: Lösung wählen",
-                        "Welche Lösung bestimmt, wo jede UNr tatsächlich liegen soll?",
-                        labels);
-                    if (gewählt != null)
-                    {
-                        zzLösung = quelleLösungen.First(s => s.label == gewählt);
-                        zzTrick = true;
-
-                        // Umfang wählen: da die UV meist ohnehin schon aus der
-                        // Untis-Datei stammt, muss sie i.d.R. nicht erneut
-                        // importiert werden — dann genügt es, Untis nur die
-                        // ZZ-Dummy-Lehrer als zusätzliche Beteiligte der schon
-                        // bestehenden UNrn mitzuteilen (viel kleinere Datei).
-                        var umfang = MessageBox.Show(
-                            "Export-Umfang wählen:\n\n" +
-                            "[Ja] = Vollständig — kompletter UV-Export inkl. ZZ-Zeilen " +
-                            "(nur nötig, wenn die UV-Daten selbst noch nicht in Untis stehen)\n\n" +
-                            "[Nein] = Nur ZZ-Lehrer-Zeilen — kleine Datei, die nur die Dummy-Lehrer " +
-                            "als zusätzliche Beteiligte an den bestehenden UNrn einträgt " +
-                            "(Regelfall, da die UV meist schon aus Untis stammt)",
-                            "Export-Umfang", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                        nurZzZeilen = umfang == MessageBoxResult.No;
-                    }
-                }
-            }
-
-            // Belegte Slots je UNr aus der gewählten Lösung berechnen — VOR dem
-            // eigentlichen Export, damit unverplante UNrn (kein Slot belegt)
-            // schon beim Schreiben der GPU002.TXT ausgeschlossen werden können
-            // (für sie wird kein ZZ-Lehrer generiert).
             Dictionary<int, HashSet<(int tag, int stunde)>> unrZuBelegtenSlots = null;
             List<(int tag, int stunde)> alleSlots = null;
             HashSet<int> verplanteUNrn = null;
 
             if (zzTrick)
             {
-                unrZuBelegtenSlots = new Dictionary<int, HashSet<(int tag, int stunde)>>();
-                int B = zzLösung.blocks.Count;
-                int S = input.Slots.Count;
-                int TagNr(string wtag) => wtag switch
+                if (quelleLösungen.Count == 0 || string.IsNullOrEmpty(dlg.GewählteLösung))
                 {
-                    "Mo" => 1, "Di" => 2, "Mi" => 3, "Do" => 4, "Fr" => 5, _ => 0
-                };
-                alleSlots = input.Slots
-                    .Select(sl => (tag: TagNr(sl.WTag), stunde: sl.Stunde))
-                    .Where(ts => ts.tag > 0)
-                    .Distinct()
-                    .ToList();
-
-                for (int b = 0; b < B; b++)
-                {
-                    int unr = zzLösung.blocks[b].UNr;
-                    if (!unrZuBelegtenSlots.TryGetValue(unr, out var set))
-                    {
-                        set = new HashSet<(int, int)>();
-                        unrZuBelegtenSlots[unr] = set;
-                    }
-                    for (int s = 0; s < S; s++)
-                    {
-                        if (zzLösung.belegung[b, s] != 1) continue;
-                        int tag = TagNr(input.Slots[s].WTag);
-                        if (tag > 0) set.Add((tag, input.Slots[s].Stunde));
-                    }
+                    MessageBox.Show("Keine Lösung verfügbar — ZZ-Lehrer-Trick wird deaktiviert, " +
+                        "normaler Export läuft weiter. Bitte zuerst Button 10 (Stundenplanerstellung) ausführen.");
+                    zzTrick = false;
                 }
+                else
+                {
+                    zzLösung = quelleLösungen.First(s => s.label == dlg.GewählteLösung);
 
-                // Nur UNrn mit mindestens einem belegten Slot gelten als
-                // "verplant" — für alle anderen (unverplant/ignoriert) wird
-                // kein ZZ-Lehrer erzeugt (siehe ErzeugeGpu002).
-                verplanteUNrn = new HashSet<int>(
-                    unrZuBelegtenSlots.Where(kv => kv.Value.Count > 0).Select(kv => kv.Key));
+                    // Umfang wählen: vollständiger UV-Export inkl. ZZ-Zeilen oder
+                    // nur die ZZ-Lehrer-Zeilen (kleine Datei) — wie bisher.
+                    var umfang = MessageBox.Show(
+                        "Export-Umfang wählen:\n\n" +
+                        "[Ja] = Vollständig — kompletter UV-Export der gewählten Unterrichte inkl. ZZ-Zeilen\n\n" +
+                        "[Nein] = Nur ZZ-Lehrer-Zeilen — kleine Datei, die nur die Dummy-Lehrer " +
+                        "als zusätzliche Beteiligte an den bestehenden UNrn einträgt " +
+                        "(Regelfall, da die UV meist schon aus Untis stammt)",
+                        "Export-Umfang", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+                    if (umfang == MessageBoxResult.Cancel) return;
+                    nurZzZeilen = umfang == MessageBoxResult.No;
+
+                    // Belegte Slots je UNr aus der gewählten Lösung berechnen.
+                    unrZuBelegtenSlots = new Dictionary<int, HashSet<(int tag, int stunde)>>();
+                    int B = zzLösung.blocks.Count;
+                    int S = input.Slots.Count;
+                    int TagNr(string wtag) => wtag switch
+                    {
+                        "Mo" => 1, "Di" => 2, "Mi" => 3, "Do" => 4, "Fr" => 5, _ => 0
+                    };
+                    alleSlots = input.Slots
+                        .Select(sl => (tag: TagNr(sl.WTag), stunde: sl.Stunde))
+                        .Where(ts => ts.tag > 0)
+                        .Distinct()
+                        .ToList();
+
+                    for (int b = 0; b < B; b++)
+                    {
+                        int unr = zzLösung.blocks[b].UNr;
+                        if (!unrZuBelegtenSlots.TryGetValue(unr, out var set))
+                        {
+                            set = new HashSet<(int, int)>();
+                            unrZuBelegtenSlots[unr] = set;
+                        }
+                        for (int s = 0; s < S; s++)
+                        {
+                            if (zzLösung.belegung[b, s] != 1) continue;
+                            int tag = TagNr(input.Slots[s].WTag);
+                            if (tag > 0) set.Add((tag, input.Slots[s].Stunde));
+                        }
+                    }
+
+                    verplanteUNrn = new HashSet<int>(
+                        unrZuBelegtenSlots.Where(kv => kv.Value.Count > 0).Select(kv => kv.Key));
+                }
             }
 
-            // Referenz-GPU002.TXT nur beim vollständigen Export sinnvoll (füllt
-            // Felder ohne UV-Spalte auf) — bei "Nur ZZ-Zeilen" überflüssig,
-            // da dort ohnehin nur der Dummy-Lehrer pro UNr geschrieben wird.
+            // Referenz-GPU002.TXT nur beim vollständigen Export sinnvoll.
             string gpuReferenzPfad = "";
             if (!nurZzZeilen)
             {
@@ -348,11 +326,20 @@ namespace Stundenplan_V2
                 int anzahl = GpuImportExport.ErzeugeGpu002(
                     excelPfad, dlgSave.FileName, gpuReferenzPfad, zzTrick, nurZzZeilen,
                     verplanteUNrn,
-                    out var hinweise, out var exportierteUNrn);
+                    out var hinweise, out var exportierteUNrn,
+                    nurUNrn, encoding);
 
-                TxtStatus.Text = $"GPU002.TXT mit {anzahl} Zeile(n) exportiert.";
-                Log($"GPU002.TXT exportiert: {anzahl} Zeile(n) nach '{dlgSave.FileName}'" +
-                    (nurZzZeilen ? " (nur ZZ-Lehrer-Zeilen)." : "."));
+                string encText = encoding switch
+                {
+                    GpuEncoding.Utf8Bom => "UTF-8 mit BOM",
+                    GpuEncoding.Ansi => "ANSI (Windows-1252)",
+                    _ => "UTF-8"
+                };
+
+                TxtStatus.Text = $"GPU002.TXT mit {anzahl} Zeile(n) exportiert ({encText}).";
+                Log($"GPU002.TXT exportiert: {anzahl} Zeile(n) nach '{dlgSave.FileName}' [{encText}]" +
+                    (nurZzZeilen ? " (nur ZZ-Lehrer-Zeilen)." : ".") +
+                    (nurUNrn != null ? $" Auswahl: {nurUNrn.Count} UNr(n)." : " Alle UNrn."));
 
                 if (hinweise.Count > 0)
                 {
@@ -365,16 +352,12 @@ namespace Stundenplan_V2
                 int zzAnzahl = 0;
                 if (zzTrick)
                 {
-                    // ZZ-Zeitwunschdatei nur für die tatsächlich verplanten
-                    // UNrn erzeugen — für unverplante gibt es ja auch keinen
-                    // ZZ-Lehrer in der GPU002.TXT, ein Zeitwunsch-Eintrag dazu
-                    // wäre wirkungslos.
                     var zzZielUNrn = exportierteUNrn.Where(u => verplanteUNrn.Contains(u)).ToList();
 
                     zzDateiPfad = System.IO.Path.Combine(
                         System.IO.Path.GetDirectoryName(dlgSave.FileName), "GPU016_ZZ.TXT");
                     zzAnzahl = GpuImportExport.ErzeugeZzZeitwunschDatei(
-                        zzDateiPfad, zzZielUNrn, unrZuBelegtenSlots, alleSlots);
+                        zzDateiPfad, zzZielUNrn, unrZuBelegtenSlots, alleSlots, encoding);
 
                     Log($"ZZ-Zeitwunschdatei erzeugt: {zzAnzahl} Zeile(n) nach '{zzDateiPfad}' " +
                         $"(Lösung '{zzLösung.label}', {zzZielUNrn.Count} verplante UNr(n) " +
@@ -382,7 +365,7 @@ namespace Stundenplan_V2
                 }
 
                 MessageBox.Show(
-                    $"{(nurZzZeilen ? "ZZ-Lehrer-Zeilen" : "GPU002.TXT")} mit {anzahl} Zeile(n) erzeugt:\n{dlgSave.FileName}" +
+                    $"{(nurZzZeilen ? "ZZ-Lehrer-Zeilen" : "GPU002.TXT")} mit {anzahl} Zeile(n) erzeugt ({encText}):\n{dlgSave.FileName}" +
                     (zzTrick
                         ? $"\n\nZZ-Zeitwunschdatei mit {zzAnzahl} Zeile(n) erzeugt:\n{zzDateiPfad}\n\n" +
                           "Bitte beide Dateien zusammen in Untis importieren."
@@ -396,6 +379,58 @@ namespace Stundenplan_V2
             {
                 MessageBox.Show("Fehler beim Export: " + ex.Message);
             }
+        }
+
+        // Liest je UV-Zeile die zum Export-Filter nötigen Attribute (UNr,
+        // Klassen-Zellinhalt, Lehrer, Fach, ZeilenText-2). Grundlage für die
+        // "Aus Filter uebernehmen"-Funktion des GpuExportDialog.
+        private List<GpuExportDialog.UvEintrag> LeseUvEintraegeFuerExport()
+        {
+            var liste = new List<GpuExportDialog.UvEintrag>();
+            try
+            {
+                using var wb = new ClosedXML.Excel.XLWorkbook(excelPfad);
+                var sheet = wb.Worksheet("UV");
+
+                int colUNr = -1, colLehrer = -1, colFach = -1, colKlassen = -1, colZt2 = -1;
+                foreach (var cc in sheet.Row(1).CellsUsed())
+                {
+                    string hdr = cc.GetString().Trim();
+                    if (string.Equals(hdr, "U-Nr", System.StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(hdr, "UNr", System.StringComparison.OrdinalIgnoreCase))
+                        colUNr = cc.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Lehrer", System.StringComparison.OrdinalIgnoreCase))
+                        colLehrer = cc.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Fach", System.StringComparison.OrdinalIgnoreCase))
+                        colFach = cc.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Klasse(n)", System.StringComparison.OrdinalIgnoreCase))
+                        colKlassen = cc.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "ZeilenText-2", System.StringComparison.OrdinalIgnoreCase))
+                        colZt2 = cc.Address.ColumnNumber;
+                }
+
+                if (colUNr < 0) return liste;
+
+                foreach (var row in sheet.RangeUsed().RowsUsed().Skip(1))
+                {
+                    string uStr = row.Cell(colUNr).GetString().Trim();
+                    if (!int.TryParse(uStr, out int unr)) continue;
+
+                    liste.Add(new GpuExportDialog.UvEintrag
+                    {
+                        UNr = unr,
+                        Klassen = colKlassen > 0 ? NormalisiereKlassenStr(row.Cell(colKlassen).GetString()) : "",
+                        Lehrer = colLehrer > 0 ? row.Cell(colLehrer).GetString().Trim() : "",
+                        Fach = colFach > 0 ? row.Cell(colFach).GetString().Trim() : "",
+                        ZeilenText2 = colZt2 > 0 ? row.Cell(colZt2).GetString().Trim() : ""
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Konnte UV-Einträge für den Export nicht lesen: {ex.Message}");
+            }
+            return liste;
         }
 
         // =====================================================
@@ -432,6 +467,18 @@ namespace Stundenplan_V2
 
             if (modus == MessageBoxResult.Cancel) return;
             bool ueberschreiben = modus == MessageBoxResult.Yes;
+
+            // Zeichensatz der Quelldatei wählen. Standard "Automatisch" erkennt
+            // UTF-8 (mit/ohne BOM) bzw. ANSI selbst — bei exotischen Dateien kann
+            // man den Satz aber auch erzwingen.
+            string encWahl = ZeigeAuswahlDialog(
+                "Zeichensatz der GPU002-Datei",
+                "Wie ist die zu importierende Datei kodiert?",
+                new List<string> { "Automatisch erkennen", "UTF-8", "ANSI (Windows-1252)" });
+            if (encWahl == null) return;
+            GpuEncoding importEncoding = encWahl.StartsWith("UTF-8") ? GpuEncoding.Utf8
+                : encWahl.StartsWith("ANSI") ? GpuEncoding.Ansi
+                : GpuEncoding.Auto;
 
             List<string> fehlendeHeader;
             try
@@ -488,7 +535,7 @@ namespace Stundenplan_V2
 
             try
             {
-                int anzahl = GpuImportExport.ImportiereInUv(excelPfad, dlgOpen.FileName, ueberschreiben);
+                int anzahl = GpuImportExport.ImportiereInUv(excelPfad, dlgOpen.FileName, ueberschreiben, importEncoding);
                 string modusText = ueberschreiben ? "importiert (UV überschrieben)" : "in UV importiert (angehängt)";
                 TxtStatus.Text = $"{anzahl} UV-Zeile(n) aus GPU002.TXT {modusText}.";
                 Log(ueberschreiben

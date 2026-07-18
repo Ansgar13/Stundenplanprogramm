@@ -161,6 +161,95 @@ namespace Stundenplan_V2
 
         private void SetzeStatus(string text) => TxtStatus.Text = text;
 
+        // =====================================================
+        // MEHRFACH-EINTRAGEN: WERT NACH UNTEN FÜLLEN
+        // Markiert man mehrere Zellen EINER Spalte (Ziehen oder Strg/Shift), wird
+        // mit Strg+D bzw. dem Kontextmenü der Wert der obersten markierten Zelle
+        // in alle übrigen markierten Zellen derselben Spalte geschrieben. Bewusst
+        // spaltenweise: ein spaltenübergreifendes Füllen würde Werte wie "x" oder
+        // "6" in inhaltlich fremde Spalten tragen. Sind Zellen mehrerer Spalten
+        // markiert, wird jede Spalte für sich gefüllt.
+        // =====================================================
+        private void DgStammdaten_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key == System.Windows.Input.Key.D &&
+                (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Control) != 0)
+            {
+                FuelleNachUnten();
+                e.Handled = true; // Standard-Strg+D des DataGrids unterdrücken
+            }
+        }
+
+        private void MnuFuellen_Click(object sender, RoutedEventArgs e) => FuelleNachUnten();
+
+        private void FuelleNachUnten()
+        {
+            // Offene Zellbearbeitung zuerst festschreiben, sonst füllt man mit
+            // einem veralteten Wert oder verliert die gerade getippte Quelle.
+            CommitGrid();
+
+            var zellen = DgStammdaten.SelectedCells
+                .Where(c => c.IsValid && c.Column is DataGridColumn)
+                .ToList();
+            if (zellen.Count < 2)
+            {
+                SetzeStatus("Zum Füllen mindestens zwei Zellen einer Spalte markieren " +
+                            "(Ziehen oder Strg/Shift), dann Strg+D.");
+                return;
+            }
+
+            // Position einer Zeile in der aktuell sichtbaren (ggf. sortierten)
+            // Reihenfolge — bestimmt, welche markierte Zelle "oben" ist und in
+            // welcher Richtung gefüllt wird.
+            var view = DgStammdaten.Items;
+            int SichtIndex(object item) => view.IndexOf(item);
+
+            int gefuellt = 0;
+            int spaltenAnzahl = 0;
+
+            // Nach Spalte gruppieren: jede markierte Spalte wird eigenständig
+            // gefüllt (Quelle = oberste markierte Zelle dieser Spalte).
+            foreach (var spaltenGruppe in zellen.GroupBy(c => c.Column))
+            {
+                var inSpalte = spaltenGruppe
+                    .Where(c => c.Item is DataRowView)
+                    .OrderBy(c => SichtIndex(c.Item))
+                    .ToList();
+                if (inSpalte.Count < 2) continue;
+
+                if (spaltenGruppe.Key is not DataGridBoundColumn bound ||
+                    bound.Binding is not System.Windows.Data.Binding binding)
+                    continue;
+
+                // Bindungspfad ist "C<idx>" (siehe BaueDataTable). Daraus die
+                // DataColumn ableiten.
+                string pfad = binding.Path?.Path;
+                if (string.IsNullOrEmpty(pfad) || !_dt.Columns.Contains(pfad)) continue;
+
+                var quellRow = (DataRowView)inSpalte[0].Item;
+                string quellWert = quellRow.Row[pfad]?.ToString() ?? "";
+
+                foreach (var zelle in inSpalte.Skip(1))
+                {
+                    var row = ((DataRowView)zelle.Item).Row;
+                    if ((row[pfad]?.ToString() ?? "") != quellWert)
+                    {
+                        row[pfad] = quellWert;
+                        gefuellt++;
+                    }
+                }
+                spaltenAnzahl++;
+            }
+
+            // Anzeige auffrischen, damit die neuen Werte sofort sichtbar sind.
+            DgStammdaten.Items.Refresh();
+
+            SetzeStatus(gefuellt > 0
+                ? $"{gefuellt} Zelle(n) in {spaltenAnzahl} Spalte(n) mit dem Wert der jeweils obersten " +
+                  "markierten Zelle gefüllt."
+                : "Nichts zu füllen — bitte mehrere Zellen einer Spalte markieren.");
+        }
+
         private void CommitGrid()
         {
             // Eine offene Zellbearbeitung ist sonst noch nicht im DataRow — beim

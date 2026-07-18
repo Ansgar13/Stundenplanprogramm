@@ -17,15 +17,26 @@
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap"
-                   Text="Alle Zeilen des Sheets 'StD'. Werte direkt in der Tabelle bearbeiten. Die fünf gelb hinterlegten Spalten 'HohlWoche hart' … 'DreifachHohl hart' machen die jeweilige Regel für diesen Lehrer verbindlich (x, ja oder 1) — sie stammen nicht aus Untis und überleben einen Import. 'Speichern und schließen' schreibt in die Excel-Datei und liest die Daten neu ein. Ein Import schreibt sofort und lässt das Fenster offen."/>
+                   Text="Alle Zeilen des Sheets 'StD'. Werte direkt in der Tabelle bearbeiten. Die fünf gelb hinterlegten Spalten 'HohlWoche hart' … 'DreifachHohl hart' machen die jeweilige Regel für diesen Lehrer verbindlich (x, ja oder 1) — sie stammen nicht aus Untis und überleben einen Import. Mehrere Zellen einer Spalte markieren (Ziehen oder Strg/Shift) und mit Strg+D bzw. Rechtsklick den Wert der obersten markierten Zelle nach unten füllen. 'Speichern und schließen' schreibt in die Excel-Datei und liest die Daten neu ein. Ein Import schreibt sofort und lässt das Fenster offen."/>
 
         <!-- AutoGenerateColumns: die Spalten stehen erst zur Laufzeit fest, sie
-             kommen aus der Kopfzeile des Sheets. Deshalb DataTable-Binding. -->
+             kommen aus der Kopfzeile des Sheets. Deshalb DataTable-Binding.
+             SelectionUnit=Cell + Extended: erlaubt das Markieren mehrerer Zellen
+             zum gemeinsamen Füllen (Strg+D / Kontextmenü). -->
         <DataGrid x:Name="DgStammdaten" Grid.Row="1"
                   AutoGenerateColumns="True" CanUserAddRows="False" CanUserDeleteRows="False"
                   CanUserSortColumns="True" GridLinesVisibility="All"
                   HeadersVisibility="All" Margin="0,0,0,8"
-                  AutoGeneratingColumn="DgStammdaten_AutoGeneratingColumn"/>
+                  SelectionUnit="Cell" SelectionMode="Extended"
+                  PreviewKeyDown="DgStammdaten_PreviewKeyDown"
+                  AutoGeneratingColumn="DgStammdaten_AutoGeneratingColumn">
+            <DataGrid.ContextMenu>
+                <ContextMenu>
+                    <MenuItem x:Name="MnuFuellen" Header="Nach unten füllen (Strg+D)"
+                              Click="MnuFuellen_Click"/>
+                </ContextMenu>
+            </DataGrid.ContextMenu>
+        </DataGrid>
 
         <TextBlock x:Name="TxtStatus" Grid.Row="2" Margin="0,0,0,8"
                    TextWrapping="Wrap" Foreground="DimGray"/>
