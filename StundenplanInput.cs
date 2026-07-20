@@ -24,6 +24,12 @@ public class StundenplanInput
     // aufsteigend sortiert) — für kompakte Anzeige direkt in der Warn-MessageBox,
     // ohne den vollen Beschreibungstext parsen zu müssen.
     public List<int> UvFachKlasseWarnungUNrn { get; set; } = new();
+
+    // Hinweise auf Werte im Sheet "PM", die sich nicht sauber als Zahl lesen
+    // ließen (z.B. "200 s" statt 200) oder gerundet werden mussten. Wichtig,
+    // weil in diesen Fällen still der Standardwert gilt und der Solver dann
+    // mit anderen Vorgaben läuft als in der Tabelle stehen.
+    public List<string> PmWarnungen { get; set; } = new();
     public HashSet<string> NichtFreieTage { get; set; } = new HashSet<string>();
 
     // Qualitätsfunktion-Gewichte
@@ -47,6 +53,9 @@ public class StundenplanInput
     public HashSet<string> LehrerFreiTageMinus3 { get; set; } = new();
     // Diagnosezeilen zum Einlesen der FT-Tabelle (welche Einträge registriert/verworfen wurden)
     public List<string> FtDiagnose { get; set; } = new();
+    // Diagnosezeilen zum Einlesen der StD-Tabelle: welche "hart"-Flags gesetzt
+    // wurden und welche wegen eines fehlenden Werts ignoriert werden mussten.
+    public List<string> StdDiagnose { get; set; } = new();
     // Hauptfach-Strafe: Hauptfächer (D,E,M,F) nicht zu oft nach Stunde 4
     public int HauptfachSpätAnteilProzent { get; set; } = 50; // max x% der Stunden nach Stunde 4
     public int StrafeHauptfachSpät { get; set; } = 0;         // Strafe pro Stunde über dem Limit

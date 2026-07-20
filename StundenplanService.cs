@@ -17,9 +17,10 @@ namespace Stundenplan_V2
             Action<string> log,
             out string debug,
             Action<SolverFortschritt> fortschritt = null,
-            System.Threading.CancellationToken abbruch = default)
+            System.Threading.CancellationToken abbruch = default,
+            Func<bool> darfDiagnose = null)
         {
-            return solver.Solve(input, log, out debug, fortschritt, abbruch);
+            return solver.Solve(input, log, out debug, fortschritt, abbruch, darfDiagnose);
         }
     }
 }

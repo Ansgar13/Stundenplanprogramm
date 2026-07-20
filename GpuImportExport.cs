@@ -29,8 +29,31 @@ namespace Stundenplan_V2
     /// unverändert); optional (Parameter "ueberschreiben") können stattdessen
     /// zuerst alle bestehenden UV-Datenzeilen gelöscht werden.
     /// </summary>
+    /// <summary>
+    /// Zeichensatz-Wahl für Import und Export der Untis-Textdateien.
+    /// Auto (nur Import): erkennt UTF-8 (mit/ohne BOM) bzw. Windows-1252
+    /// automatisch. Utf8 / Utf8Bom / Ansi erzwingen den jeweiligen Satz.
+    /// </summary>
+    public enum GpuEncoding
+    {
+        Auto,      // nur Import: automatische Erkennung (bisheriges Verhalten)
+        Utf8,      // UTF-8 ohne BOM (bisheriges Export-Verhalten)
+        Utf8Bom,   // UTF-8 mit BOM
+        Ansi       // Windows-1252 / ISO-8859-1
+    }
+
     public static class GpuImportExport
     {
+        // Liefert das .NET-Encoding zum Schreiben passend zur Auswahl. Auto wird
+        // beim Schreiben wie Utf8 behandelt (ohne BOM), da es dort keine
+        // Erkennung geben kann.
+        internal static Encoding SchreibEncoding(GpuEncoding wahl) => wahl switch
+        {
+            GpuEncoding.Utf8Bom => new UTF8Encoding(true),
+            GpuEncoding.Ansi    => Encoding.Latin1,   // byteident. zu Windows-1252 im Umlautbereich
+            _                   => new UTF8Encoding(false),
+        };
+
         // Eine geparste GPU002-Zeile. RohFelder enthält die Werte GENAU wie in
         // der Datei (inkl. Anführungszeichen bei Textfeldern) — so kann der
         // Export sie beim Auffüllen fehlender UV-Felder 1:1 zurückschreiben,
@@ -42,10 +65,10 @@ namespace Stundenplan_V2
         }
 
         // ---------- Gemeinsames: GPU002.TXT einlesen ----------
-        public static List<GpuZeile> LiesGpu002(string gpuPfad)
+        public static List<GpuZeile> LiesGpu002(string gpuPfad, GpuEncoding encoding = GpuEncoding.Auto)
         {
             var ergebnis = new List<GpuZeile>();
-            foreach (var zeile in LiesTextdateiAutoEncoding(gpuPfad))
+            foreach (var zeile in LiesTextdatei(gpuPfad, encoding))
             {
                 if (string.IsNullOrWhiteSpace(zeile)) continue;
                 var teile = zeile.Split(';');
@@ -67,6 +90,28 @@ namespace Stundenplan_V2
         //      gelingt das, war es tatsächlich (BOM-loses) UTF-8.
         //   3. Schlägt Schritt 2 fehl (ungültige UTF-8-Bytefolge, z. B. durch
         //      einzelne Umlaut-Bytes in Windows-1252), als Windows-1252 lesen.
+        // Einheitlicher Einstieg: bei Auto die bisherige Erkennung, sonst das
+        // vom Nutzer erzwungene Encoding. Ein erzwungenes UTF-8 überspringt ein
+        // evtl. vorhandenes BOM; ANSI liest als Windows-1252/Latin1.
+        internal static string[] LiesTextdatei(string pfad, GpuEncoding encoding)
+        {
+            if (encoding == GpuEncoding.Auto)
+                return LiesTextdateiAutoEncoding(pfad);
+
+            byte[] bytes = File.ReadAllBytes(pfad);
+
+            if (encoding == GpuEncoding.Ansi)
+                return Encoding.Latin1.GetString(bytes)
+                    .Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+
+            // Utf8 / Utf8Bom: in beiden Fällen als UTF-8 dekodieren; ein
+            // vorhandenes BOM wird übersprungen, damit es nicht als Zeichen im
+            // ersten Feld landet.
+            int start = (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) ? 3 : 0;
+            return Encoding.UTF8.GetString(bytes, start, bytes.Length - start)
+                .Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+        }
+
         internal static string[] LiesTextdateiAutoEncoding(string pfad)
         {
             byte[] bytes = File.ReadAllBytes(pfad);
@@ -197,9 +242,10 @@ namespace Stundenplan_V2
         // ueberschreiben=true: alle bestehenden Datenzeilen (ab Zeile 2) werden
         // vorher gelöscht — die Kopfzeile (Zeile 1) bleibt erhalten, UV wird
         // danach ausschließlich aus der GPU002.TXT neu befüllt.
-        public static int ImportiereInUv(string excelPfad, string gpuPfad, bool ueberschreiben = false)
+        public static int ImportiereInUv(string excelPfad, string gpuPfad, bool ueberschreiben = false,
+                                         GpuEncoding encoding = GpuEncoding.Auto)
         {
-            var gpuZeilen = LiesGpu002(gpuPfad);
+            var gpuZeilen = LiesGpu002(gpuPfad, encoding);
             if (gpuZeilen.Count == 0) return 0;
 
             using var wb = new XLWorkbook(excelPfad);
@@ -344,12 +390,19 @@ namespace Stundenplan_V2
         // würde nur unnötig eine leere/nutzlose Zeile erzeugen. null bedeutet
         // "keine Einschränkung" (nur relevant, wenn zzLehrerTrick ohnehin
         // false ist).
+        // nurUNrn: Wenn ungleich null, werden AUSSCHLIESSLICH UV-Zeilen dieser
+        // UNrn exportiert (Auswahl aus dem Export-Dialog, Button 7). null = alle
+        // UNrn. Der ZZ-Trick (falls aktiv) betrifft dann nur diese UNrn, da für
+        // alle anderen gar keine Zeile mehr geschrieben wird.
+        // encoding: Zeichensatz der Zieldatei (UTF-8 ohne/mit BOM oder ANSI).
         public static int ErzeugeGpu002(
             string excelPfad, string zielPfad, string gpuReferenzPfad,
             bool zzLehrerTrick, bool nurZzZeilen,
             ISet<int> verplanteUNrn,
             out List<string> hinweise,
-            out List<int> exportierteUNrn)
+            out List<int> exportierteUNrn,
+            ISet<int> nurUNrn = null,
+            GpuEncoding encoding = GpuEncoding.Utf8)
         {
             zzLehrerTrick = zzLehrerTrick || nurZzZeilen;
 
@@ -357,6 +410,7 @@ namespace Stundenplan_V2
             var gesehenUNrn = new HashSet<int>();
             var zzErzeugtFuerUNrn = new HashSet<int>();
             int uebersprungenUnverplant = 0;
+            int uebersprungenNichtGewaehlt = 0;
 
             var referenz = new Dictionary<int, GpuZeile>();
             if (!string.IsNullOrWhiteSpace(gpuReferenzPfad) && File.Exists(gpuReferenzPfad))
@@ -382,6 +436,15 @@ namespace Stundenplan_V2
             foreach (var row in sheet.RangeUsed()?.RowsUsed().Skip(1) ?? Enumerable.Empty<IXLRangeRow>())
             {
                 if (!int.TryParse(Get(row, "U-Nr"), out int unr)) continue;
+
+                // UNr-Auswahl aus dem Export-Dialog: nicht gewählte UNrn ganz
+                // überspringen (weder normale Zeile noch ZZ-Zeile).
+                if (nurUNrn != null && !nurUNrn.Contains(unr))
+                {
+                    uebersprungenNichtGewaehlt++;
+                    continue;
+                }
+
                 gesehenUNrn.Add(unr);
                 referenz.TryGetValue(unr, out var refZeile);
 
@@ -529,7 +592,11 @@ namespace Stundenplan_V2
                     hinweise.Add($"{uebersprungenUnverplant} UV-Zeile(n) zu unverplanten UNrn übersprungen — dafür wird kein ZZ-Lehrer erzeugt.");
             }
 
-            File.WriteAllLines(zielPfad, zeilen, new UTF8Encoding(false));
+            if (nurUNrn != null)
+                hinweise.Add($"UNr-Auswahl aktiv: {gesehenUNrn.Count} gewählte UNr(n) exportiert, " +
+                             $"{uebersprungenNichtGewaehlt} UV-Zeile(n) anderer UNrn übersprungen.");
+
+            File.WriteAllLines(zielPfad, zeilen, SchreibEncoding(encoding));
             exportierteUNrn = gesehenUNrn.OrderBy(u => u).ToList();
             return zeilen.Count;
         }
@@ -582,7 +649,8 @@ namespace Stundenplan_V2
             string zielPfad,
             IEnumerable<int> unrn,
             Dictionary<int, HashSet<(int tag, int stunde)>> unrZuBelegtenSlots,
-            List<(int tag, int stunde)> alleSlots)
+            List<(int tag, int stunde)> alleSlots,
+            GpuEncoding encoding = GpuEncoding.Utf8)
         {
             var zeilen = new List<string>();
 
@@ -599,7 +667,7 @@ namespace Stundenplan_V2
                 }
             }
 
-            File.WriteAllLines(zielPfad, zeilen, new UTF8Encoding(false));
+            File.WriteAllLines(zielPfad, zeilen, SchreibEncoding(encoding));
             return zeilen.Count;
         }
 

@@ -18,8 +18,19 @@ namespace Stundenplan_V2
     /// der vier Aktionen (Ignorieren / Nicht ignorieren / Fixieren /
     /// Entfixieren) ausgeführt wird. Das eigentliche Schreiben in die Excel-
     /// Datei (inkl. optionaler Fix-UNrn-Übernahme) übernimmt weiterhin
-    /// MainWindow — dieser Dialog liefert nur die Auswahl zurück, analog zu
-    /// den bisherigen IgnoreDialog/FixierenDialog.
+    /// MainWindow.
+    ///
+    /// Der Dialog bleibt nach einer Aktion OFFEN, damit sich mehrere Aktionen
+    /// nacheinander ausführen lassen (z.B. erst eine Gruppe ignorieren, dann
+    /// eine andere fixieren), ohne ihn jedes Mal neu öffnen und die Filter neu
+    /// setzen zu müssen. Deshalb wird MainWindow nicht mehr über
+    /// DialogResult = true benachrichtigt, sondern über den im Konstruktor
+    /// übergebenen Callback: die Result-Properties sind gesetzt, wenn er läuft.
+    /// Danach liest der Dialog die UV-Zeilen frisch ein, sodass die Status-
+    /// spalte und die Zeilenfarben den gerade geschriebenen Stand zeigen.
+    /// "Schließen" (DialogResult = false) ist der einzige Ausgang — verworfen
+    /// werden kann dabei nichts, jede Aktion ist beim Klick bereits in der
+    /// Excel-Datei gelandet.
     /// </summary>
     public partial class UnterrichteDialog : Window
     {
@@ -32,6 +43,11 @@ namespace Stundenplan_V2
             public string Klasse { get; set; } = "";
             public string Fach { get; set; } = "";
             public string Lehrer { get; set; } = "";
+            // Wochenstunden aus Spalte "Wst" der UV-Tabelle. Rein informativ:
+            // beim Ignorieren/Fixieren sieht man so, wie schwer der Unterricht
+            // wiegt, den man gerade herausnimmt oder festnagelt.
+            // 0 = Spalte "Wst" in UV nicht gefunden.
+            public int Wst { get; set; }
             public string Zt2 { get; set; } = "";
             public string Status { get; set; } = "";
 
@@ -41,7 +57,7 @@ namespace Stundenplan_V2
             public bool IstEingefärbt { get; set; }
 
             // Hintergrundfarbe der Tabellenzeile, passend zum Status:
-            // ignoriert = amber, fixiert = blau, beides = violett, sonst transparent.
+            // ignoriert = amber, fixiert = blau, beides = amber (wie ignoriert), sonst transparent.
             public Brush ZeilenFarbe { get; set; } = Brushes.Transparent;
 
             private bool _ausgewählt;
@@ -63,8 +79,14 @@ namespace Stundenplan_V2
         private List<ZeilenEintrag> _alleZeilen = new();
         private readonly ObservableCollection<ZeilenEintrag> _anzeige = new();
 
+        // Wird nach jeder gültigen Aktion aufgerufen; MainWindow führt darin
+        // das Excel-Schreiben aus. Läuft synchron, d.h. wenn der Aufruf zurück-
+        // kehrt, steht der neue Stand in der Datei und kann nachgelesen werden.
+        private readonly Action _nachAktion;
+
         // Ergebnis für den Aufrufer (MainWindow), gesetzt beim Klick auf eine
-        // der vier Aktions-Buttons.
+        // der vier Aktions-Buttons — gültig für die Dauer des _nachAktion-
+        // Aufrufs (und bis zur nächsten Aktion).
         public List<int> AusgewählteZeilen { get; private set; } = new();
         public AktionArt Aktion { get; private set; }
         public bool InFixUNrnEintragen { get; private set; }
@@ -76,10 +98,12 @@ namespace Stundenplan_V2
             List<string> alleLehrer,
             List<string> alleFächer,
             List<string> alleZeilentext2,
-            List<string> verfügbareLösungen)
+            List<string> verfügbareLösungen,
+            Action nachAktion)
         {
             InitializeComponent();
             _excelPfad = excelPfad;
+            _nachAktion = nachAktion;
 
             foreach (var k in alleKlassen.OrderBy(x => x))      LstKlassen.Items.Add(k);
             foreach (var l in alleLehrer.OrderBy(x => x))       LstLehrer.Items.Add(l);
@@ -120,7 +144,7 @@ namespace Stundenplan_V2
                 var sheet = wb.Worksheet("UV");
                 var headerRow = sheet.Row(1);
 
-                int colLehrer = -1, colFach = -1, colKlassen = -1, colIgnore = -1, colFix = -1, colUNr = -1, colZt2 = -1;
+                int colLehrer = -1, colFach = -1, colKlassen = -1, colIgnore = -1, colFix = -1, colUNr = -1, colZt2 = -1, colWst = -1;
                 foreach (var c in headerRow.CellsUsed())
                 {
                     string hdr = c.GetString().Trim();
@@ -141,6 +165,10 @@ namespace Stundenplan_V2
                         colUNr = c.Address.ColumnNumber;
                     else if (string.Equals(hdr, "ZeilenText-2", StringComparison.OrdinalIgnoreCase))
                         colZt2 = c.Address.ColumnNumber;
+                    // Optional: fehlt die Spalte, bleibt Wst leer statt dass der
+                    // Dialog wegen einer reinen Anzeigespalte abbricht.
+                    else if (string.Equals(hdr, "Wst", StringComparison.OrdinalIgnoreCase))
+                        colWst = c.Address.ColumnNumber;
                 }
 
                 if (colLehrer < 0 || colFach < 0 || colKlassen < 0 || colIgnore < 0 || colFix < 0 || colUNr < 0)
@@ -158,6 +186,21 @@ namespace Stundenplan_V2
                     try { unr = row.Cell(colUNr).GetValue<int>(); }
                     catch { int.TryParse(row.Cell(colUNr).GetString().Trim(), out unr); }
 
+                    int wst = 0;
+                    if (colWst > 0)
+                    {
+                        try { wst = row.Cell(colWst).GetValue<int>(); }
+                        catch { int.TryParse(row.Cell(colWst).GetString().Trim(), out wst); }
+                    }
+
+                    // Wst = 0 -> gar nicht erst anzeigen. Der ExcelLoader wirft
+                    // solche Unterrichte ohnehin komplett heraus ("kein Block
+                    // wird erzeugt"), sie sind hier also nicht steuerbar: ein
+                    // Kreuz bei Fix oder Ignore haette keinerlei Wirkung.
+                    // Fehlt die Spalte "Wst" ganz (colWst < 0), bleibt wst 0 —
+                    // dann wird NICHT gefiltert, sonst waere die Liste leer.
+                    if (colWst > 0 && wst == 0) continue;
+
                     string ignoreW = row.Cell(colIgnore).GetString().Trim().ToLower();
                     string fixW = row.Cell(colFix).GetString().Trim().ToLower();
                     bool ignoriert = ignoreW == "i" || ignoreW == "x";
@@ -173,7 +216,7 @@ namespace Stundenplan_V2
 
                     Brush zeilenFarbe = (ignoriert, fixiert) switch
                     {
-                        (true, true) => new SolidColorBrush(Color.FromRgb(0xE5, 0xD4, 0xF5)),  // violett
+                        (true, true) => new SolidColorBrush(Color.FromRgb(0xFA, 0xE8, 0xB0)),  // wie ignoriert (amber): ignoriert hat Vorrang
                         (true, false) => new SolidColorBrush(Color.FromRgb(0xFA, 0xE8, 0xB0)),  // amber
                         (false, true) => new SolidColorBrush(Color.FromRgb(0xCF, 0xE2, 0xFF)),  // blau
                         _ => Brushes.Transparent
@@ -186,6 +229,7 @@ namespace Stundenplan_V2
                         Klasse = NormalisiereKlassen(row.Cell(colKlassen).GetString()),
                         Fach = row.Cell(colFach).GetString().Trim(),
                         Lehrer = row.Cell(colLehrer).GetString().Trim(),
+                        Wst = wst,
                         Zt2 = colZt2 > 0 ? row.Cell(colZt2).GetString().Trim() : "",
                         Status = status,
                         IstEingefärbt = ignoriert || fixiert,
@@ -344,26 +388,54 @@ namespace Stundenplan_V2
             return true;
         }
 
+        // Lässt MainWindow die Aktion ausführen (Excel-Schreiben) und bringt
+        // den Dialog anschließend auf den neuen Stand, statt sich zu schließen.
+        //
+        // LadeZeilen() baut _alleZeilen komplett neu auf — die bisherigen
+        // ZeilenEintrag-Objekte samt ihrem Ausgewählt-Flag sind danach weg.
+        // Die Haken werden deshalb über die ExcelZeile (stabiler Schlüssel,
+        // eine Aktion fügt keine Zeilen ein oder löscht welche) hinüber-
+        // gerettet: Wer gerade eine Gruppe ignoriert hat, will sie oft direkt
+        // danach auch fixieren. Zum Aufräumen gibt es "Auswahl leeren".
+        private void NachAktion()
+        {
+            var gemerkt = new HashSet<int>(
+                _alleZeilen.Where(z => z.Ausgewählt).Select(z => z.ExcelZeile));
+
+            _nachAktion?.Invoke();
+
+            LadeZeilen();
+
+            foreach (var z in _alleZeilen)
+                if (gemerkt.Contains(z.ExcelZeile))
+                    z.Ausgewählt = true;
+            AktualisiereZähler();
+        }
+
         private void BtnIgnorieren_Click(object sender, RoutedEventArgs e)
         {
-            if (ÜbernehmeAuswahl(AktionArt.Ignorieren)) DialogResult = true;
+            if (ÜbernehmeAuswahl(AktionArt.Ignorieren)) NachAktion();
         }
 
         private void BtnNichtIgnorieren_Click(object sender, RoutedEventArgs e)
         {
-            if (ÜbernehmeAuswahl(AktionArt.NichtIgnorieren)) DialogResult = true;
+            if (ÜbernehmeAuswahl(AktionArt.NichtIgnorieren)) NachAktion();
         }
 
         private void BtnFixieren_Click(object sender, RoutedEventArgs e)
         {
-            if (ÜbernehmeAuswahl(AktionArt.Fixieren)) DialogResult = true;
+            if (ÜbernehmeAuswahl(AktionArt.Fixieren)) NachAktion();
         }
 
         private void BtnEntfixieren_Click(object sender, RoutedEventArgs e)
         {
-            if (ÜbernehmeAuswahl(AktionArt.Entfixieren)) DialogResult = true;
+            if (ÜbernehmeAuswahl(AktionArt.Entfixieren)) NachAktion();
         }
 
+        // Einziger Ausgang aus dem Dialog. DialogResult = false ist hier kein
+        // "abgebrochen" mehr, sondern schlicht "nichts mehr zu tun" — jede
+        // Aktion wurde bereits beim Klick geschrieben. MainWindow wertet den
+        // Rückgabewert deshalb nicht mehr aus.
         private void BtnAbbrechen_Click(object sender, RoutedEventArgs e)
         {
             DialogResult = false;

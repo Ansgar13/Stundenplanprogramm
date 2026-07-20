@@ -104,21 +104,25 @@ namespace Stundenplan_V2
 
             log($"Erlaubte Blöcke: {erlaubteBlöcke.Count} von {B}");
 
+            // Harte StD-Regeln: nur die, die der Ausgangsplan bereits erfüllt.
+            // Muss VOR den Strategien laufen und die Ausgangsbelegung sehen.
+            var aktiveStdRegeln = ErmittleAktiveStdRegeln(belegung, blocks, slots, input, B, S, log);
+
             switch (optionen.Algorithmus)
             {
                 case VerbesserungsAlgorithmus.HillClimbing:
                     HillClimbing(belegung, ergebnis, blocks, slots, input, optionen,
-                        erlaubteBlöcke, fixSlots, B, S, log);
+                        erlaubteBlöcke, fixSlots, aktiveStdRegeln, B, S, log);
                     break;
 
                 case VerbesserungsAlgorithmus.SimulatedAnnealing:
                     SimulatedAnnealing(belegung, ergebnis, blocks, slots, input, optionen,
-                        erlaubteBlöcke, fixSlots, B, S, log);
+                        erlaubteBlöcke, fixSlots, aktiveStdRegeln, B, S, log);
                     break;
 
                 case VerbesserungsAlgorithmus.LargeNeighborhoodSearch:
                     LargeNeighborhoodSearch(belegung, ergebnis, blocks, slots, input, optionen,
-                        erlaubteBlöcke, fixSlots, B, S, log);
+                        erlaubteBlöcke, fixSlots, aktiveStdRegeln, B, S, log);
                     break;
             }
 
@@ -142,6 +146,7 @@ namespace Stundenplan_V2
             VerbesserungsOptionen optionen,
             List<int> erlaubteBlöcke,
             HashSet<(int, int)> fixSlots,
+            Dictionary<string, LehrerStammdaten> aktiveStdRegeln,
             int B, int S,
             Action<string> log)
         {
@@ -165,7 +170,7 @@ namespace Stundenplan_V2
                     FühreTauschDurch(belegung, b1, s1, b2, s2);
 
                     // Prüfen ob gültig und besser
-                    if (IstGültig(belegung, blocks, slots, input, fixSlots, B, S))
+                    if (IstGültig(belegung, blocks, slots, input, fixSlots, aktiveStdRegeln, B, S))
                     {
                         int newQuality = BerechneZiel(belegung, blocks, slots, input, optionen.Ziel);
 
@@ -200,6 +205,7 @@ namespace Stundenplan_V2
             VerbesserungsOptionen optionen,
             List<int> erlaubteBlöcke,
             HashSet<(int, int)> fixSlots,
+            Dictionary<string, LehrerStammdaten> aktiveStdRegeln,
             int B, int S,
             Action<string> log)
         {
@@ -220,7 +226,7 @@ namespace Stundenplan_V2
 
                 FühreTauschDurch(belegung, b1, s1, b2, s2);
 
-                if (IstGültig(belegung, blocks, slots, input, fixSlots, B, S))
+                if (IstGültig(belegung, blocks, slots, input, fixSlots, aktiveStdRegeln, B, S))
                 {
                     int neueQualität = BerechneZiel(belegung, blocks, slots, input, optionen.Ziel);
                     int delta = neueQualität - aktuelleQualität;
@@ -270,6 +276,7 @@ namespace Stundenplan_V2
             VerbesserungsOptionen optionen,
             List<int> erlaubteBlöcke,
             HashSet<(int, int)> fixSlots,
+            Dictionary<string, LehrerStammdaten> aktiveStdRegeln,
             int B, int S,
             Action<string> log)
         {
@@ -293,6 +300,7 @@ namespace Stundenplan_V2
                     ergebnis.BesteBelegung,
                     blocks, slots, input,
                     freigegebeneBlöcke, fixSlots,
+                    aktiveStdRegeln,
                     optionen.LnsZeitlimitSekunden,
                     B, S);
 
@@ -331,6 +339,7 @@ namespace Stundenplan_V2
             StundenplanInput input,
             HashSet<int> freigegebeneBlöcke,
             HashSet<(int, int)> fixSlots,
+            Dictionary<string, LehrerStammdaten> aktiveStdRegeln,
             int zeitlimit,
             int B, int S)
         {
@@ -497,6 +506,13 @@ namespace Stundenplan_V2
                 }
             }
 
+            // Harte StD-Regeln (Sheet StD): dieselbe Formulierung wie im echten
+            // Solver und im Diagnosemodell. Das Teilmodell hat ein volles
+            // x[B,S] mit fixierten nicht freigegebenen Bloecken, die Methode
+            // passt also unveraendert.
+            if (aktiveStdRegeln != null && aktiveStdRegeln.Count > 0)
+                StundenplanEngine.AddHarteStdRegeln(model, x, blocks, slots, B, S, aktiveStdRegeln);
+
             var qualExpr = LinearExpr.Sum(earlyVars)
                 - LinearExpr.Sum(lateVars) * input.GewichtSpäteDoppel;
             model.Maximize(qualExpr);
@@ -624,6 +640,7 @@ namespace Stundenplan_V2
             List<ZeitSlot> slots,
             StundenplanInput input,
             HashSet<(int, int)> fixSlots,
+            Dictionary<string, LehrerStammdaten> aktiveStdRegeln,
             int B, int S)
         {
             // Lehrerregel (A/B-Wochen-aware)
@@ -777,6 +794,161 @@ namespace Stundenplan_V2
                     if (freieTage < gefordert) return false;
                 }
             }
+
+            // Harte StD-Regeln (Sheet StD): nur fuer die Lehrer, deren
+            // Ausgangsplan sie schon erfuellt hat — siehe ErmittleAktiveStdRegeln.
+            if (!ErfülltHarteStdRegeln(belegung, blocks, slots, aktiveStdRegeln, B, S))
+                return false;
+
+            return true;
+        }
+
+        // =====================================================
+        // HARTE StD-REGELN (Sheet StD, Spalten "... hart")
+        //
+        // HillClimbing und SimulatedAnnealing gehen nicht ueber CP-SAT, sondern
+        // tauschen und fragen IstGültig. Die Regeln muessen hier also auf der
+        // Belegung nachgerechnet werden. Die Muster sind BEWUSST 1:1 aus den
+        // Modellformulierungen in StundenplanEngine.PlanenIntern uebernommen —
+        // insbesondere gilt: eine "Hohlstunde" ist dort GENAU ein einzelner
+        // freier Slot zwischen zwei belegten (u[si-1]=1, u[si]=0, u[si+1]=1).
+        // Eine Luecke von zwei Stunden zaehlt deshalb NULL Hohlstunden und
+        // stattdessen eine Doppel-Hohlstunde. Wer hier "Luecken zaehlen" im
+        // Alltagssinn einbaut, bekommt andere Ergebnisse als der Solver.
+        // Der LNS-Zweig braucht das nicht: sein Teilmodell bekommt die echten
+        // Constraints ueber StundenplanEngine.AddHarteStdRegeln.
+        // =====================================================
+
+        // Welche harten Regeln gelten fuer diesen Lauf? Nur die, die der
+        // AUSGANGSPLAN schon erfuellt. Sonst wuerde IstGültig jeden Zug
+        // ablehnen und der Lauf liefe wirkungslos durch — etwa bei einem Plan
+        // aus "Gesichert", der vor dem Setzen der Flags entstanden ist, oder
+        // nach einer Handaenderung im Planeditor (der die Regeln nicht kennt).
+        private static Dictionary<string, LehrerStammdaten> ErmittleAktiveStdRegeln(
+            int[,] belegung,
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            StundenplanInput input,
+            int B, int S,
+            Action<string> log)
+        {
+            var aktiv = new Dictionary<string, LehrerStammdaten>();
+            if (input.LehrerStammdaten == null) return aktiv;
+
+            int uebersprungen = 0;
+            foreach (var kv in input.LehrerStammdaten)
+            {
+                var sd = kv.Value;
+                if (sd == null || !sd.HatHarteRegel) continue;
+
+                if (ErfülltHarteStdRegeln(belegung, blocks, slots, sd, B, S))
+                {
+                    aktiv[kv.Key] = sd;
+                }
+                else
+                {
+                    uebersprungen++;
+                    log($"Ausgangsplan verletzt bereits {StundenplanEngine.BeschreibeHarteRegeln(sd)} " +
+                        "→ Regel für diesen Lauf ignoriert.");
+                }
+            }
+
+            if (aktiv.Count > 0 || uebersprungen > 0)
+                log($"Harte StD-Regeln: {aktiv.Count} Lehrer werden eingehalten, {uebersprungen} ignoriert.");
+            return aktiv;
+        }
+
+        private static bool ErfülltHarteStdRegeln(
+            int[,] belegung,
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            Dictionary<string, LehrerStammdaten> aktiveStdRegeln,
+            int B, int S)
+        {
+            if (aktiveStdRegeln == null || aktiveStdRegeln.Count == 0) return true;
+            foreach (var kv in aktiveStdRegeln)
+                if (!ErfülltHarteStdRegeln(belegung, blocks, slots, kv.Value, B, S))
+                    return false;
+            return true;
+        }
+
+        // Prueft die harten Regeln EINES Lehrers gegen die Belegung.
+        private static bool ErfülltHarteStdRegeln(
+            int[,] belegung,
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            LehrerStammdaten sd,
+            int B, int S)
+        {
+            if (sd == null || !sd.HatHarteRegel) return true;
+
+            var lehrerBlöcke = Enumerable.Range(0, B)
+                .Where(b => blocks[b].Teile.Any(t => t.Lehrer == sd.Name))
+                .ToList();
+            if (lehrerBlöcke.Count == 0) return true;
+
+            var tage = slots.Select(s => s.WTag).Distinct().ToList();
+            int hohlWoche = 0;
+
+            foreach (var tag in tage)
+            {
+                var tagesSlots = Enumerable.Range(0, S)
+                    .Where(s => slots[s].WTag == tag)
+                    .OrderBy(s => slots[s].Stunde)
+                    .ToList();
+                if (tagesSlots.Count < 2) continue; // wie im Modell
+
+                int n = tagesSlots.Count;
+                var u = new bool[n];
+                for (int si = 0; si < n; si++)
+                {
+                    int sIdx = tagesSlots[si];
+                    u[si] = lehrerBlöcke.Any(b => belegung[b, sIdx] == 1);
+                }
+
+                for (int si = 1; si < n - 1; si++)
+                {
+                    // Hohlstunde: genau ein freier Slot zwischen zwei belegten
+                    if (sd.HohlWocheHart && u[si - 1] && !u[si] && u[si + 1])
+                        hohlWoche++;
+
+                    // Doppel-Hohlstunde: si-1 und si frei, si-2 und si+1 belegt
+                    if (sd.DoppelHohlHart && si >= 2 &&
+                        u[si - 2] && !u[si - 1] && !u[si] && u[si + 1])
+                        return false;
+                }
+
+                // Hohlfolge der Laenge >= 3 (faengt auch 4er, 5er ... ab).
+                // Wie im Modell: es muss NACH der Luecke noch Unterricht
+                // kommen — ein frueher Feierabend ist keine Hohlstunde.
+                if (sd.DreifachHohlHart)
+                    for (int si = 1; si + 2 < n; si++)
+                        if (u[si - 1] && !u[si] && !u[si + 1] && !u[si + 2])
+                        {
+                            bool nochUnterricht = false;
+                            for (int j = si + 3; j < n && !nochUnterricht; j++)
+                                nochUnterricht = u[j];
+                            if (nochUnterricht) return false;
+                        }
+
+                if (sd.EinzelHart && u.Count(v => v) == 1)
+                    return false;
+
+                if (sd.FolgeHart && sd.StdFolge.HasValue)
+                {
+                    int limit = sd.StdFolge.Value;
+                    for (int si = 0; si <= n - (limit + 1); si++)
+                    {
+                        bool alleBelegt = true;
+                        for (int k = si; k <= si + limit && alleBelegt; k++)
+                            alleBelegt = u[k];
+                        if (alleBelegt) return false;
+                    }
+                }
+            }
+
+            if (sd.HohlWocheHart && sd.HohlStdMax.HasValue && hohlWoche > sd.HohlStdMax.Value)
+                return false;
 
             return true;
         }

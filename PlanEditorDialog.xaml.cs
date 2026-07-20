@@ -15,6 +15,10 @@ namespace Stundenplan_V2
         private readonly List<(string label, int[,] belegung, List<UnterrichtsBlock> blocks)> _loesungen;
         private readonly List<ZeitSlot> _slots;
         private readonly Dictionary<string, int> _fachraumLimit;
+
+        // Popup mit der vollständigen Belegungsliste einer Fachgruppen-Zelle
+        // (Klick auf Badge / "+N weitere"). Wird wiederverwendet.
+        private System.Windows.Controls.Primitives.Popup _fgBelegungPopup;
         private readonly List<(int stundeVor, int stundeNach)> _grossePausen;
 
         // Callback an MainWindow: (label, geänderte belegung, blocks) -> übernimmt in Lös + Diag
@@ -106,13 +110,20 @@ namespace Stundenplan_V2
         // Laufender Zähler nur für den kaskadierten Startversatz beim Öffnen.
         private int _uvFensterZaehler = 0;
 
+        // Welcher Plantyp in einer Kachel/einem Grid steckt. Lehrer und Klasse
+        // sind die beiden editierbaren Pläne (siehe ZeichneEinGrid mit dem
+        // bisherigen bool-Schalter lehrerAnsicht); Fachgruppe ist eine reine
+        // Ansicht mit eigenem Zellaufbau (ZeichneEinFachgruppenGrid).
+        private enum PlanArt { Lehrer, Klasse, Fachgruppe }
+
         // ---- Angeheftete Pläne (mehrere Lehrer-/Klassenpläne gleichzeitig
         // sichtbar und bearbeitbar, zusätzlich zu den normalen Lehrer-/
         // Klasse-Dropdowns oben). Alle Tiles zeichnen auf derselben
         // _belegung/_blocks-Arbeitskopie, Drag&Drop funktioniert also über
         // Tile-Grenzen hinweg (Tausch zwischen zwei angehefteten Plänen ist
-        // ganz normales Zelle_Drop wie im Hauptbereich). ----
-        private readonly List<(bool istLehrer, string name, Border tile, Grid grid, Canvas canvas)> _angeheftete
+        // ganz normales Zelle_Drop wie im Hauptbereich). Angeheftete
+        // Fachgruppenpläne sind wie der Hauptplan reine Ansicht. ----
+        private readonly List<(PlanArt art, string name, Border tile, Grid grid, Canvas canvas)> _angeheftete
             = new();
 
         // ---- Farbcode: Hintergrundfarben je Klasse bzw. je Fach ----
@@ -178,10 +189,226 @@ namespace Stundenplan_V2
             foreach (var l in _loesungen)
                 CboLoesung.Items.Add(l.label);
 
+            // Gespeicherte Ansichts-Einstellungen (Sheet "EdCfg") lesen. Die
+            // "einfachen" Schalter (Farbmodus, Bearbeitungsmodus, SpaetePaed,
+            // Ignorierte, Filter-/Ausweich-Checkbox, Parkkontext, Diag-Filter)
+            // sowie die Fenstergeometrie werden JETZT gesetzt — noch VOR
+            // _initialisiert=true, damit die Changed-Handler nichts zeichnen; der
+            // Erst-Aufbau weiter unten uebernimmt den Zustand. Die layout-
+            // aendernden Schalter (Klassenvergleich/Fachgruppenplan/Vergleichs-
+            // modus) kommen erst NACH dem Laden der ersten Loesung, weil ihre
+            // Handler eine geladene Belegung brauchen.
+            var startCfg = EditorConfig.Lade(_excelPfad);
+            WendeEinfacheEinstellungenAn(startCfg);
+            WendeFenstergeometrieAn(startCfg);
+
             _initialisiert = true;
 
+            // Gespeicherte Loesung waehlen, falls ihr Label noch existiert; sonst
+            // die erste. Die Auswahl loest CboLoesung_SelectionChanged aus, das
+            // die Belegung laedt, zeichnet und die Lehrer-/Klassen-Dropdowns
+            // fuellt. Nicht mehr vorhandene Labels (nach Solverlauf/"Uebernehmen"/
+            // UV-Aenderung) fallen still auf die erste Loesung zurueck.
             if (CboLoesung.Items.Count > 0)
-                CboLoesung.SelectedIndex = 0;
+            {
+                int solIdx = 0;
+                if (!string.IsNullOrEmpty(startCfg?.LoesungName))
+                {
+                    int fi = FindeItem(CboLoesung, startCfg.LoesungName);
+                    if (fi >= 0) solIdx = fi;
+                }
+                CboLoesung.SelectedIndex = solIdx;
+            }
+
+            // Zuletzt gewaehlten Lehrer/Klasse wiederherstellen (nur wenn in der
+            // geladenen Loesung vorhanden). MUSS vor WendeLayoutEinstellungenAn
+            // stehen, weil der Vergleichsmodus die aktuelle Lehrer-/Klassenwahl in
+            // seine 2x2-Ansicht spiegelt.
+            WendeAuswahlAn(startCfg);
+
+            WendeLayoutEinstellungenAn(startCfg);
+        }
+
+        // =====================================================
+        // Persistenz der Editor-Einstellungen (Sheet "EdCfg", EditorConfig.cs)
+        // =====================================================
+
+        // "Einfache" Schalter setzen: Sie beeinflussen nur das Zeichnen und
+        // werden von ihren (per _initialisiert gesperrten) Changed-Handlern beim
+        // ersten Aufbau ohnehin gelesen. Deshalb hier VOR _initialisiert=true
+        // aufrufen — sonst zeichnet jeder Setter einzeln neu.
+        private void WendeEinfacheEinstellungenAn(EditorConfig cfg)
+        {
+            if (cfg == null) return;
+
+            switch (cfg.Farbmodus)
+            {
+                case "Klasse": RbFarbeKlasse.IsChecked = true; break;
+                case "Fach":   RbFarbeFach.IsChecked = true; break;
+                case "Beide":  RbFarbeBeide.IsChecked = true; break;
+                default:       RbFarbeAus.IsChecked = true; break;
+            }
+
+            if (cfg.Bearbeitungsmodus == "Block") RbBlock.IsChecked = true;
+            else                                   RbEinzel.IsChecked = true;
+
+            ChkSpaetePaed.IsChecked          = cfg.SpaetePaed;
+            ChkIgnorierteZeigen.IsChecked    = cfg.IgnorierteZeigen;
+            ChkFilterVerletzungen.IsChecked  = cfg.FilterVerletzungen;
+            ChkAusweichSuche.IsChecked       = cfg.AusweichSuche;
+
+            _parkKontextLehrer = cfg.ParkkontextLehrer;
+
+            _diagFilterKriterien = (cfg.DiagFilter != null && cfg.DiagFilter.Count > 0)
+                ? new List<int>(cfg.DiagFilter)
+                : null;
+            _diagFilterUnd = cfg.DiagFilterUnd;
+            if (_diagFilterKriterien != null)
+                BtnDiagFilter.Content = $"Diag-Filter ({_diagFilterKriterien.Count})";
+        }
+
+        // Layout-aendernde Schalter: ihre Handler bauen ganze Ansichten auf und
+        // brauchen eine geladene Loesung. Deshalb erst NACH CboLoesung-Auswahl,
+        // mit _initialisiert=true — hier feuern die Handler bewusst und richten
+        // die Ansicht ein. Reihenfolge: Fachgruppenplan unabhaengig; danach
+        // Vergleichsmodus (schaltet Klassenvergleich selbst aus) ODER, falls
+        // nicht aktiv, der Klassenvergleich.
+        private void WendeLayoutEinstellungenAn(EditorConfig cfg)
+        {
+            if (cfg == null || _belegung == null) return;
+
+            if (cfg.Fachgruppenplan && ChkFachgruppenPlan.IsChecked != true)
+                ChkFachgruppenPlan.IsChecked = true;
+
+            if (cfg.Vergleichsmodus)
+            {
+                if (ChkVergleichsModus.IsChecked != true)
+                    ChkVergleichsModus.IsChecked = true;
+            }
+            else if (cfg.Klassenvergleich && ChkKlassenVergleich.IsChecked != true)
+            {
+                ChkKlassenVergleich.IsChecked = true;
+            }
+        }
+
+        // Zuletzt gewaehlten Lehrer und Klasse wiederherstellen, sofern sie in
+        // der aktuell geladenen Loesung vorkommen. Nicht (mehr) vorhandene Werte
+        // werden still ignoriert — es bleibt bei der Standardauswahl (erster
+        // Lehrer / erste Klasse). Das Setzen loest die jeweiligen
+        // SelectionChanged-Handler aus, die Diag-/UV-Fenster und die
+        // Vergleichsmodus-Spiegelung aktuell halten.
+        private void WendeAuswahlAn(EditorConfig cfg)
+        {
+            if (cfg == null || _belegung == null) return;
+
+            int li = FindeItem(CboLehrer, cfg.Lehrer);
+            if (li >= 0) CboLehrer.SelectedIndex = li;
+
+            int ki = FindeItem(CboKlasse, cfg.Klasse);
+            if (ki >= 0) CboKlasse.SelectedIndex = ki;
+        }
+
+        // Gespeicherte Fenstergroesse/-position wiederherstellen. Ohne
+        // gespeicherte Geometrie bleibt es beim XAML-Standard (CenterOwner).
+        private void WendeFenstergeometrieAn(EditorConfig cfg)
+        {
+            if (cfg == null || !cfg.HatGeometrie) return;
+
+            Width = cfg.FensterBreite;
+            Height = cfg.FensterHoehe;
+
+            if (cfg.HatPosition && GeometrieSichtbar(cfg.FensterLeft, cfg.FensterTop, cfg.FensterBreite, cfg.FensterHoehe))
+            {
+                // Manual, damit Left/Top greifen (sonst zentriert WPF ueber Owner).
+                WindowStartupLocation = WindowStartupLocation.Manual;
+                Left = cfg.FensterLeft;
+                Top = cfg.FensterTop;
+            }
+            // Liegt die gespeicherte Position ausserhalb aller Bildschirme (z.B.
+            // nach Monitorwechsel), bleibt WindowStartupLocation=CenterOwner und
+            // nur die Groesse wird uebernommen.
+        }
+
+        // Prueft grob, ob ein Fenster an (left,top) mit (w,h) noch auf der
+        // virtuellen Bildschirmflaeche sichtbar waere (mind. ein Streifen der
+        // Titelleiste). Verhindert "verschwundene" Fenster nach Monitorwechsel.
+        private static bool GeometrieSichtbar(double left, double top, double w, double h)
+        {
+            double vsl = SystemParameters.VirtualScreenLeft;
+            double vst = SystemParameters.VirtualScreenTop;
+            double vsw = SystemParameters.VirtualScreenWidth;
+            double vsh = SystemParameters.VirtualScreenHeight;
+
+            const double rand = 60;   // so viel muss horizontal sichtbar bleiben
+            const double titel = 24;  // Titelleiste vertikal
+
+            bool xOk = (left + w - rand) > vsl && (left + rand) < (vsl + vsw);
+            bool yOk = (top + titel) < (vst + vsh) && (top + titel) > vst;
+            return xOk && yOk;
+        }
+
+        // Beim Schliessen (Button "Schliessen" UND Fenster-X) aktuelle
+        // Einstellungen in das Sheet "EdCfg" zurueckschreiben.
+        protected override void OnClosed(EventArgs e)
+        {
+            base.OnClosed(e);
+            SpeichereEinstellungen();
+        }
+
+        private void SpeichereEinstellungen()
+        {
+            if (string.IsNullOrWhiteSpace(_excelPfad)) return;
+
+            try
+            {
+                var cfg = new EditorConfig
+                {
+                    Farbmodus          = AktuellerFarbmodus(),
+                    Bearbeitungsmodus  = RbBlock.IsChecked == true ? "Block" : "Einzel",
+                    SpaetePaed         = ChkSpaetePaed.IsChecked == true,
+                    Klassenvergleich   = ChkKlassenVergleich.IsChecked == true,
+                    Fachgruppenplan    = ChkFachgruppenPlan.IsChecked == true,
+                    Vergleichsmodus    = ChkVergleichsModus.IsChecked == true,
+                    IgnorierteZeigen   = ChkIgnorierteZeigen.IsChecked == true,
+                    FilterVerletzungen = ChkFilterVerletzungen.IsChecked == true,
+                    AusweichSuche      = ChkAusweichSuche.IsChecked == true,
+                    ParkkontextLehrer  = _parkKontextLehrer,
+                    DiagFilter         = _diagFilterKriterien != null ? new List<int>(_diagFilterKriterien) : new List<int>(),
+                    DiagFilterUnd      = _diagFilterUnd,
+                    LoesungName        = CboLoesung.SelectedItem as string ?? "",
+                    Lehrer             = CboLehrer.SelectedItem as string ?? "",
+                    Klasse             = CboKlasse.SelectedItem as string ?? "",
+                };
+
+                // Geometrie im "normalen" Zustand sichern; ist das Fenster
+                // maximiert/minimiert, liefert RestoreBounds die letzte normale
+                // Groesse/Position.
+                var b = (WindowState == WindowState.Normal)
+                    ? new Rect(Left, Top, Width, Height)
+                    : RestoreBounds;
+                if (b.Width > 0 && b.Height > 0)
+                {
+                    cfg.FensterBreite = b.Width;
+                    cfg.FensterHoehe  = b.Height;
+                    cfg.FensterLeft   = b.Left;
+                    cfg.FensterTop    = b.Top;
+                }
+
+                cfg.Speichere(_excelPfad);
+            }
+            catch
+            {
+                // Ein Schreibfehler (z.B. Datei in Excel geoeffnet/gesperrt) darf
+                // das Schliessen des Editors niemals blockieren.
+            }
+        }
+
+        private string AktuellerFarbmodus()
+        {
+            if (RbFarbeKlasse?.IsChecked == true) return "Klasse";
+            if (RbFarbeFach?.IsChecked == true) return "Fach";
+            if (RbFarbeBeide?.IsChecked == true) return "Beide";
+            return "Aus";
         }
 
         // =====================================================
@@ -224,6 +451,13 @@ namespace Stundenplan_V2
             if (_vergleichsModus) ZeichneVergleichsModus();
             else ZeichneBeideGrids();
             ZeichneParkbereich();
+            // Verletzungen der frisch geladenen Belegung als "Vorher"-Stand
+            // festhalten. Ohne das bleibt _aktuelleVerletzungen bis zur ersten
+            // Aenderung leer, und alles, was diesen Stand als Vergleichsbasis
+            // nimmt (gelbe Drag-Warnung in FindeNeueWeicheVerletzung, Filter
+            // ueber ErmittleVergleichsbasis), haelt bereits vorhandene
+            // Verletzungen faelschlich fuer neu.
+            PruefeUndZeigeWarnungen();
             SetStatus("Lösung '" + label + "' geladen.", false);
             AktualisiereDiagFenster();
         }
@@ -1081,6 +1315,11 @@ namespace Stundenplan_V2
                 int idx = behaltenKlasse != null ? CboKlasse.Items.IndexOf(behaltenKlasse) : -1;
                 CboKlasse.SelectedIndex = idx >= 0 ? idx : 0;
             }
+
+            // Fachgruppen haengen an derselben Loesung und muessen beim Wechsel
+            // genauso neu aufgebaut werden; die bisherige Auswahl bleibt, wenn
+            // es die Gruppe in der neuen Loesung noch gibt.
+            FuelleFachgruppenDropdown(CboFachgruppe?.SelectedItem as string);
         }
 
         // =====================================================
@@ -1131,6 +1370,7 @@ namespace Stundenplan_V2
             AktualisiereSpaetePaedEinheiten();
             ZeichneLehrerGrid();
             ZeichneKlasseGrid();
+            ZeichneFachgruppenGrid();
             ZeichneAlleAngehefteten();
         }
 
@@ -1147,6 +1387,591 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
+        // FACHGRUPPENPLAN (reine Ansicht)
+        //
+        // Dritter Plantyp neben Lehrer- und Klassenplan: statt einer Person
+        // steht eine Fachgruppe (Sheet FGR) im Kopf. Jede Zelle zeigt ALLE
+        // Bloecke, die in diesem Slot einen Raum dieser Gruppe belegen, plus
+        // oben rechts das Auslastungs-Badge "belegt/Limit" (Limit = Spalte B
+        // im Sheet FGR). Damit wird das Fachraum-Limit sichtbar, das sonst nur
+        // als Solver-Constraint (RoomConstraint.cs) bzw. als Meldung im
+        // Verletzungs-Report auftaucht.
+        //
+        // Bewusst KEINE Interaktion ausser Klick: kein Drop-Ziel, keine
+        // Tauschvorschlaege, kein Park-Kontext. Ein Klick zeigt die Details
+        // und stellt Lehrer- UND Klassenplan auf den angeklickten Unterricht
+        // um — dort wird entzerrt, hier nur gefunden.
+        // =====================================================
+
+        private const double FgZellBreite = 150; // breiter als ZellBreite: mehrere Bloecke untereinander
+        private const double FgZellHoehe = 96;
+
+        // Wie viele Bloecke eine Zelle maximal ausschreibt; der Rest wird als
+        // "+n weitere" angedeutet (Ueberbuchungen koennen beliebig gross sein).
+        private const int FgMaxBloeckeProZelle = 3;
+
+        // Wird aus ZeichneBeideGrids nach jeder Aenderung mitgerufen. Solange
+        // die Spalte ausgeblendet ist, kostet das nichts: angeheftete
+        // Fachgruppen-Kacheln haengen an ZeichneAlleAngehefteten und werden
+        // davon nicht beruehrt.
+        private void ZeichneFachgruppenGrid()
+        {
+            if (FachgruppenGrid == null || BrdFachgruppenPlan == null) return;
+            if (BrdFachgruppenPlan.Visibility != Visibility.Visible) return;
+
+            string gruppe = CboFachgruppe.SelectedItem as string;
+            ZeichneEinFachgruppenGrid(FachgruppenGrid, gruppe);
+            AktualisiereFachgruppenKopf(gruppe);
+        }
+
+        // Kopfzeile mit Limit, Gesamtzahl der Stunden dieser Gruppe und der
+        // Anzahl ueberbuchter Slots. Bei Ueberbuchung rot, damit man beim
+        // Durchblaettern der Gruppen sofort sieht, welche klemmt.
+        private void AktualisiereFachgruppenKopf(string gruppe)
+        {
+            if (LblFachgruppenKopf == null) return;
+
+            if (gruppe == null || _belegung == null || _blocks == null)
+            {
+                LblFachgruppenKopf.Text = "FACHGRUPPENPLAN";
+                LblFachgruppenKopf.ClearValue(TextBlock.ForegroundProperty);
+                return;
+            }
+
+            int? limit = FachgruppenLimit(gruppe);
+            int stunden = 0, ueberbucht = 0;
+            for (int s = 0; s < _slots.Count; s++)
+            {
+                var bloecke = BloeckeDerFachgruppeImSlot(s, gruppe);
+                if (bloecke.Count == 0) continue;
+                stunden += bloecke.Count;
+                var (anzahlA, anzahlB, _) = ZaehleFachgruppe(bloecke);
+                if (limit.HasValue && (anzahlA > limit.Value || anzahlB > limit.Value))
+                    ueberbucht++;
+            }
+
+            string limitTxt = !limit.HasValue
+                ? "kein Limit in FGR"
+                : (limit.Value == 1 ? "Limit 1 Raum" : "Limit " + limit.Value + " Raeume");
+            string ueberTxt = !limit.HasValue
+                ? ""
+                : " · " + (ueberbucht == 0
+                    ? "keine Ueberbuchung"
+                    : ueberbucht + (ueberbucht == 1 ? " Ueberbuchung" : " Ueberbuchungen"));
+
+            LblFachgruppenKopf.Text = "FACHGRUPPENPLAN " + gruppe +
+                                      " — " + limitTxt + " · " + stunden + " Std." + ueberTxt;
+            if (ueberbucht > 0)
+                LblFachgruppenKopf.Foreground = new SolidColorBrush(Color.FromRgb(0xC0, 0x20, 0x20));
+            else
+                LblFachgruppenKopf.ClearValue(TextBlock.ForegroundProperty);
+        }
+
+        // Aufbau wie ZeichneEinGrid, nur mit breiteren Zellen und ohne
+        // Interaktivitaets-Schalter (immer reine Ansicht).
+        private void ZeichneEinFachgruppenGrid(Grid grid, string gruppe)
+        {
+            grid.Children.Clear();
+            grid.ColumnDefinitions.Clear();
+            grid.RowDefinitions.Clear();
+
+            if (gruppe == null || _belegung == null || _blocks == null) return;
+
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
+            foreach (var _ in _tage)
+                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(FgZellBreite) });
+
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            foreach (var _ in _stunden)
+                grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(FgZellHoehe) });
+
+            for (int ti = 0; ti < _tage.Count; ti++)
+            {
+                var tb = new TextBlock
+                {
+                    Text = _tage[ti],
+                    FontWeight = FontWeights.Bold,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = new Thickness(2)
+                };
+                Grid.SetRow(tb, 0);
+                Grid.SetColumn(tb, ti + 1);
+                grid.Children.Add(tb);
+            }
+
+            for (int hi = 0; hi < _stunden.Count; hi++)
+            {
+                var tb = new TextBlock
+                {
+                    Text = _stunden[hi].ToString(),
+                    FontWeight = FontWeights.Bold,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                Grid.SetRow(tb, hi + 1);
+                Grid.SetColumn(tb, 0);
+                grid.Children.Add(tb);
+            }
+
+            for (int ti = 0; ti < _tage.Count; ti++)
+            {
+                for (int hi = 0; hi < _stunden.Count; hi++)
+                {
+                    int slotIdx = FindeSlot(_tage[ti], _stunden[hi]);
+                    var zelle = BaueFachgruppenZelle(slotIdx, gruppe);
+                    Grid.SetRow(zelle, hi + 1);
+                    Grid.SetColumn(zelle, ti + 1);
+                    grid.Children.Add(zelle);
+                }
+            }
+        }
+
+        // Eine Zelle des Fachgruppenplans: Bloecke untereinander (anders als im
+        // Lehrer-/Klassenplan, wo parallele Bloecke nebeneinander stehen — hier
+        // sind es potenziell mehr und sie gehoeren verschiedenen Klassen), oben
+        // rechts das Auslastungs-Badge. Keine Drag&Drop-Handler.
+        private Border BaueFachgruppenZelle(int slotIdx, string gruppe)
+        {
+            var border = new Border
+            {
+                BorderBrush = Brushes.LightGray,
+                BorderThickness = new Thickness(0.5),
+                Margin = new Thickness(1),
+                AllowDrop = false
+            };
+            border.Tag = slotIdx;
+
+            if (slotIdx < 0)
+            {
+                border.Background = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33));
+                return border;
+            }
+
+            border.Background = Brushes.White;
+
+            var bloecke = BloeckeDerFachgruppeImSlot(slotIdx, gruppe);
+            var (anzahlA, anzahlB, hatWochenTrennung) = ZaehleFachgruppe(bloecke);
+            int? limit = FachgruppenLimit(gruppe);
+
+            bool ueberbucht = limit.HasValue && (anzahlA > limit.Value || anzahlB > limit.Value);
+            bool voll = limit.HasValue && !ueberbucht && (anzahlA == limit.Value || anzahlB == limit.Value);
+
+            if (ueberbucht)
+            {
+                border.BorderBrush = new SolidColorBrush(Color.FromRgb(0xC0, 0x20, 0x20));
+                border.BorderThickness = new Thickness(2);
+            }
+
+            // (A) Tooltip mit der VOLLSTÄNDIGEN Belegung an der Zelle.
+            string vollTip = FachgruppenSlotTooltip(slotIdx, gruppe);
+            if (vollTip != null) border.ToolTip = vollTip;
+
+            var stapel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 14, 0, 0) };
+            foreach (int b in bloecke.Take(FgMaxBloeckeProZelle))
+                stapel.Children.Add(BaueFachgruppenTeil(b, slotIdx, ueberbucht));
+
+            if (bloecke.Count > FgMaxBloeckeProZelle)
+            {
+                // (C) "+N weitere" als anklickbarer Trigger fuer die volle Liste.
+                var mehr = new TextBlock
+                {
+                    Text = "+" + (bloecke.Count - FgMaxBloeckeProZelle) + " weitere \u2026",
+                    FontSize = 10,
+                    Foreground = new SolidColorBrush(Color.FromRgb(0x10, 0x4A, 0xE0)),
+                    Margin = new Thickness(2, 0, 0, 0),
+                    Cursor = Cursors.Hand,
+                    ToolTip = vollTip
+                };
+                int slotL = slotIdx; string gruppeL = gruppe;
+                mehr.MouseLeftButtonDown += (s, e) =>
+                {
+                    OeffneFachgruppenBelegungPopup(mehr, slotL, gruppeL);
+                    e.Handled = true;
+                };
+                stapel.Children.Add(mehr);
+            }
+
+            var zellInhalt = new Grid();
+            zellInhalt.Children.Add(stapel);
+
+            // (C) Badge ebenfalls anklickbar (und mit Tooltip) — zeigt die Liste.
+            var badge = BaueFachgruppenBadge(
+                anzahlA, anzahlB, hatWochenTrennung, limit, ueberbucht, voll);
+            if (badge != null)
+            {
+                badge.ToolTip = vollTip;
+                badge.Cursor = Cursors.Hand;
+                int slotB = slotIdx; string gruppeB = gruppe;
+                badge.MouseLeftButtonDown += (s, e) =>
+                {
+                    OeffneFachgruppenBelegungPopup(badge, slotB, gruppeB);
+                    e.Handled = true;
+                };
+            }
+            zellInhalt.Children.Add(badge);
+
+            border.Child = zellInhalt;
+
+            return border;
+        }
+
+        // Auslastungs-Badge fuer die obere rechte Ecke: "2/2", bei A/B-Wochen im
+        // Slot "2/2 A · 1/2 B", ohne FGR-Limit "2/–". Farbe: gruen unter Limit,
+        // orange genau am Limit, rot darueber, grau ohne Limit. Nimmt keine
+        // Mausereignisse an, damit der Klick auf die Bloecke darunter durchgeht.
+        private Border BaueFachgruppenBadge(
+            int anzahlA, int anzahlB, bool hatWochenTrennung, int? limit, bool ueberbucht, bool voll)
+        {
+            string limitTxt = limit.HasValue ? limit.Value.ToString() : "–";
+            string text = hatWochenTrennung
+                ? anzahlA + "/" + limitTxt + " A · " + anzahlB + "/" + limitTxt + " B"
+                : anzahlA + "/" + limitTxt;
+
+            Color hg, vg;
+            if (!limit.HasValue)      { hg = Color.FromRgb(0xEE, 0xEE, 0xEE); vg = Color.FromRgb(0x55, 0x55, 0x55); }
+            else if (ueberbucht)      { hg = Color.FromRgb(0xF8, 0xD7, 0xDA); vg = Color.FromRgb(0x8B, 0x1A, 0x1A); }
+            else if (voll)            { hg = Color.FromRgb(0xFC, 0xEF, 0xC7); vg = Color.FromRgb(0x7A, 0x4B, 0x06); }
+            else                      { hg = Color.FromRgb(0xDF, 0xF0, 0xD8); vg = Color.FromRgb(0x2D, 0x6A, 0x1E); }
+
+            return new Border
+            {
+                Background = new SolidColorBrush(hg),
+                CornerRadius = new CornerRadius(2),
+                Padding = new Thickness(3, 0, 3, 0),
+                Margin = new Thickness(0, 0, 1, 0),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top,
+                IsHitTestVisible = false,
+                Child = new TextBlock
+                {
+                    Text = text,
+                    FontSize = 10,
+                    FontWeight = FontWeights.Bold,
+                    Foreground = new SolidColorBrush(vg)
+                }
+            };
+        }
+
+        // Ein Block innerhalb einer Fachgruppen-Zelle. Kompakter als
+        // BaueTeilbereich (mehrere passen untereinander), Zeilenaufbau aber
+        // nach demselben Muster: Zeile 1 fett Klassen + Lehrer (+ Wochengruppe),
+        // Zeile 2 klein und blass UNr + Faecher (+ "F" bei fixierter UNr). Rot,
+        // wenn der Slot ueberbucht ist; sonst greift der normale Farbcode
+        // (Flaechenfarbe), damit die Faerbung nicht von der der anderen Plaene
+        // abweicht.
+        private Border BaueFachgruppenTeil(int blockIdx, int slotIdx, bool ueberbucht)
+        {
+            var block = _blocks[blockIdx];
+            bool hervorheben = _highlightBloecke.Contains(blockIdx);
+            bool istFixiert = slotIdx >= 0 && slotIdx < _slots.Count &&
+                              _slots[slotIdx].FixUNrn.Contains(block.UNr);
+
+            var (_, flaecheFarbe) = FarbcodeZonen(block);
+            Brush hintergrund = ueberbucht
+                ? new SolidColorBrush(Color.FromRgb(0xFF, 0xC1, 0xC1))
+                : (flaecheFarbe ?? Hellblau());
+
+            var innerBorder = new Border
+            {
+                Background = hintergrund,
+                BorderBrush = hervorheben
+                    ? new SolidColorBrush(Color.FromRgb(0xE3, 0x1A, 0x1A))
+                    : Brushes.Gray,
+                BorderThickness = hervorheben ? new Thickness(2) : new Thickness(0.5),
+                Margin = new Thickness(1, 0, 1, 1),
+                Padding = new Thickness(2, 0, 2, 0),
+                Cursor = Cursors.Hand
+            };
+
+            var teile = block.Teile;
+            string klassen = string.Join(",", teile.SelectMany(t => t.Klassen).Distinct());
+            string faecher = string.Join(",", teile.Select(t => t.Fach).Distinct());
+            string lehrer = string.Join(",", teile.Select(t => t.Lehrer)
+                                                  .Where(l => !string.IsNullOrWhiteSpace(l)).Distinct());
+            string wg = (block.WochenGruppe ?? "").Trim();
+
+            var tb = new TextBlock { TextWrapping = TextWrapping.NoWrap, FontSize = 11 };
+            tb.Inlines.Add(new System.Windows.Documents.Run(
+                klassen + " · " + lehrer + (wg == "" ? "" : "  [" + wg + "]"))
+            { FontWeight = FontWeights.Bold });
+            tb.Inlines.Add(new System.Windows.Documents.Run("\nUNr " + block.UNr + " · " + faecher)
+            { FontSize = 10, Foreground = Brushes.DarkSlateGray });
+            if (istFixiert)
+                tb.Inlines.Add(new System.Windows.Documents.Run(" F")
+                {
+                    FontSize = 10,
+                    FontWeight = FontWeights.Bold,
+                    Foreground = new SolidColorBrush(Color.FromRgb(0x10, 0x4A, 0xE0))
+                });
+
+            innerBorder.Child = tb;
+            innerBorder.ToolTip = "UNr " + block.UNr + " · " + faecher + " · " + klassen + " · " + lehrer +
+                                  (wg == "" ? "" : "  (Woche " + wg + ")") +
+                                  "\nKlick: Lehrer- und Klassenplan auf diesen Unterricht umstellen";
+
+            int idxLokal = blockIdx;
+            innerBorder.MouseLeftButtonDown += (s, e) =>
+            {
+                ZeigeDetails(idxLokal);
+                SynchronisiereBeidePlaeneAufBlock(idxLokal);
+            };
+
+            return innerBorder;
+        }
+
+        // Einzeiliger Beschreibungstext eines Blocks für Tooltip/Popup.
+        private string FachgruppenBlockText(int blockIdx)
+        {
+            var block = _blocks[blockIdx];
+            var teile = block.Teile;
+            string klassen = string.Join(",", teile.SelectMany(t => t.Klassen).Distinct());
+            string faecher = string.Join(",", teile.Select(t => t.Fach).Distinct());
+            string lehrer = string.Join(",", teile.Select(t => t.Lehrer)
+                                                  .Where(l => !string.IsNullOrWhiteSpace(l)).Distinct());
+            string wg = (block.WochenGruppe ?? "").Trim();
+            return "UNr " + block.UNr + " · " + faecher + " · " + klassen + " · " + lehrer +
+                   (wg == "" ? "" : "  [" + wg + "]");
+        }
+
+        // (A) Tooltip-Text mit der VOLLSTÄNDIGEN Belegung eines Fachgruppen-Slots.
+        private string FachgruppenSlotTooltip(int slotIdx, string gruppe)
+        {
+            if (slotIdx < 0) return null;
+            var bloecke = BloeckeDerFachgruppeImSlot(slotIdx, gruppe);
+            if (bloecke.Count == 0) return null;
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append("Belegung (" + bloecke.Count + "):");
+            foreach (int b in bloecke)
+                sb.Append("\n\u2022 " + FachgruppenBlockText(b));
+            if (bloecke.Count > FgMaxBloeckeProZelle)
+                sb.Append("\n\nKlick auf Badge / \u201E+N weitere\u201C: anklickbare Liste mit Sprung");
+            return sb.ToString();
+        }
+
+        // (C) Popup mit der vollständigen, anklickbaren Belegungsliste des Slots.
+        // Jede Zeile springt (wie im Plan) auf den Unterricht; das Popup schließt
+        // sich beim Wegklicken (StaysOpen=false) oder nach dem Sprung.
+        private void OeffneFachgruppenBelegungPopup(UIElement anker, int slotIdx, string gruppe)
+        {
+            if (slotIdx < 0) return;
+            var bloecke = BloeckeDerFachgruppeImSlot(slotIdx, gruppe);
+            if (bloecke.Count == 0) return;
+
+            int? limit = FachgruppenLimit(gruppe);
+            var (anzahlA, anzahlB, _) = ZaehleFachgruppe(bloecke);
+            int belegt = Math.Max(anzahlA, anzahlB);
+            bool ueberbucht = limit.HasValue && (anzahlA > limit.Value || anzahlB > limit.Value);
+
+            var panel = new StackPanel { Margin = new Thickness(8) };
+
+            string slotName = _slots[slotIdx].WTag + " " + _slots[slotIdx].Stunde + ". Std";
+            string limitTxt = limit.HasValue ? limit.Value.ToString() : "-";
+            var kopf = new TextBlock
+            {
+                Text = gruppe + " · " + slotName + " · belegt " + belegt + "/" + limitTxt,
+                FontWeight = FontWeights.Bold,
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+            if (ueberbucht)
+                kopf.Foreground = new SolidColorBrush(Color.FromRgb(0xC0, 0x20, 0x20));
+            panel.Children.Add(kopf);
+
+            foreach (int b in bloecke)
+            {
+                int idxLokal = b;
+                var zeile = new TextBlock
+                {
+                    Text = FachgruppenBlockText(b),
+                    Cursor = Cursors.Hand,
+                    Padding = new Thickness(3, 2, 3, 2),
+                    FontSize = 12,
+                    TextWrapping = TextWrapping.NoWrap
+                };
+                zeile.MouseEnter += (s, e) => zeile.Background = new SolidColorBrush(Color.FromRgb(0xEE, 0xF3, 0xFF));
+                zeile.MouseLeave += (s, e) => zeile.Background = Brushes.Transparent;
+                zeile.MouseLeftButtonDown += (s, e) =>
+                {
+                    ZeigeDetails(idxLokal);
+                    SynchronisiereBeidePlaeneAufBlock(idxLokal);
+                    if (_fgBelegungPopup != null) _fgBelegungPopup.IsOpen = false;
+                    e.Handled = true;
+                };
+                panel.Children.Add(zeile);
+            }
+
+            var rahmen = new Border
+            {
+                Background = Brushes.White,
+                BorderBrush = Brushes.Gray,
+                BorderThickness = new Thickness(1),
+                Child = panel
+            };
+
+            if (_fgBelegungPopup == null)
+                _fgBelegungPopup = new System.Windows.Controls.Primitives.Popup
+                {
+                    AllowsTransparency = true,
+                    StaysOpen = false,
+                    Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom
+                };
+            _fgBelegungPopup.IsOpen = false;
+            _fgBelegungPopup.PlacementTarget = anker;
+            _fgBelegungPopup.Child = rahmen;
+            _fgBelegungPopup.IsOpen = true;
+        }
+
+        // Alle Block-Indizes, die in diesem Slot einen Raum der Fachgruppe
+        // belegen. Vergleich exakt wie im Solver (RoomConstraint.cs) und in
+        // PlanValidator.cs: t.FachGruppe == gruppe.
+        private List<int> BloeckeDerFachgruppeImSlot(int slotIdx, string gruppe)
+        {
+            var liste = new List<int>();
+            if (slotIdx < 0 || gruppe == null || _belegung == null || _blocks == null) return liste;
+
+            for (int b = 0; b < _blocks.Count; b++)
+            {
+                if (_belegung[b, slotIdx] != 1) continue;
+                if (_blocks[b].Teile.Any(t => t.FachGruppe == gruppe)) liste.Add(b);
+            }
+            return liste;
+        }
+
+        // Zaehlung EXAKT wie die Solver-Constraint in RoomConstraint.cs und die
+        // Pruefung in PlanValidator.cs: A-Woche-Bloecke und Bloecke ohne
+        // Wochengruppe zaehlen zur A-Summe, B-Woche-Bloecke und Bloecke ohne
+        // Wochengruppe zur B-Summe (A und B kollidieren nie, teilen sich aber
+        // denselben Fachraum). Keine KKK-Ausnahme — ein Raum-Limit gilt
+        // unabhaengig vom KKK, da es um die physische Raumkapazitaet geht.
+        // hatWochenTrennung = false bedeutet anzahlA == anzahlB; dann genuegt
+        // eine einzige Zahl im Badge.
+        private (int anzahlA, int anzahlB, bool hatWochenTrennung) ZaehleFachgruppe(List<int> bloecke)
+        {
+            int anzahlA = 0, anzahlB = 0;
+            bool hatWochenTrennung = false;
+
+            foreach (int b in bloecke)
+            {
+                string wg = (_blocks[b].WochenGruppe ?? "").Trim();
+                if (wg == "A" || wg == "B") hatWochenTrennung = true;
+                if (wg != "B") anzahlA++; // A-Woche + ohne Wochengruppe
+                if (wg != "A") anzahlB++; // B-Woche + ohne Wochengruppe
+            }
+            return (anzahlA, anzahlB, hatWochenTrennung);
+        }
+
+        // Raum-Limit der Gruppe aus Spalte B des Sheets FGR. null = kein
+        // Eintrag: die Gruppe stammt dann aus der Fallback-Zuordnung in
+        // ExcelLoader.BestimmeFachgruppe und wird vom Solver nicht begrenzt.
+        private int? FachgruppenLimit(string gruppe)
+        {
+            if (gruppe != null && _fachraumLimit.TryGetValue(gruppe, out int limit)) return limit;
+            return null;
+        }
+
+        // Auswahlliste: alle Gruppen aus FGR (auch solche ohne einen einzigen
+        // Block — dass dort nichts liegt, ist ebenfalls eine Information) plus
+        // alle in der Loesung tatsaechlich vorkommenden Fachgruppen. Gruppen
+        // MIT Limit zuerst, danach die nur per Fallback entstandenen.
+        private void FuelleFachgruppenDropdown(string behalten = null)
+        {
+            if (CboFachgruppe == null || _blocks == null) return;
+
+            CboFachgruppe.Items.Clear();
+
+            var ausBloecken = _blocks.SelectMany(b => b.Teile.Select(t => t.FachGruppe))
+                                     .Where(s => !string.IsNullOrWhiteSpace(s));
+            var alle = ausBloecken
+                .Concat(_fachraumLimit.Keys.Where(k => !string.IsNullOrWhiteSpace(k)))
+                .Distinct()
+                .OrderBy(g => _fachraumLimit.ContainsKey(g) ? 0 : 1)
+                .ThenBy(g => g);
+
+            foreach (var g in alle)
+                CboFachgruppe.Items.Add(g);
+
+            if (CboFachgruppe.Items.Count > 0)
+            {
+                int idx = behalten != null ? CboFachgruppe.Items.IndexOf(behalten) : -1;
+                CboFachgruppe.SelectedIndex = idx >= 0 ? idx : 0;
+            }
+        }
+
+        // Klick auf einen Unterricht im Fachgruppenplan: BEIDE Hauptplaene auf
+        // diesen Unterricht umstellen (anders als SynchronisiereAnderenPlan, das
+        // immer nur den jeweils anderen Plan setzt). Wiederholter Klick auf
+        // denselben Block rotiert durch seine Teilunterrichte — bei einem Block
+        // mit mehreren Lehrer/Klasse-Paaren kommt man so an alle heran.
+        private void SynchronisiereBeidePlaeneAufBlock(int blockIdx)
+        {
+            if (_blocks == null || blockIdx < 0 || blockIdx >= _blocks.Count) return;
+            var block = _blocks[blockIdx];
+
+            if (_rotBlockIdx != blockIdx) { _rotBlockIdx = blockIdx; _rotIndex = 0; }
+            else _rotIndex++;
+
+            _highlightBloecke = BerechnePaedEinheit(blockIdx);
+
+            var teile = block.Teile.Where(t => !string.IsNullOrWhiteSpace(t.Lehrer)).ToList();
+            if (teile.Count == 0) teile = block.Teile;
+            if (teile.Count == 0) return;
+
+            var teil = teile[_rotIndex % teile.Count];
+            string klasse = teil.Klassen?.FirstOrDefault(k => !string.IsNullOrWhiteSpace(k));
+
+            // Setzt die Auswahl das Dropdown wirklich um, zeichnet dessen
+            // SelectionChanged den Plan selbst neu; sonst hier nachziehen, damit
+            // die neue Hervorhebung auch bei unveraenderter Auswahl erscheint.
+            if (!SetzeComboAuf(CboLehrer, teil.Lehrer)) ZeichneLehrerGrid();
+            if (!SetzeComboAuf(CboKlasse, klasse)) ZeichneKlasseGrid();
+
+            ZeichneAlleAngehefteten();
+            ZeichneFachgruppenGrid();
+        }
+
+        // true = Auswahl wurde tatsaechlich geaendert (SelectionChanged laeuft).
+        // false = Wert leer, nicht in der Liste (z.B. Lehrer durch aktiven
+        // Diag-Filter ausgeblendet) oder bereits ausgewaehlt.
+        private static bool SetzeComboAuf(ComboBox cbo, string wert)
+        {
+            if (cbo == null || string.IsNullOrWhiteSpace(wert)) return false;
+            int idx = cbo.Items.IndexOf(wert);
+            if (idx < 0 || idx == cbo.SelectedIndex) return false;
+            cbo.SelectedIndex = idx;
+            return true;
+        }
+
+        // ---- Bedienelemente Fachgruppenplan ----
+
+        private void ChkFachgruppenPlan_Changed(object sender, RoutedEventArgs e)
+        {
+            if (BrdFachgruppenPlan == null) return;
+            BrdFachgruppenPlan.Visibility = ChkFachgruppenPlan.IsChecked == true
+                ? Visibility.Visible : Visibility.Collapsed;
+            if (!_initialisiert || _belegung == null) return;
+            if (ChkFachgruppenPlan.IsChecked == true) ZeichneFachgruppenGrid();
+        }
+
+        private void CboFachgruppe_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_initialisiert || _belegung == null) return;
+            ZeichneFachgruppenGrid();
+        }
+
+        private void BtnNaechsteFachgruppe_Click(object sender, RoutedEventArgs e)
+        {
+            if (CboFachgruppe.Items.Count == 0) return;
+            CboFachgruppe.SelectedIndex = (CboFachgruppe.SelectedIndex + 1) % CboFachgruppe.Items.Count;
+        }
+
+        private void BtnVorigeFachgruppe_Click(object sender, RoutedEventArgs e)
+        {
+            if (CboFachgruppe.Items.Count == 0) return;
+            int n = CboFachgruppe.Items.Count;
+            CboFachgruppe.SelectedIndex = (CboFachgruppe.SelectedIndex - 1 + n) % n;
+        }
+
+        // =====================================================
         // Angeheftete Pläne (mehrere Lehrer-/Klassenpläne gleichzeitig)
         // =====================================================
 
@@ -1154,31 +1979,49 @@ namespace Stundenplan_V2
         {
             string name = CboLehrer.SelectedItem as string;
             if (name == null) return;
-            AnhefteTile(istLehrer: true, name);
+            AnhefteTile(PlanArt.Lehrer, name);
         }
 
         private void BtnKlasseAnheften_Click(object sender, RoutedEventArgs e)
         {
             string name = CboKlasse.SelectedItem as string;
             if (name == null) return;
-            AnhefteTile(istLehrer: false, name);
+            AnhefteTile(PlanArt.Klasse, name);
         }
 
-        // Legt eine neue, dauerhaft sichtbare Kachel für einen Lehrer- oder
-        // Klassenplan an. Die Kachel zeichnet (wie LehrerGrid/KlasseGrid) direkt
-        // auf der gemeinsamen Arbeitskopie _belegung/_blocks — Drag&Drop
-        // zwischen einer angehefteten Kachel und jedem anderen sichtbaren Plan
-        // (Haupt-Grids oder andere Kacheln) funktioniert daher ohne weiteres
-        // Zutun, weil Zelle_Drop/Zelle_DragOver ausschliesslich mit dieser
-        // gemeinsamen Belegung arbeiten, nicht mit dem jeweiligen Grid.
-        private void AnhefteTile(bool istLehrer, string name)
+        private void BtnFachgruppeAnheften_Click(object sender, RoutedEventArgs e)
+        {
+            string name = CboFachgruppe.SelectedItem as string;
+            if (name == null) return;
+            AnhefteTile(PlanArt.Fachgruppe, name);
+        }
+
+        // Beschriftung eines Plantyps für Statusmeldungen und Kachelköpfe.
+        private static string ArtName(PlanArt art) => art switch
+        {
+            PlanArt.Lehrer => "Lehrer",
+            PlanArt.Klasse => "Klasse",
+            _ => "Fachgruppe"
+        };
+
+        // Legt eine neue, dauerhaft sichtbare Kachel für einen Lehrer-,
+        // Klassen- oder Fachgruppenplan an. Die Kachel zeichnet (wie
+        // LehrerGrid/KlasseGrid/FachgruppenGrid) direkt auf der gemeinsamen
+        // Arbeitskopie _belegung/_blocks — Drag&Drop zwischen einer
+        // angehefteten Kachel und jedem anderen sichtbaren Plan (Haupt-Grids
+        // oder andere Kacheln) funktioniert daher ohne weiteres Zutun, weil
+        // Zelle_Drop/Zelle_DragOver ausschliesslich mit dieser gemeinsamen
+        // Belegung arbeiten, nicht mit dem jeweiligen Grid. Fachgruppen-
+        // Kacheln sind wie der Hauptplan reine Ansicht, aktualisieren sich
+        // aber genauso mit (ZeichneAlleAngehefteten).
+        private void AnhefteTile(PlanArt art, string name)
         {
             if (_belegung == null) return;
 
             // Gleicher Typ+Name schon angeheftet -> nichts tun, nur Hinweis.
-            if (_angeheftete.Any(t => t.istLehrer == istLehrer && t.name == name))
+            if (_angeheftete.Any(t => t.art == art && t.name == name))
             {
-                SetStatus($"{(istLehrer ? "Lehrer" : "Klasse")} '{name}' ist bereits angeheftet.", false);
+                SetStatus($"{ArtName(art)} '{name}' ist bereits angeheftet.", false);
                 return;
             }
 
@@ -1212,7 +2055,7 @@ namespace Stundenplan_V2
             };
             header.Children.Add(new TextBlock
             {
-                Text = (istLehrer ? "📌 Lehrer: " : "📌 Klasse: ") + name,
+                Text = "📌 " + ArtName(art) + ": " + name,
                 FontWeight = FontWeights.Bold,
                 VerticalAlignment = VerticalAlignment.Center
             });
@@ -1220,7 +2063,12 @@ namespace Stundenplan_V2
 
             var titel = new TextBlock
             {
-                Text = istLehrer ? "LEHRERPLAN (angeheftet)" : "KLASSENPLAN (angeheftet)",
+                Text = art switch
+                {
+                    PlanArt.Lehrer => "LEHRERPLAN (angeheftet)",
+                    PlanArt.Klasse => "KLASSENPLAN (angeheftet)",
+                    _ => "FACHGRUPPENPLAN (angeheftet)"
+                },
                 FontWeight = FontWeights.Bold,
                 Height = 20,
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -1243,7 +2091,7 @@ namespace Stundenplan_V2
                 Child = dock
             };
 
-            var eintrag = (istLehrer, name, tile, grid, canvas);
+            var eintrag = (art, name, tile, grid, canvas);
 
             closeBtn.Click += (s, e2) =>
             {
@@ -1255,16 +2103,23 @@ namespace Stundenplan_V2
             PnlAngeheftet.Children.Add(tile);
 
             ZeichneAngeheftetesTile(eintrag);
-            SetStatus($"{(istLehrer ? "Lehrer" : "Klasse")} '{name}' angeheftet.", false);
+            SetStatus($"{ArtName(art)} '{name}' angeheftet.", false);
         }
 
         private void ZeichneAngeheftetesTile(
-            (bool istLehrer, string name, Border tile, Grid grid, Canvas canvas) t)
+            (PlanArt art, string name, Border tile, Grid grid, Canvas canvas) t)
         {
             if (_belegung == null) return;
+            if (t.art == PlanArt.Fachgruppe)
+            {
+                // Reine Ansicht, eigener Zellaufbau (Auslastungs-Badge statt
+                // Zeitwunsch-Zahl, Bloecke untereinander statt nebeneinander).
+                ZeichneEinFachgruppenGrid(t.grid, t.name);
+                return;
+            }
             // Interaktiv wie die Haupt-Grids: gleiche BaueZelle/Zelle_Drop-Logik,
             // nur auf ein anderes Ziel-Grid gezeichnet.
-            ZeichneEinGrid(t.grid, t.name, lehrerAnsicht: t.istLehrer);
+            ZeichneEinGrid(t.grid, t.name, lehrerAnsicht: t.art == PlanArt.Lehrer);
         }
 
         // Wird nach jeder Änderung der Belegung aufgerufen (siehe ZeichneBeideGrids
@@ -2738,6 +3593,78 @@ namespace Stundenplan_V2
             {
                 _syncLaeuft = false;
             }
+
+            // Fachgruppenplan nachziehen: passende Gruppe waehlen und in jedem
+            // Fall neu zeichnen. Ohne das behielte er die alte, jetzt falsche
+            // Hervorhebung — _highlightBloecke ist oben gerade neu gesetzt
+            // worden. Bewusst ausserhalb des _syncLaeuft-Blocks: die Auswahl
+            // loest CboFachgruppe_SelectionChanged aus, das nur zeichnet und
+            // nicht zurueck synchronisiert.
+            SpringeZuFachgruppe(blockIdx);
+        }
+
+        // Beim Klick im Lehrer- oder Klassenplan den Fachgruppenplan auf die
+        // Gruppe des angeklickten Unterrichts umstellen.
+        private void SpringeZuFachgruppe(int blockIdx)
+        {
+            if (BrdFachgruppenPlan == null || BrdFachgruppenPlan.Visibility != Visibility.Visible) return;
+
+            string gruppe = WaehleFachgruppeFuer(blockIdx);
+
+            // SetzeComboAuf liefert false, wenn nicht umgeschaltet wurde: Block
+            // ohne Fachgruppe (gruppe == null -> gewaehlte Gruppe bleibt stehen,
+            // sonst spraenge die Ansicht bei jeder Mathestunde weg), Gruppe
+            // schon gewaehlt, oder Gruppe nicht in der Liste. Dann zeichnet kein
+            // SelectionChanged, also hier selbst — wegen der Hervorhebung.
+            if (!SetzeComboAuf(CboFachgruppe, gruppe))
+                ZeichneFachgruppenGrid();
+        }
+
+        // Zu welcher Fachgruppe soll der Fachgruppenplan beim Klick auf diesen
+        // Block springen? Ein Block kann mehrere haben — parallele
+        // Teilunterrichte mit verschiedenen Faechern, etwa im KKK. Vorrang haben
+        // Gruppen mit FGR-Limit (nur die koennen ueberhaupt knapp werden) und
+        // davon die an den Slots des Blocks knappste, also die ueberbuchte oder
+        // volle: genau die ist der Grund, warum man in den Fachgruppenplan
+        // schaut. Gleichstand -> Reihenfolge der Teile.
+        // null = Block hat keine Fachgruppe -> kein Sprung.
+        private string WaehleFachgruppeFuer(int blockIdx)
+        {
+            if (_blocks == null || blockIdx < 0 || blockIdx >= _blocks.Count) return null;
+
+            var gruppen = _blocks[blockIdx].Teile.Select(t => t.FachGruppe)
+                              .Where(g => !string.IsNullOrWhiteSpace(g))
+                              .Distinct().ToList();
+            if (gruppen.Count == 0) return null;
+            if (gruppen.Count == 1) return gruppen[0];
+
+            var blockSlots = new List<int>();
+            if (_belegung != null)
+                for (int s = 0; s < _slots.Count; s++)
+                    if (_belegung[blockIdx, s] == 1) blockSlots.Add(s);
+
+            string beste = null;
+            int besteEnge = int.MinValue;
+            foreach (var g in gruppen)
+            {
+                int? limit = FachgruppenLimit(g);
+                if (!limit.HasValue) continue; // ohne Limit nie knapp
+
+                // Enge = wie weit die Gruppe am jeweiligen Slot ueber dem Limit
+                // liegt; negativ = noch Luft. Vom Block koennen mehrere Slots
+                // betroffen sein (Doppelstunde), es zaehlt der engste.
+                int enge = int.MinValue;
+                foreach (int s in blockSlots)
+                {
+                    var (anzahlA, anzahlB, _) = ZaehleFachgruppe(BloeckeDerFachgruppeImSlot(s, g));
+                    enge = Math.Max(enge, Math.Max(anzahlA, anzahlB) - limit.Value);
+                }
+                if (enge > besteEnge) { besteEnge = enge; beste = g; }
+            }
+
+            // Keine Gruppe mit Limit (oder Block gar nicht eingeplant) ->
+            // Reihenfolge der Teile entscheidet.
+            return beste ?? gruppen[0];
         }
 
         // Ermittelt alle Block-Indizes der pädagogischen Einheit des gegebenen Blocks.
@@ -3454,11 +4381,49 @@ namespace Stundenplan_V2
             LeereVerschiebungen();
             if (PnlVerschieb == null) return;
 
-            _aktuelleVerschiebungen = SucheVerschiebungMitAusweich(hauptBlock, altSlots, zielSlots);
+            // Merken, BEVOR ggf. abgebrochen wird: LeereVerschiebungen() hat die
+            // Felder gerade zurueckgesetzt, und ChkAusweichSuche_Changed baut die
+            // Liste beim Einschalten genau daraus wieder auf — ohne dass man
+            // erneut ziehen muss (gleiches Muster wie ChkFilterVerletzungen).
             _letzteVerschiebungBlock = hauptBlock;
             _letzteVerschiebungAlt = altSlots;
             _letzteVerschiebungZiel = zielSlots;
+
+            // Abgeschaltet: hier ist Schluss. Das ist der teuerste Teil des
+            // ganzen Drag&Drop — SucheVerschiebungMitAusweich klont fuer JEDEN
+            // Kandidaten die komplette Belegung und laesst (bei aktivem
+            // Verletzungsfilter) je Vorschlag den PlanValidator ueber den ganzen
+            // Plan laufen, und das bei jeder neu ueberfahrenen Zelle. Die
+            // billige Konfliktpruefung am Zielfeld (roter Rahmen, gelbe Warnung,
+            // Tooltip) laeuft in Zelle_DragOver unabhaengig davon weiter.
+            if (ChkAusweichSuche?.IsChecked != true)
+            {
+                PnlVerschieb.Children.Add(new TextBlock
+                {
+                    Text = "Ausweichsuche ist abgeschaltet.",
+                    FontStyle = FontStyles.Italic,
+                    Foreground = Brushes.Gray,
+                    TextWrapping = TextWrapping.Wrap
+                });
+                return;
+            }
+
+            _aktuelleVerschiebungen = SucheVerschiebungMitAusweich(hauptBlock, altSlots, zielSlots);
             ZeichneVerschiebungsliste();
+        }
+
+        private void ChkAusweichSuche_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_initialisiert || _belegung == null || _blocks == null) return;
+
+            // Nach dem Einschalten die Liste fuer die zuletzt gezogene
+            // Konstellation nachreichen, statt erneutes Ziehen zu verlangen.
+            // Nach einem Loesungswechsel zeigen die gemerkten Indizes ins Leere.
+            if (GueltigerBlock(_letzteVerschiebungBlock) &&
+                _letzteVerschiebungAlt != null && _letzteVerschiebungZiel != null)
+                ZeigeVerschiebungen(_letzteVerschiebungBlock, _letzteVerschiebungAlt, _letzteVerschiebungZiel);
+            else
+                LeereVerschiebungen();
         }
 
         private void ZeichneVerschiebungsliste()
@@ -3803,19 +4768,18 @@ namespace Stundenplan_V2
         // sind "vorher" konstant und wuerden sonst pro Vorschlag neu ueber alle
         // Bloecke und Slots gezaehlt.
         // false = Validator hat versagt -> im Zweifel lieber alles anzeigen als nichts.
+        //
+        // Die Verletzungen des AKTUELLEN Plans stehen bereits in
+        // _aktuelleVerletzungen (PruefeUndZeigeWarnungen laeuft nach jeder
+        // Aenderung von _belegung). Hier nochmal PlanValidator.Pruefe auf
+        // dieselbe unveraenderte Belegung zu werfen, war reine Doppelarbeit —
+        // und zwar bei jeder ueberfahrenen Zelle, aus beiden Filtermethoden.
         private bool ErmittleVergleichsbasis(out int trVor, out Dictionary<string, int> freiVorCache)
         {
             freiVorCache = new Dictionary<string, int>();
             trVor = 0;
-            try
-            {
-                trVor = PlanValidator.Prüfe(_belegung, _blocks, _slots, _grossePausen)
-                                     .Count(v => v.Kategorie == "Tagesregel");
-            }
-            catch
-            {
-                return false;
-            }
+            if (!_verletzungenGueltig) return false;
+            trVor = _aktuelleVerletzungen.Count(v => v.Kategorie == "Tagesregel");
             return true;
         }
 
@@ -4306,7 +5270,13 @@ namespace Stundenplan_V2
         // gewarnt wird, obwohl sich an dieser Verletzung nichts aendert.
         // Gibt den konkreten Verletzungstext zurueck, oder null wenn keine neue
         // weiche Verletzung entsteht.
-        private string FindeNeueWeicheVerletzung(int[,] probe, int unr)
+        //
+        // Mehrere UNrn: bei einem Tausch bewegen sich ZWEI Bloecke, und der
+        // Tauschpartner kann sich an seinem neuen Platz genauso eine Verletzung
+        // einhandeln wie der gezogene Block. Alle UNrn laufen bewusst ueber
+        // EINEN gemeinsamen PlanValidator-Durchlauf: die Methode haengt am
+        // DragOver und wird bei jeder neu ueberfahrenen Zelle aufgerufen.
+        private string FindeNeueWeicheVerletzung(int[,] probe, params int[] unrn)
         {
             List<PlanValidator.Verletzung> nachher;
             try
@@ -4319,15 +5289,18 @@ namespace Stundenplan_V2
             }
 
             bool IstRelevant(PlanValidator.Verletzung v) =>
-                (v.Kategorie == "Doppelstunden" || v.Kategorie == "Tagesregel") && v.UNr == unr;
+                (v.Kategorie == "Doppelstunden" || v.Kategorie == "Tagesregel") && unrn.Contains(v.UNr);
 
+            // UNr gehoert in den Schluessel: bei mehreren UNrn (Tausch) wuerde
+            // sonst eine schon vorher bestehende Verletzung des einen Blocks
+            // eine gleichlautende neue des anderen verdecken.
             var vorherKeys = (_aktuelleVerletzungen ?? new List<PlanValidator.Verletzung>())
                 .Where(IstRelevant)
-                .Select(v => v.Kategorie + "|" + v.Tag + "|" + v.Details)
+                .Select(v => v.Kategorie + "|" + v.UNr + "|" + v.Tag + "|" + v.Details)
                 .ToHashSet();
 
             var neu = nachher.FirstOrDefault(v =>
-                IstRelevant(v) && !vorherKeys.Contains(v.Kategorie + "|" + v.Tag + "|" + v.Details));
+                IstRelevant(v) && !vorherKeys.Contains(v.Kategorie + "|" + v.UNr + "|" + v.Tag + "|" + v.Details));
 
             return neu == null ? null : neu.Kategorie + ": " + neu.Details;
         }
@@ -4439,24 +5412,75 @@ namespace Stundenplan_V2
 
             ZeigeVerschiebungen(blockIdx, quellSlots, zielSlots);
 
-            // NEU: direkten harten Konflikt am Zielslot pruefen und schon
-            // waehrend des Ziehens anzeigen (Cursor "verboten" + rote
-            // Zielzelle + Tooltip mit Grund), unabhaengig davon, ob spaeter
-            // ein Ausweich-Tausch moeglich waere.
+            // Harten Konflikt am Zielslot schon waehrend des Ziehens pruefen
+            // (Cursor "verboten" + rote Zielzelle + Tooltip mit Grund),
+            // unabhaengig davon, ob spaeter ein Ausweich-Tausch moeglich waere.
+            //
+            // Die Probe muss GENAU die Aktion abbilden, die Zelle_Drop danach
+            // ausfuehren wuerde. Liegt im Ziel genau ein kollidierender Block
+            // gleicher Stundenzahl, ist das ein TAUSCH (siehe VersucheTauschen)
+            // — dann muss auch der Zielblock in der Probe auf die Quellslots
+            // wandern. Blieb er stattdessen (wie frueher) im Ziel stehen,
+            // standen beide Bloecke gleichzeitig im selben Slot: die Pruefung
+            // meldete dann immer zuerst den gar nicht existierenden Lehrer-
+            // bzw. Klassenkonflikt mit eben diesem Block und kam nie bis zur
+            // Fachraum-Pruefung. Der Tooltip nannte deshalb die Klasse, obwohl
+            // in Wahrheit das Fachraum-Limit den Tausch verhindert.
+            int tauschBlock = -1;
+            List<int> tauschSlots = null;
+            var zielGruppenVorschau = FindeKonfligierendeBeleger(blockIdx, zielSlots)
+                .GroupBy(x => x.b).ToList();
+            if (zielGruppenVorschau.Count == 1)
+            {
+                var slotsB = zielGruppenVorschau[0].Select(x => x.s).OrderBy(x => x).ToList();
+                if (slotsB.Count == quellSlots.Count)
+                {
+                    tauschBlock = zielGruppenVorschau[0].Key;
+                    tauschSlots = slotsB;
+                }
+            }
+
             var probe = (int[,])_belegung.Clone();
-            foreach (int s in quellSlots) probe[blockIdx, s] = 0;
-            foreach (int s in zielSlots) probe[blockIdx, s] = 1;
-            string konflikt = FindeHartenKonflikt(probe, blockIdx, zielSlots);
+            string konflikt;
+
+            if (tauschBlock >= 0)
+            {
+                // Tausch-Probe exakt wie in VersucheTauschen: A raus aus
+                // quellSlots, B raus aus tauschSlots, dann A in tauschSlots und
+                // B in quellSlots. Beide Richtungen pruefen — gesperrt ist der
+                // Tausch auch dann, wenn erst der Zielblock am neuen Platz
+                // ansteht.
+                foreach (int s in quellSlots) probe[blockIdx, s] = 0;
+                foreach (int s in tauschSlots) probe[tauschBlock, s] = 0;
+                foreach (int s in tauschSlots) probe[blockIdx, s] = 1;
+                foreach (int s in quellSlots) probe[tauschBlock, s] = 1;
+
+                konflikt = FindeHartenKonflikt(probe, blockIdx, tauschSlots)
+                           ?? FindeHartenKonflikt(probe, tauschBlock, quellSlots);
+            }
+            else
+            {
+                // Reines Verschieben (leeres Ziel oder nur fremde, nicht
+                // kollidierende Unterrichte im Ziel -> Ko-Platzierung).
+                foreach (int s in quellSlots) probe[blockIdx, s] = 0;
+                foreach (int s in zielSlots) probe[blockIdx, s] = 1;
+                konflikt = FindeHartenKonflikt(probe, blockIdx, zielSlots);
+            }
 
             if (konflikt != null)
             {
                 e.Effects = DragDropEffects.None;
                 MarkiereKonfliktZelle(bd, konflikt, hart: true);
-                SetStatus("Gesperrt: " + konflikt, true);
+                SetStatus((tauschBlock >= 0 ? "Tausch gesperrt: " : "Gesperrt: ") + konflikt, true);
             }
             else
             {
-                string weiche = FindeNeueWeicheVerletzung(probe, _blocks[blockIdx].UNr);
+                // Beim Tausch zaehlt auch der Tauschpartner: er wandert auf die
+                // Quellslots und kann sich dort seinerseits eine Doppelstunden-
+                // oder Tagesregel-Verletzung einhandeln.
+                string weiche = tauschBlock >= 0
+                    ? FindeNeueWeicheVerletzung(probe, _blocks[blockIdx].UNr, _blocks[tauschBlock].UNr)
+                    : FindeNeueWeicheVerletzung(probe, _blocks[blockIdx].UNr);
                 if (weiche != null)
                 {
                     MarkiereKonfliktZelle(bd, weiche, hart: false);
@@ -4851,15 +5875,23 @@ namespace Stundenplan_V2
         }
         private List<PlanValidator.Verletzung> _aktuelleVerletzungen = new();
 
+        // false = der Validator ist beim letzten Lauf ausgestiegen; die leere
+        // Liste bedeutet dann NICHT "keine Verletzungen". Wer sie als
+        // Vergleichsbasis nutzt, muss den Unterschied kennen, sonst gilt jede
+        // gefundene Verletzung als neu.
+        private bool _verletzungenGueltig = false;
+
         private void PruefeUndZeigeWarnungen()
         {
             try
             {
                 _aktuelleVerletzungen = PlanValidator.Prüfe(_belegung, _blocks, _slots, _grossePausen);
+                _verletzungenGueltig = true;
             }
             catch
             {
                 _aktuelleVerletzungen = new List<PlanValidator.Verletzung>();
+                _verletzungenGueltig = false;
             }
         }
 

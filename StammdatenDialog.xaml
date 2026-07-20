@@ -1,0 +1,53 @@
+<Window x:Class="Stundenplan_V2.StammdatenDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Stammdaten (StD) bearbeiten / aus Untis importieren"
+        Width="1150" Height="660"
+        MinWidth="700" MinHeight="380"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResizeWithGrip"
+        Closing="Window_Closing">
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap"
+                   Text="Alle Zeilen des Sheets 'StD'. Werte direkt in der Tabelle bearbeiten. Die fünf gelb hinterlegten Spalten 'HohlWoche hart' … 'DreifachHohl hart' machen die jeweilige Regel für diesen Lehrer verbindlich (x, ja oder 1) — sie stammen nicht aus Untis und überleben einen Import. Mehrere Zellen einer Spalte markieren (Ziehen oder Strg/Shift) und mit Strg+D bzw. Rechtsklick den Wert der obersten markierten Zelle nach unten füllen. 'Speichern und schließen' schreibt in die Excel-Datei und liest die Daten neu ein. Ein Import schreibt sofort und lässt das Fenster offen."/>
+
+        <!-- AutoGenerateColumns: die Spalten stehen erst zur Laufzeit fest, sie
+             kommen aus der Kopfzeile des Sheets. Deshalb DataTable-Binding.
+             SelectionUnit=Cell + Extended: erlaubt das Markieren mehrerer Zellen
+             zum gemeinsamen Füllen (Strg+D / Kontextmenü). -->
+        <DataGrid x:Name="DgStammdaten" Grid.Row="1"
+                  AutoGenerateColumns="True" CanUserAddRows="False" CanUserDeleteRows="False"
+                  CanUserSortColumns="True" GridLinesVisibility="All"
+                  HeadersVisibility="All" Margin="0,0,0,8"
+                  SelectionUnit="Cell" SelectionMode="Extended"
+                  PreviewKeyDown="DgStammdaten_PreviewKeyDown"
+                  AutoGeneratingColumn="DgStammdaten_AutoGeneratingColumn">
+            <DataGrid.ContextMenu>
+                <ContextMenu>
+                    <MenuItem x:Name="MnuFuellen" Header="Nach unten füllen (Strg+D)"
+                              Click="MnuFuellen_Click"/>
+                </ContextMenu>
+            </DataGrid.ContextMenu>
+        </DataGrid>
+
+        <TextBlock x:Name="TxtStatus" Grid.Row="2" Margin="0,0,0,8"
+                   TextWrapping="Wrap" Foreground="DimGray"/>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="BtnImport" Content="Aus GPU004 importieren …" Width="180" Margin="0,0,24,0"
+                    Click="BtnImport_Click"/>
+            <Button x:Name="BtnSpeichern" Content="Speichern und schließen" Width="170" Margin="0,0,6,0"
+                    Click="BtnSpeichern_Click"/>
+            <Button x:Name="BtnSchliessen" Content="Verwerfen und schließen" Width="170" IsCancel="True"
+                    Click="BtnSchliessen_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

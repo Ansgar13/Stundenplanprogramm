@@ -168,6 +168,64 @@ namespace Stundenplan_V2
             _infeasibleDetails.Add(text);
         }
 
+        // Protokolliert das Ergebnis EINES Solve-Aufrufs.
+        //
+        // Hintergrund: "max_time_in_seconds" ist für CP-SAT eine Obergrenze,
+        // keine Laufzeitvorgabe. Ist das Optimum gefunden UND bewiesen, kehrt
+        // Solve() sofort zurück — ein Lauf, der bei Zeitlimit 200 schon nach
+        // 10 s fertig ist, ist also der Normalfall und kein Fehler. Ohne diese
+        // Zeile war das von außen nicht zu unterscheiden von "Limit wird
+        // ignoriert", weil der Status bisher nur im Fehlerfall im Log landete.
+        //
+        // Zu beachten: das Limit gilt pro Solve-Aufruf, nicht für den ganzen
+        // Lauf. Die Engine ruft Solve je Lösung und je Tausch-Kombination
+        // erneut auf; die Summe der hier protokollierten Zeiten kann das Limit
+        // daher deutlich überschreiten.
+        //
+        // istFolgelösung: bei der Suche nach weiteren diversen Lösungen (Phase 2)
+        // ist "Infeasible" der reguläre Schluss — dort gilt zusätzlich zum Modell
+        // die Forderung nach gleicher Qualität UND Mindestabstand zur Vorlösung.
+        // Es heißt also "keine weitere Lösung dieser Art", nicht "Plan unlösbar".
+        private static void LogSolveErgebnis(
+            Action<string> log, string label, CpSolver solver,
+            CpSolverStatus status, int zeitlimitSekunden, bool istFolgelösung = false)
+        {
+            if (log == null) return;
+
+            string deutung = status switch
+            {
+                CpSolverStatus.Optimal =>
+                    "Optimum bewiesen, Suche abgeschlossen — mehr Zeit würde nichts ändern",
+                CpSolverStatus.Feasible =>
+                    "Zeitlimit erreicht, Optimum NICHT bewiesen — mehr Zeit kann die Qualität verbessern",
+                CpSolverStatus.Infeasible when istFolgelösung =>
+                    "keine weitere Lösung mit gleicher Qualität und dem geforderten " +
+                    "Mindestabstand — 'Mindestabstand Lösungen' in PM senken",
+                CpSolverStatus.Infeasible =>
+                    "bewiesen unlösbar",
+                _ =>
+                    "Zeitlimit erreicht, ohne eine Lösung zu finden — Zeitlimit erhöhen"
+            };
+
+            string werte = "";
+            if (status == CpSolverStatus.Optimal || status == CpSolverStatus.Feasible)
+            {
+                werte = $", Zielwert {solver.ObjectiveValue:F0}";
+                // Bei Feasible zeigt der Abstand zur Schranke, wieviel Luft der
+                // Solver noch sieht — die eigentliche Entscheidungshilfe für die
+                // Frage, ob sich ein höheres Zeitlimit lohnt.
+                if (status == CpSolverStatus.Feasible)
+                    werte += $" (obere Schranke {solver.BestObjectiveBound:F0})";
+            }
+
+            try
+            {
+                log($"[Solver] {label}: {status} nach {solver.WallTime():F1}s " +
+                    $"von max. {zeitlimitSekunden}s{werte} — {deutung}");
+            }
+            catch { /* Logging darf die Suche nie stören */ }
+        }
+
         // =====================================================
         // Baut die Zähl-Variablen für die "Fach pro Klasse pro Tag max 2"-
         // Regel (verwendet sowohl im echten Solver als auch in der
@@ -263,7 +321,10 @@ namespace Stundenplan_V2
             HashSet<int> ignoriereMinDoppelFürUNr = null,
             bool mitZusammenhangsConstraint = true,
             HashSet<int> doppelstundenAusschlussFürUNr = null,
-            HashSet<int> fixUNrAusschluss = null)
+            HashSet<int> fixUNrAusschluss = null,
+            // Nur Lehrer mit mindestens einem harten Flag aus dem Sheet StD;
+            // null/leer = Stufe wird nicht geprueft (siehe AddHarteStdRegeln).
+            Dictionary<string, LehrerStammdaten> stdRegelnHart = null)
         {
             var model = new CpModel();
             var x = new BoolVar[B, S];
@@ -608,9 +669,189 @@ namespace Stundenplan_V2
                 }
             }
 
+            // === OPTIONAL: harte StD-Regeln (Hohlstunden/Folge/Einzel) ===
+            if (stdRegelnHart != null && stdRegelnHart.Count > 0)
+                AddHarteStdRegeln(model, x, blocks, slots, B, S, stdRegelnHart);
+
             var solver = new CpSolver();
             solver.StringParameters = $"max_time_in_seconds:{timeoutSekunden}";
             return solver.Solve(model);
+        }
+
+        // Klartext der harten Regeln eines Lehrers fuer die Diagnose-Ausgabe.
+        internal static string BeschreibeHarteRegeln(LehrerStammdaten sd)
+        {
+            var teile = new List<string>();
+            if (sd.HohlWocheHart && sd.HohlStdMax.HasValue)
+                teile.Add($"max {sd.HohlStdMax.Value} Hohlstunden/Woche");
+            if (sd.FolgeHart && sd.StdFolge.HasValue)
+                teile.Add($"max {sd.StdFolge.Value} Stunden am Stück");
+            if (sd.EinzelHart) teile.Add("keine Einzelstunde");
+            if (sd.DoppelHohlHart) teile.Add("keine Doppel-Hohlstunde");
+            if (sd.DreifachHohlHart) teile.Add("keine Dreifach-Hohlstunde");
+            return $"'{sd.Name}': {string.Join(", ", teile)}";
+        }
+
+        // =====================================================
+        // Harte StD-Regeln (Sheet StD, Spalten "... hart") in ein Modell
+        // einbauen. Wird von zwei Stellen benutzt:
+        //   1) LöseModellMitFlags (Diagnose-Stufe 6)
+        //   2) PlanVerbesserung.LnsSubSolver — dessen Teilmodell hat ebenfalls
+        //      ein volles x[B,S] (nicht freigegebene Bloecke sind dort fixiert),
+        //      passt also unveraendert.
+        // Deshalb internal statt private: eine Formulierung, zwei Modelle —
+        // sonst laufen die Varianten frueher oder spaeter auseinander.
+        //
+        // Bewusst eigenstaendig statt aus PlanenIntern herausgeloest: dort sind
+        // die Variablen mit den weichen Strafvariablen verflochten, hier wird
+        // nur der harte Anteil gebraucht. Die u-Variablen (Lehrer hat in Slot
+        // Unterricht) und die Muster-Formulierungen sind identisch zu
+        // PlanenIntern — bei Aenderungen dort muss das hier mitgezogen werden.
+        //
+        // 'stdRegelnHart' enthaelt NUR Lehrer mit mindestens einem harten Flag;
+        // wer nur Strafen hat, gehoert nicht hinein, sonst meldet die Diagnose
+        // False-Positives (gleiches Vorgehen wie bei extraFreieTageHart).
+        // =====================================================
+        internal static void AddHarteStdRegeln(
+            CpModel model, BoolVar[,] x,
+            List<UnterrichtsBlock> blocks, List<ZeitSlot> slots, int B, int S,
+            Dictionary<string, LehrerStammdaten> stdRegelnHart)
+        {
+            var tageListe = slots.Select(s => s.WTag).Distinct().ToList();
+
+            int lIdx = 0;
+            foreach (var kv in stdRegelnHart)
+            {
+                string lName = kv.Key;
+                var sd = kv.Value;
+                if (sd == null || !sd.HatHarteRegel) continue;
+                int l = lIdx++;
+
+                var lehrerBlöcke = Enumerable.Range(0, B)
+                    .Where(b => blocks[b].Teile.Any(t => t.Lehrer == lName))
+                    .ToList();
+                if (lehrerBlöcke.Count == 0) continue;
+
+                var hohlVarsLehrer = new List<BoolVar>();
+
+                for (int dayIdx = 0; dayIdx < tageListe.Count; dayIdx++)
+                {
+                    string tag = tageListe[dayIdx];
+                    var tagesSlots = Enumerable.Range(0, S)
+                        .Where(s => slots[s].WTag == tag)
+                        .OrderBy(s => slots[s].Stunde)
+                        .ToList();
+                    if (tagesSlots.Count < 2) continue;
+
+                    int n = tagesSlots.Count;
+                    var u = new BoolVar[n];
+                    for (int si = 0; si < n; si++)
+                    {
+                        int sIdx = tagesSlots[si];
+                        u[si] = model.NewBoolVar($"d_u_{l}_{dayIdx}_{si}");
+                        var blöckeInSlot = lehrerBlöcke.Select(b => x[b, sIdx]).ToList();
+                        if (blöckeInSlot.Count == 0) { model.Add(u[si] == 0); continue; }
+                        foreach (var bv in blöckeInSlot)
+                            model.Add(u[si] >= bv);
+                        model.Add(LinearExpr.Sum(blöckeInSlot) >= u[si]);
+                    }
+
+                    // "vorher"/"rest" beschreiben, ob VOR bzw. NACH einem Slot
+                    // am selben Tag ueberhaupt noch Unterricht liegt. Beide
+                    // werden von der Hohlstunden- und der Dreifach-Regel
+                    // gebraucht, daher einmal gemeinsam gebaut.
+                    //   rest[si]   = in si oder spaeter ist Unterricht
+                    //   vorher[si] = vor si (echt frueher) ist Unterricht
+                    bool brauchtKetten = sd.HohlWocheHart || sd.DreifachHohlHart;
+                    BoolVar[]? rest = null;
+                    BoolVar[]? vorher = null;
+
+                    if (brauchtKetten)
+                    {
+                        rest = new BoolVar[n];
+                        rest[n - 1] = u[n - 1];
+                        for (int si = n - 2; si >= 0; si--)
+                        {
+                            rest[si] = model.NewBoolVar($"d_rest_{l}_{dayIdx}_{si}");
+                            model.Add(rest[si] >= u[si]);
+                            model.Add(rest[si] >= rest[si + 1]);
+                            model.Add(rest[si] <= u[si] + rest[si + 1]);
+                        }
+                    }
+
+                    if (sd.HohlWocheHart)
+                    {
+                        vorher = new BoolVar[n];
+                        vorher[0] = model.NewBoolVar($"d_vorher_{l}_{dayIdx}_0");
+                        model.Add(vorher[0] == 0);
+                        for (int si = 1; si < n; si++)
+                        {
+                            vorher[si] = model.NewBoolVar($"d_vorher_{l}_{dayIdx}_{si}");
+                            model.Add(vorher[si] >= u[si - 1]);
+                            model.Add(vorher[si] >= vorher[si - 1]);
+                            model.Add(vorher[si] <= u[si - 1] + vorher[si - 1]);
+                        }
+                    }
+
+                    for (int si = 1; si < n - 1; si++)
+                    {
+                        if (sd.HohlWocheHart)
+                        {
+                            // Hohlstunde = frei, und am selben Tag liegt davor
+                            // IRGENDWO und danach IRGENDWO Unterricht. Nicht nur
+                            // die direkten Nachbarn: sonst zaehlt eine Luecke von
+                            // zwei oder drei Stunden am Stueck als null, und
+                            // "HohlWoche hart" liefe ins Leere. Diese Definition
+                            // ist identisch zu der in PlanBewertung.
+                            var hohlVar = model.NewBoolVar($"d_hohl_{l}_{dayIdx}_{si}");
+                            model.Add(hohlVar >= vorher![si] + rest![si + 1] - u[si] - 1);
+                            model.Add(hohlVar <= 1 - u[si]);
+                            model.Add(hohlVar <= vorher![si]);
+                            model.Add(hohlVar <= rest![si + 1]);
+                            hohlVarsLehrer.Add(hohlVar);
+                        }
+
+                        if (sd.DoppelHohlHart && si >= 2)
+                        {
+                            var doppelVar = model.NewBoolVar($"d_doppelhohl_{l}_{dayIdx}_{si}");
+                            model.Add(doppelVar >= u[si - 2] + u[si + 1] - u[si - 1] - u[si] - 1);
+                            model.Add(doppelVar == 0);
+                        }
+                    }
+
+                    if (sd.DreifachHohlHart)
+                    {
+                        // rest[si] (oben gebaut): ab hier kommt noch Unterricht.
+                        // Ohne diese Bedingung waere auch ein frueher Feierabend
+                        // eine "Dreifach-Hohlstunde".
+                        for (int si = 1; si + 3 < n; si++)
+                        {
+                            var dreiVar = model.NewBoolVar($"d_dreihohl_{l}_{dayIdx}_{si}");
+                            model.Add(dreiVar >= u[si - 1] + rest![si + 3]
+                                                 - u[si] - u[si + 1] - u[si + 2] - 1);
+                            model.Add(dreiVar == 0);
+                        }
+                    }
+
+                    if (sd.EinzelHart)
+                    {
+                        var sumVar = model.NewIntVar(0, n, $"d_sum_{l}_{dayIdx}");
+                        model.Add(sumVar == LinearExpr.Sum(u));
+                        model.Add(sumVar != 1);
+                    }
+
+                    if (sd.FolgeHart && sd.StdFolge.HasValue)
+                    {
+                        int limit = sd.StdFolge.Value;
+                        for (int si = 0; si <= n - (limit + 1); si++)
+                            model.Add(LinearExpr.Sum(
+                                Enumerable.Range(si, limit + 1).Select(idx => u[idx])) <= limit);
+                    }
+                }
+
+                if (sd.HohlWocheHart && sd.HohlStdMax.HasValue && hohlVarsLehrer.Count > 0)
+                    model.Add(LinearExpr.Sum(hohlVarsLehrer) <= sd.HohlStdMax.Value);
+            }
         }
 
         // Convenience-Wrapper für Aufrufe ohne neuen Constraints
@@ -638,6 +879,108 @@ namespace Stundenplan_V2
         // entfallen. Timeouts liefern 'Unknown' (nicht Infeasible) und werden
         // daher konservativ NICHT als Ursache gemeldet.
         // =====================================================
+        // =====================================================
+        // Automatische Klassen-Grobprüfung bei Unlösbarkeit:
+        // Für jede Klasse gegenüberstellen, wie viele Slots ihr Unterricht
+        // MINDESTENS braucht und wie viele Slots laut ZWK überhaupt frei sind
+        // (KlassenWunsch != -3). Parallelität wird berücksichtigt, damit keine
+        // Falschmeldungen entstehen:
+        //  - KKK-parallele Blöcke (gleiches nicht-leeres KKK) belegen dieselben
+        //    Slots -> je (WochenGruppe,KKK)-Gruppe zählt nur max(Wst).
+        //  - A-/B-Wochen-Blöcke teilen sich physische Slots -> benötigt =
+        //    (jede Woche) + max(A-Woche, B-Woche).
+        // Es ist eine notwendige Bedingung: benötigt > frei => sicher unlösbar.
+        // =====================================================
+        private static void PruefeKlassenUeberbelegung(
+            List<UnterrichtsBlock> blocks, List<ZeitSlot> slots, Action<string> log)
+        {
+            int S = slots.Count;
+
+            var klassen = new HashSet<string>();
+            foreach (var b in blocks)
+                foreach (var t in b.Teile)
+                    foreach (var k in t.Klassen)
+                        if (!string.IsNullOrWhiteSpace(k)) klassen.Add(k);
+
+            bool eineGemeldet = false;
+
+            foreach (var k in klassen.OrderBy(x => x))
+            {
+                // Freie Slots dieser Klasse (nicht -3 in ZWK).
+                int frei = 0;
+                for (int s = 0; s < S; s++)
+                {
+                    if (slots[s].KlassenWunsch != null &&
+                        slots[s].KlassenWunsch.TryGetValue(k, out int kw) && kw == -3)
+                        continue;
+                    frei++;
+                }
+
+                // Pflichtstunden bestimmen. Wichtig (ClassConstraint):
+                //  - Gleiches nicht-leeres KKK koexistiert IMMER, auch ueber
+                //    Wochengruppen hinweg -> je KKK-Gruppe zaehlt nur max(Wst).
+                //  - Wochencharakter einer Einheit: nur "A", wenn ALLE Mitglieder
+                //    "A" sind; nur "B", wenn alle "B"; sonst "jede Woche" (E).
+                //  - Nur echte A-/B-Einheiten koennen sich einen physischen Slot
+                //    teilen -> benoetigt = E + max(A, B).
+                var klassenBloecke = blocks.Where(blk => blk.Teile.Any(t => t.Klassen.Contains(k))).ToList();
+
+                var kkkGruppen = new Dictionary<string, List<UnterrichtsBlock>>();
+                var einzelBloecke = new List<UnterrichtsBlock>();
+                foreach (var blk in klassenBloecke)
+                {
+                    string kkk = (blk.KKK ?? "").Trim();
+                    if (kkk.Length > 0)
+                    {
+                        if (!kkkGruppen.TryGetValue(kkk, out var lst)) { lst = new List<UnterrichtsBlock>(); kkkGruppen[kkk] = lst; }
+                        lst.Add(blk);
+                    }
+                    else einzelBloecke.Add(blk);
+                }
+
+                string WocheVon(IEnumerable<UnterrichtsBlock> gruppe)
+                {
+                    var wgs = gruppe.Select(g =>
+                    {
+                        string w = (g.WochenGruppe ?? "").Trim().ToUpperInvariant();
+                        return (w == "A" || w == "B") ? w : "";
+                    }).Distinct().ToList();
+                    if (wgs.Count == 1 && wgs[0] == "A") return "A";
+                    if (wgs.Count == 1 && wgs[0] == "B") return "B";
+                    return "";  // gemischt oder "jede Woche" -> belegt beide Wochen
+                }
+
+                int e = 0, a = 0, bW = 0;
+                void AddEinheit(string woche, int wst)
+                {
+                    if (woche == "A") a += wst;
+                    else if (woche == "B") bW += wst;
+                    else e += wst;                 // jede Woche
+                }
+
+                foreach (var grp in kkkGruppen.Values)
+                    AddEinheit(WocheVon(grp), grp.Max(g => g.Wst));   // KKK-parallel -> max
+                foreach (var blk in einzelBloecke)
+                    AddEinheit(WocheVon(new[] { blk }), blk.Wst);
+
+                int benoetigt = e + Math.Max(a, bW);
+
+                if (benoetigt > frei)
+                {
+                    if (!eineGemeldet)
+                    {
+                        log("  [Klassencheck] Klassen mit mehr Pflichtunterricht als freien Slots (laut ZWK) – das macht den Plan allein schon unlösbar:");
+                        eineGemeldet = true;
+                    }
+                    string abInfo = (a > 0 || bW > 0) ? $"  [jede Woche {e}, A {a}, B {bW}]" : "";
+                    log($"     • {k}: braucht mind. {benoetigt} Slots, hat aber nur {frei} freie → {benoetigt - frei} zu viel{abInfo}");
+                }
+            }
+
+            if (!eineGemeldet)
+                log("  [Klassencheck] Keine Klasse hat mehr Pflichtunterricht als freie Slots (laut ZWK).");
+        }
+
         private static bool DiagnoseEinzelInfeasible(
             List<UnterrichtsBlock> blocks,
             List<ZeitSlot> slots,
@@ -652,6 +995,10 @@ namespace Stundenplan_V2
             Action<string> log)
         {
             int S = slots.Count;
+
+            // Automatische Grobprüfung: hat eine Klasse mehr Pflichtunterricht als
+            // freie Slots (laut ZWK)? Läuft immer bei Unlösbarkeit.
+            PruefeKlassenUeberbelegung(blocks, slots, log);
 
             // FixUNr-Blöcke: bleiben bei jedem Test hart im Spiel (mit ihren Fix-Slots).
             var fixUNrn = new HashSet<int>();
@@ -1520,9 +1867,23 @@ namespace Stundenplan_V2
             Action<string> log,
             HashSet<string> lehrerFreiTageMinus3 = null,
             bool verbotMinus2Lehrer = false,
-            HashSet<string> lehrerFreiTageMinus2 = null)
+            HashSet<string> lehrerFreiTageMinus2 = null,
+            Dictionary<string, LehrerStammdaten> lehrerStammdaten = null)
         {
             bool IstOK(CpSolverStatus st) => st == CpSolverStatus.Optimal || st == CpSolverStatus.Feasible;
+
+            // Für die Stufe 6 nur Lehrer einbeziehen, deren StD-Regeln im echten
+            // Solver auch HART erzwungen werden. Wer dort nur über die Strafe
+            // läuft, gehört nicht ins Diagnose-Modell — sonst False-Positives,
+            // genau wie bei extraFreieTageHart oben.
+            Dictionary<string, LehrerStammdaten> stdRegelnHart = null;
+            if (lehrerStammdaten != null)
+            {
+                stdRegelnHart = lehrerStammdaten
+                    .Where(kv => kv.Value != null && kv.Value.HatHarteRegel)
+                    .ToDictionary(kv => kv.Key, kv => kv.Value);
+                if (stdRegelnHart.Count == 0) stdRegelnHart = null;
+            }
 
             // Für die Stufe 5 (FreeDay) nur Lehrer einbeziehen, für die das
             // FreeDay-Constraint im echten Solver auch HART erzwungen wird.
@@ -1770,6 +2131,56 @@ namespace Stundenplan_V2
                 return;
             }
 
+            // Stufe 6: + harte StD-Regeln (nur Lehrer mit "hart"-Flag)
+            if (stdRegelnHart != null && stdRegelnHart.Count > 0)
+            {
+                var s6 = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                    mitKlassenSperren: true,
+                    fachraumLimit: fachraumLimit, mitRäume: true,
+                    extraFreieTage: extraFreieTageHart, mitFreeDay: extraFreieTageHart != null,
+                    grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel, mitDoppelstunden: true,
+                    mitFachProKlasseProTag: true,
+                    stdRegelnHart: stdRegelnHart);
+                if (!IstOK(s6))
+                {
+                    DiagLog(log, "  [Diagnose] ❌ Mit den harten StD-Regeln infeasible!");
+                    DiagLog(log, $"  [Diagnose]    → {stdRegelnHart.Count} Lehrer haben im Sheet StD mindestens " +
+                                  "ein 'hart'-Flag (HohlWoche/Folge/Einzel/DoppelHohl/DreifachHohl).");
+
+                    // Schuldigen suchen: jeden betroffenen Lehrer EINZELN testen.
+                    // Nur Lehrer mit Flag kommen in Frage, das sind wenige Solves.
+                    var schuldige = new List<string>();
+                    foreach (var kv in stdRegelnHart)
+                    {
+                        var einzeln = new Dictionary<string, LehrerStammdaten> { [kv.Key] = kv.Value };
+                        var sx = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                            mitKlassenSperren: true,
+                            fachraumLimit: fachraumLimit, mitRäume: true,
+                            extraFreieTage: extraFreieTageHart, mitFreeDay: extraFreieTageHart != null,
+                            grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel, mitDoppelstunden: true,
+                            mitFachProKlasseProTag: true,
+                            stdRegelnHart: einzeln);
+                        // Timeout liefert 'Unknown' -> konservativ NICHT als Ursache melden.
+                        if (sx == CpSolverStatus.Infeasible)
+                            schuldige.Add(BeschreibeHarteRegeln(kv.Value));
+                    }
+
+                    if (schuldige.Count > 0)
+                    {
+                        DiagLog(log, "  [Diagnose]    Schon allein nicht erfüllbar:");
+                        foreach (var z in schuldige)
+                            DiagLog(log, "  [Diagnose]      • " + z);
+                    }
+                    else
+                    {
+                        DiagLog(log, "  [Diagnose]    Kein Lehrer ist für sich allein unerfüllbar — erst die " +
+                                      "Kombination mehrerer harter Regeln blockiert.");
+                    }
+                    DiagLog(log, "  [Diagnose]    Prüfen: Spalten 'HohlWoche hart' bis 'DreifachHohl hart' im Sheet StD.");
+                    return;
+                }
+            }
+
             DiagLog(log, "  [Diagnose] ✓ Mit allen geprüften Constraints feasible.");
             DiagLog(log, "  [Diagnose] ⚠ Das vollständige Diagnose-Modell ist feasible, der echte Solver aber nicht.");
             DiagLog(log, "  [Diagnose]    → Möglicherweise eine Constraint, die hier nicht abgebildet ist");
@@ -1854,7 +2265,8 @@ namespace Stundenplan_V2
             out string debug,
             Action<SolverFortschritt> fortschritt = null,
             System.Threading.CancellationToken abbruch = default,
-            int mindestAbstandBloecke = 5)
+            int mindestAbstandBloecke = 5,
+            Func<bool> darfDiagnose = null)
         {
             // Diagnose-Buffer für aktuellen Lauf zurücksetzen
             _infeasibleDetails.Clear();
@@ -1864,6 +2276,19 @@ namespace Stundenplan_V2
             int mindestAbstandBits = Math.Max(1, mindestAbstandBloecke * 2);
 
             var reporter = fortschritt != null ? new FortschrittReporter(fortschritt) : null;
+
+            // Memoisierte Rückfrage: Der Nutzer soll bei Unlösbarkeit nur EINMAL
+            // gefragt werden, obwohl es zwei Diagnose-Wege gibt (die stufenweise
+            // Diagnose in PlanenIntern und DiagnoseEinzelInfeasible). Der erste
+            // Aufruf ruft darfDiagnose auf und merkt sich die Antwort; alle
+            // weiteren liefern denselben Wert ohne erneuten Dialog.
+            bool? diagnoseErlaubtCache = null;
+            Func<bool> diagnoseGate = darfDiagnose == null ? null : () =>
+            {
+                if (diagnoseErlaubtCache == null)
+                    diagnoseErlaubtCache = darfDiagnose();
+                return diagnoseErlaubtCache.Value;
+            };
 
             // Live-Export: schreibt während des Laufs periodisch den aktuell
             // besten Zwischenstand in eine eigene, nummerierte Excel-Datei im
@@ -1918,6 +2343,7 @@ namespace Stundenplan_V2
             var ohneLösungen = PlanenIntern(
                 excelPfad, blocks, slots, fachraumLimit, extraFreieTage,
                 log, maxLösungen: anzahlLösungenOhne, tauschKey: null,
+                bewiesenInfeasible: out bool phase1Infeasible,
                 zeitlimitSekunden: zeitlimitSekunden,
                 nichtFreieTage: nichtFreieTage,
                 mindestAbstandBloecke: mindestAbstandBloecke,
@@ -1935,7 +2361,8 @@ namespace Stundenplan_V2
                 strafeMinus2Lehrer: strafeMinus2Lehrer,
                 lehrerFreiTageMinus2: lehrerFreiTageMinus2,
                 lehrerFreiTageMinus3: lehrerFreiTageMinus3,
-                reporter: reporter, abbruch: abbruch, liveState: liveState);
+                reporter: reporter, abbruch: abbruch, liveState: liveState,
+                darfDiagnose: diagnoseGate);
             if (reporter != null)
                 foreach (var l in ohneLösungen)
                     reporter.MeldeGefundeneLösung(l.label, l.quality, l.badUnits);
@@ -1950,20 +2377,37 @@ namespace Stundenplan_V2
             // Gruppe verursacht (zusammen mit den FixUNr) schon allein die
             // Unlösbarkeit? Dann sind Tauschversuche zwecklos → Phase 2 entfällt.
             // --------------------------------------------------
-            bool einzelInfeasible = false;
-            if (ohneLösungen.Count == 0)
-            {
-                log("Diagnose: prüfe einzelne Klassen / Zeilentext2-Gruppen auf Einzel-Infeasibilität...");
-                einzelInfeasible = DiagnoseEinzelInfeasible(
-                    blocks, slots, fachraumLimit, extraFreieTage, grossePausen,
-                    verbotSpäteDoppel, verbotMinus2Lehrer,
-                    lehrerFreiTageMinus2, lehrerFreiTageMinus3,
-                    zeitlimitSekunden, log);
+            // Keine Lösung, aber NICHT bewiesen unlösbar (Zeitlimit/Unknown):
+            // dann KEINE Infeasibilitäts-Diagnose und kein "unlösbar"-Dialog –
+            // der Plan könnte mit mehr Zeit lösbar sein.
+            if (ohneLösungen.Count == 0 && !phase1Infeasible)
+                log("Phase 1 ohne Lösung, aber nicht bewiesen unlösbar (Zeitlimit?) – " +
+                    "überspringe Infeasibilitäts-Diagnose; ggf. Zeitlimit (Tabelle PM) erhöhen.");
 
-                if (einzelInfeasible)
-                    log("→ Mindestens eine Klasse/Zeilentext2-Gruppe ist allein infeasible. Tauschversuche werden übersprungen.");
+            bool einzelInfeasible = false;
+            if (ohneLösungen.Count == 0 && phase1Infeasible)
+            {
+                // Dieselbe Rückfrage wie in PlanenIntern. Hat der Nutzer die
+                // Ursachensuche dort bereits verneint, liefert das Gate (memoisiert)
+                // ohne erneuten Dialog false und diese Diagnose entfällt ebenfalls.
+                if (diagnoseGate != null && !diagnoseGate())
+                {
+                    log("Diagnose: Einzel-Infeasibilitätsprüfung übersprungen (Nutzerwunsch).");
+                }
                 else
-                    log("→ Keine einzelne Klasse/Gruppe allein infeasible – die Ursache liegt in der Kombination. Phase 2 läuft wie gewohnt.");
+                {
+                    log("Diagnose: prüfe einzelne Klassen / Zeilentext2-Gruppen auf Einzel-Infeasibilität...");
+                    einzelInfeasible = DiagnoseEinzelInfeasible(
+                        blocks, slots, fachraumLimit, extraFreieTage, grossePausen,
+                        verbotSpäteDoppel, verbotMinus2Lehrer,
+                        lehrerFreiTageMinus2, lehrerFreiTageMinus3,
+                        zeitlimitSekunden, log);
+
+                    if (einzelInfeasible)
+                        log("→ Mindestens eine Klasse/Zeilentext2-Gruppe ist allein infeasible. Tauschversuche werden übersprungen.");
+                    else
+                        log("→ Keine einzelne Klasse/Gruppe allein infeasible – die Ursache liegt in der Kombination. Phase 2 läuft wie gewohnt.");
+                }
             }
 
             // --------------------------------------------------
@@ -2025,6 +2469,7 @@ namespace Stundenplan_V2
                         lösungen = PlanenIntern(
                             excelPfad, getauschteBlöcke, getauschteSlots, fachraumLimit, getauschteFreieTage,
                             log, maxLösungen: 1, tauschKey: tauschKey,
+                            bewiesenInfeasible: out _,
                             zeitlimitSekunden: zeitlimitSekunden,
                             nichtFreieTage: nichtFreieTage,
                             randomSeed: seed,
@@ -2220,6 +2665,7 @@ namespace Stundenplan_V2
             Action<string> log,
             int maxLösungen,
             string tauschKey,
+            out bool bewiesenInfeasible,
             int zeitlimitSekunden = 10,
             HashSet<string> nichtFreieTage = null,
             int randomSeed = 1,
@@ -2251,8 +2697,13 @@ namespace Stundenplan_V2
             int stabilitaetsGewicht = 0,
             FortschrittReporter reporter = null,
             System.Threading.CancellationToken abbruch = default,
-            LiveExportState liveState = null)
+            LiveExportState liveState = null,
+            Func<bool> darfDiagnose = null)
         {
+            // Standard: nicht bewiesen unlösbar. Wird nur im Infeasible-Zweig auf
+            // true gesetzt (Timeout/Unknown bleibt false).
+            bewiesenInfeasible = false;
+
             var model = new CpModel();
             int B = blocks.Count;
             int S = slots.Count;
@@ -2617,15 +3068,20 @@ namespace Stundenplan_V2
             var stdFolgeVars = new List<BoolVar>();
             var einzelVars = new List<BoolVar>();
 
-            // Nur berechnen wenn mindestens ein Strafwert != 0
+            lehrerStammdaten = lehrerStammdaten ?? new Dictionary<string, LehrerStammdaten>();
+
+            // Nur berechnen wenn mindestens ein Strafwert != 0 ODER irgendein
+            // Lehrer eine HARTE Regel hat (Sheet StD, Spalten "... hart").
+            // Ohne den zweiten Teil wuerde ein Strafgewicht 0 in PM die harten
+            // Regeln stillschweigend mit abschalten — die Flags saehen dann
+            // aus, als wuerden sie einfach nicht wirken.
+            bool harteRegelnVorhanden = lehrerStammdaten.Values.Any(s => s != null && s.HatHarteRegel);
             bool hohlstundenAktiv = strafeHohl != 0 || strafeDoppelHohl != 0 ||
                                     strafeDreifachHohl != 0 || strafeStdFolge != 0 ||
-                                    strafeEinzel != 0;
+                                    strafeEinzel != 0 || harteRegelnVorhanden;
 
             if (hohlstundenAktiv)
             {
-                lehrerStammdaten = lehrerStammdaten ?? new Dictionary<string, LehrerStammdaten>();
-
                 for (int l = 0; l < lehrerListe.Count; l++)
                 {
                     string lName = lehrerListe[l];
@@ -2633,6 +3089,18 @@ namespace Stundenplan_V2
                     int? maxFolge = sd?.StdFolge;
                     // Wochen-Freibetrag fuer Hohlstunden (StD: HohlStdMax). Kein Limit -> 0.
                     int hohlFreibetrag = sd?.HohlStdMax ?? 0;
+
+                    // Harte Regeln dieses Lehrers. Sie muessen unabhaengig von
+                    // den Strafgewichten gebaut werden: die Variablen entstehen
+                    // sonst nur, wenn die zugehoerige Strafe != 0 ist.
+                    // Der Loader hat bereits sichergestellt, dass hohlHart nur
+                    // gesetzt ist, wenn HohlStdMax auch einen Wert hat, und
+                    // folgeHart nur bei vorhandener Std.Folge.
+                    bool hohlHart     = sd?.HohlWocheHart ?? false;
+                    bool folgeHart    = sd?.FolgeHart ?? false;
+                    bool einzelHart   = sd?.EinzelHart ?? false;
+                    bool doppelHart   = sd?.DoppelHohlHart ?? false;
+                    bool dreifachHart = sd?.DreifachHohlHart ?? false;
                     // Sammelt ALLE einzelnen Hohlstunden-Variablen dieses Lehrers (ueber alle Tage),
                     // um spaeter die Wochensumme zu bilden und nur den Ueberschuss zu bestrafen.
                     var hohlVarsLehrer = new List<BoolVar>();
@@ -2680,24 +3148,83 @@ namespace Stundenplan_V2
 
                         int n = tagesSlots.Count;
 
-                        // Hohlstunden: si ist Hohlstunde wenn u[si-1]=1, u[si]=0, u[si+1]=1
-                        // Bidirektionale Modellierung:
-                        // hohlVar=1 gdw. u[si-1]+u[si+1]-u[si] >= 2
+                        bool brauchtHohl = strafeHohl != 0 || hohlHart;
+                        bool brauchtDrei = strafeDreifachHohl != 0 || dreifachHart;
+
+                        // "rest[si]"   = ab Index si hat der Lehrer an diesem Tag
+                        //                noch Unterricht.
+                        // "vorher[si]" = vor Index si (echt frueher) hatte er
+                        //                schon Unterricht.
+                        // Beide werden von der Hohlstunden- UND der
+                        // Dreifach-Regel gebraucht, deshalb hier einmal gemeinsam
+                        // statt zweimal.
+                        BoolVar[]? rest = null;
+                        if (brauchtHohl || brauchtDrei)
+                        {
+                            rest = new BoolVar[n];
+                            rest[n - 1] = u[n - 1];
+                            for (int si = n - 2; si >= 0; si--)
+                            {
+                                rest[si] = model.NewBoolVar($"rest_{l}_{dayIdx}_{si}");
+                                model.Add(rest[si] >= u[si]);
+                                model.Add(rest[si] >= rest[si + 1]);
+                                model.Add(rest[si] <= u[si] + rest[si + 1]);
+                            }
+                        }
+
+                        BoolVar[]? vorher = null;
+                        if (brauchtHohl)
+                        {
+                            vorher = new BoolVar[n];
+                            vorher[0] = model.NewBoolVar($"vorher_{l}_{dayIdx}_0");
+                            model.Add(vorher[0] == 0);
+                            for (int si = 1; si < n; si++)
+                            {
+                                vorher[si] = model.NewBoolVar($"vorher_{l}_{dayIdx}_{si}");
+                                model.Add(vorher[si] >= u[si - 1]);
+                                model.Add(vorher[si] >= vorher[si - 1]);
+                                model.Add(vorher[si] <= u[si - 1] + vorher[si - 1]);
+                            }
+                        }
+
+                        // Hohlstunde: si ist frei, und am selben Tag liegt davor
+                        // IRGENDWO und danach IRGENDWO Unterricht.
+                        //
+                        // Frueher stand hier "u[si-1]=1 AND u[si]=0 AND u[si+1]=1",
+                        // also nur die DIREKTEN Nachbarn. Damit zaehlte eine
+                        // Luecke von zwei oder drei Stunden am Stueck als NULL
+                        // Hohlstunden (bei si ist der rechte Nachbar leer, bei
+                        // si+1 der linke). Folgen: "HohlWoche hart" lief ins Leere
+                        // — Sum(hohlVars) <= Max war mit 0 trivial erfuellt, der
+                        // Solver meldete korrekt nichts — und "Strafe
+                        // Hohlstunden" bestrafte nur isolierte Einzelluecken,
+                        // waehrend PlanBewertung alle Lueckenstunden auswies. Die
+                        // Zielfunktion optimierte also etwas anderes als die
+                        // Bewertung anzeigte. Diese Formulierung ist identisch zu
+                        // der in PlanBewertung (jede freie Stunde zwischen erster
+                        // und letzter Stunde des Tages).
+                        //
+                        // Doppel- und Dreifachstrafe bleiben eigene Muster und
+                        // kommen hinzu — genau wie PlanBewertung beides
+                        // nebeneinander zaehlt (Zweierluecke = 2 Hohlstunden +
+                        // 1 Doppelhohlstunde).
                         for (int si = 1; si < n - 1; si++)
                         {
-                            if (strafeHohl != 0)
+                            // Bei hohlHart muessen die Variablen auch dann
+                            // entstehen, wenn strafeHohl 0 ist — die Wochensumme
+                            // unten baut auf ihnen auf.
+                            if (brauchtHohl)
                             {
                                 var hohlVar = model.NewBoolVar($"hohl_{l}_{dayIdx}_{si}");
-                                // hohlVar=1 → u[si-1]=1 AND u[si]=0 AND u[si+1]=1
-                                model.Add(hohlVar >= u[si - 1] + u[si + 1] - u[si] - 1);
+                                model.Add(hohlVar >= vorher![si] + rest![si + 1] - u[si] - 1);
                                 model.Add(hohlVar <= 1 - u[si]);
-                                model.Add(hohlVar <= u[si - 1]);
-                                model.Add(hohlVar <= u[si + 1]);
+                                model.Add(hohlVar <= vorher![si]);
+                                model.Add(hohlVar <= rest![si + 1]);
                                 hohlVarsLehrer.Add(hohlVar); // pro Lehrer sammeln (Freibetrag s.u.)
                             }
 
                             // Doppelhohlstunde: si-1 und si beide leer, si-2 und si+1 belegt
-                            if (strafeDoppelHohl != 0 && si >= 2)
+                            if ((strafeDoppelHohl != 0 || doppelHart) && si >= 2)
                             {
                                 var doppelVar = model.NewBoolVar($"doppelhohl_{l}_{dayIdx}_{si}");
                                 model.Add(doppelVar >= u[si - 2] + u[si + 1] - u[si - 1] - u[si] - 1);
@@ -2705,7 +3232,15 @@ namespace Stundenplan_V2
                                 model.Add(doppelVar <= 1 - u[si]);
                                 model.Add(doppelVar <= u[si - 2]);
                                 model.Add(doppelVar <= u[si + 1]);
-                                doppelHohlVars.Add(doppelVar);
+
+                                // HART: das Muster verbieten. Ueber die
+                                // >=-Zeile oben wird daraus
+                                // u[si-2]+u[si+1]-u[si-1]-u[si] <= 1 — genau die
+                                // Doppelhohlstunde. Dann ist die Strafvariable
+                                // ohnehin immer 0, also gar nicht erst ins
+                                // Objective haengen.
+                                if (doppelHart) model.Add(doppelVar == 0);
+                                else doppelHohlVars.Add(doppelVar);
                             }
                         }
 
@@ -2715,22 +3250,43 @@ namespace Stundenplan_V2
                         // So werden auch 4-, 5-, 6-fach-Folgen als 1 Dreifach gezählt
                         // (sonst Bug: 4+ fach Hohlfolge feuert KEINE Strafe!).
                         // Pro Hohlfolge der Länge ≥3 wird genau eine dreiVar aktiv.
-                        if (strafeDreifachHohl != 0)
+                        if (brauchtDrei)
                         {
+                            // "rest[si]" wird oben gemeinsam mit "vorher[si]"
+                            // gebaut. Es wird hier gebraucht, weil eine
+                            // Hohlstunde eine Luecke ZWISCHEN zwei Stunden ist.
+                            // Die alte Formulierung verlangte nur eine belegte
+                            // Stunde VOR der Luecke und feuerte damit auch, wenn
+                            // der Tag des Lehrers einfach drei Stunden vor
+                            // Schluss endete — das ist kein Loch, sondern
+                            // Feierabend. Als Strafe fiel das nie auf, als hartes
+                            // Constraint verbietet es dem Lehrer den frueheren
+                            // Feierabend.
                             for (int si = 1; si + 2 < n; si++)
                             {
+                                // Nach der Luecke muss noch Unterricht kommen.
+                                // Liegt si+2 am Tagesende, gibt es kein "danach"
+                                // mehr -> kein Loch, kein Constraint.
+                                if (si + 3 >= n) break;
+
                                 var dreiVar = model.NewBoolVar($"dreihohl_{l}_{dayIdx}_{si}");
-                                model.Add(dreiVar >= u[si - 1] - u[si] - u[si + 1] - u[si + 2]);
+                                model.Add(dreiVar >= u[si - 1] + rest![si + 3]
+                                                     - u[si] - u[si + 1] - u[si + 2] - 1);
                                 model.Add(dreiVar <= u[si - 1]);
+                                model.Add(dreiVar <= rest![si + 3]);
                                 model.Add(dreiVar <= 1 - u[si]);
                                 model.Add(dreiVar <= 1 - u[si + 1]);
                                 model.Add(dreiVar <= 1 - u[si + 2]);
-                                dreifachHohlVars.Add(dreiVar);
+
+                                // HART: keine Hohlfolge der Laenge >= 3 (die
+                                // Formulierung faengt auch 4er, 5er ... ab).
+                                if (dreifachHart) model.Add(dreiVar == 0);
+                                else dreifachHohlVars.Add(dreiVar);
                             }
                         }
 
                         // Einzelstunden: genau 1 Unterrichtsstunde am Tag
-                        if (strafeEinzel != 0)
+                        if (strafeEinzel != 0 || einzelHart)
                         {
                             // Summe der u-Werte = 1 → Einzelstunde
                             var einzelVar = model.NewBoolVar($"einzel_{l}_{dayIdx}");
@@ -2738,12 +3294,16 @@ namespace Stundenplan_V2
                             model.Add(sumVar == LinearExpr.Sum(u));
                             model.Add(sumVar == 1).OnlyEnforceIf(einzelVar);
                             model.Add(sumVar != 1).OnlyEnforceIf(einzelVar.Not());
-                            einzelVars.Add(einzelVar);
+
+                            // HART: einzelVar=0 erzwingt ueber die Reifizierung
+                            // sumVar != 1 — der Tag hat also 0 oder >= 2 Stunden.
+                            if (einzelHart) model.Add(einzelVar == 0);
+                            else einzelVars.Add(einzelVar);
                         }
 
                         // Stundenfolge: längste aufeinanderfolgende Unterrichtssequenz
                         // überschreitet maxFolge → Strafe
-                        if (strafeStdFolge != 0 && maxFolge.HasValue)
+                        if ((strafeStdFolge != 0 || folgeHart) && maxFolge.HasValue)
                         {
                             int limit = maxFolge.Value;
 
@@ -2751,12 +3311,21 @@ namespace Stundenplan_V2
                             // wenn alle u[si..si+limit] = 1 → Überschreitung
                             for (int si = 0; si <= n - (limit + 1); si++)
                             {
-                                var folgeVar = model.NewBoolVar(
-                                    $"folge_{l}_{dayIdx}_{si}");
-
                                 var fensterVars = Enumerable.Range(si, limit + 1)
                                     .Select(idx => u[idx])
                                     .ToList();
+
+                                // HART: im Fenster der Laenge limit+1 darf nie
+                                // alles belegt sein. Ohne Straf-/Hilfsvariable,
+                                // das ist direkt die Aussage der Regel.
+                                if (folgeHart)
+                                {
+                                    model.Add(LinearExpr.Sum(fensterVars) <= limit);
+                                    continue;
+                                }
+
+                                var folgeVar = model.NewBoolVar(
+                                    $"folge_{l}_{dayIdx}_{si}");
 
                                 // folgeVar <= u[si+k] für alle k im Fenster
                                 foreach (var uv in fensterVars)
@@ -2775,7 +3344,20 @@ namespace Stundenplan_V2
                     // Es wird nur der Ueberschuss ueber dem Freibetrag bestraft.
                     // Pro moeglicher Hohlstunde oberhalb des Limits eine Strafvariable,
                     // die genau dann 1 ist, wenn die Wochensumme >= (Freibetrag + k).
-                    if (strafeHohl != 0 && hohlVarsLehrer.Count > 0)
+                    // HART (StD: "HohlWoche hart"): aus dem Freibetrag wird eine
+                    // echte Obergrenze. hohlFreibetrag ist hier garantiert der
+                    // eingetragene HohlStdMax — der Loader laesst das Flag nur
+                    // mit vorhandenem Wert durch, "0-0" ist also der bewusste
+                    // Fall "gar keine Hohlstunde".
+                    // Der Min-Wert bleibt wie bisher ohne Wirkung im Modell und
+                    // wird nur von LehrerDiagnose ausgewertet.
+                    if (hohlHart && hohlVarsLehrer.Count > 0)
+                        model.Add(LinearExpr.Sum(hohlVarsLehrer) <= hohlFreibetrag);
+
+                    // Strafstufen nur, wenn die Regel NICHT hart ist: oberhalb
+                    // der harten Schranke kann die Summe ohnehin nie liegen,
+                    // die Variablen waeren konstant 0.
+                    if (strafeHohl != 0 && !hohlHart && hohlVarsLehrer.Count > 0)
                     {
                         if (hohlFreibetrag <= 0)
                         {
@@ -3047,6 +3629,7 @@ namespace Stundenplan_V2
 
             // Phase 1: Beste Lösung
             var status = progressCb != null ? solver.Solve(model, progressCb) : solver.Solve(model);
+            LogSolveErgebnis(log, labelPrefix + "_1", solver, status, zeitlimitSekunden);
 
             if (status != CpSolverStatus.Optimal && status != CpSolverStatus.Feasible)
             {
@@ -3061,6 +3644,7 @@ namespace Stundenplan_V2
                 }
 
                 // Ab hier: status == Infeasible → bewiesen unlösbar
+                bewiesenInfeasible = true;
                 DiagLog(log, $"  [Diagnose] BEWIESEN unlösbar – keine Lösung existiert ({laufKontext})");
                 DiagLog(log, $"  [Diagnose] Status: {status}");
                 DiagLog(log, $"  [Diagnose] Blöcke: {B}, Slots: {S}");
@@ -3291,6 +3875,27 @@ namespace Stundenplan_V2
                 // =====================================================
                 if (tauschKey == null)
                 {
+                    // Vor der (u. U. langwierigen) Ursachensuche den Aufrufer
+                    // fragen. Der Callback läuft synchron; die UI-Seite zeigt
+                    // dafür einen Ja/Nein-Dialog im UI-Thread. Antwortet er mit
+                    // false, wird die komplette Diagnose übersprungen.
+                    if (darfDiagnose != null && !darfDiagnose())
+                    {
+                        DiagLog(log, "  [Diagnose] === Ursachensuche vom Nutzer übersprungen. ===");
+                        return lösungen;
+                    }
+
+                    // Harte StD-Regeln fuer die Diagnosemodelle: nur Lehrer, bei
+                    // denen die Regel im echten Modell auch hart ist.
+                    Dictionary<string, LehrerStammdaten> stdRegelnHartDiag = null;
+                    if (lehrerStammdaten != null)
+                    {
+                        stdRegelnHartDiag = lehrerStammdaten
+                            .Where(kv => kv.Value != null && kv.Value.HatHarteRegel)
+                            .ToDictionary(kv => kv.Key, kv => kv.Value);
+                        if (stdRegelnHartDiag.Count == 0) stdRegelnHartDiag = null;
+                    }
+
                     // Vorab: Wie viele -3 Lehrer-Sperren existieren überhaupt?
                     int anzahlLehrerSperren = 0;
                     foreach (var slot in slots)
@@ -3316,7 +3921,8 @@ namespace Stundenplan_V2
                                 anzahlKlassenSperren,
                                 fachraumLimit, extraFreieTage, grossePausen, verbotSpäteDoppel,
                                 log,
-                                lehrerFreiTageMinus3, verbotMinus2Lehrer, lehrerFreiTageMinus2);
+                                lehrerFreiTageMinus3, verbotMinus2Lehrer, lehrerFreiTageMinus2,
+                                lehrerStammdaten);
                         }
                         else
                         {
@@ -3324,6 +3930,12 @@ namespace Stundenplan_V2
                             DiagLog(log, "  [Diagnose] === Test: Lösung OHNE Lehrer-Zeitwünsche möglich? ===");
 
                             // Helper für vollständiges Modell
+                            // WICHTIG: stdRegelnHart gehoert hier hinein. Ohne
+                            // sie faellt der Test "alle Lehrer-Sperren
+                            // deaktiviert" feasible aus, sobald die harten
+                            // StD-Regeln die einzige Ursache sind — und die
+                            // Diagnose meldet dann die Sperren als Schuldige
+                            // und kommt nie bis zur Stufe 6.
                             CpSolverStatus LöseVoll(HashSet<string> ignorierte)
                                 => LöseModellMitFlags(blocks, slots, B, S, ignorierte,
                                     mitKlassenSperren: true,
@@ -3331,7 +3943,8 @@ namespace Stundenplan_V2
                                     extraFreieTage: extraFreieTage, mitFreeDay: true,
                                     grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel,
                                     mitDoppelstunden: true,
-                                    mitFachProKlasseProTag: true);
+                                    mitFachProKlasseProTag: true,
+                                    stdRegelnHart: stdRegelnHartDiag);
 
                             // Alle Lehrer mit Sperren sammeln
                             var alleLehrerMitSperren = new HashSet<string>();
@@ -3417,7 +4030,8 @@ namespace Stundenplan_V2
                                     anzahlKlassenSperren,
                                     fachraumLimit, extraFreieTage, grossePausen, verbotSpäteDoppel,
                                     log,
-                                    lehrerFreiTageMinus3, verbotMinus2Lehrer, lehrerFreiTageMinus2);
+                                    lehrerFreiTageMinus3, verbotMinus2Lehrer, lehrerFreiTageMinus2,
+                                    lehrerStammdaten);
                             }
                         }
                     }
@@ -3469,6 +4083,8 @@ namespace Stundenplan_V2
                 model.Add(freieSumme - belegteSumme >= mindestAbstandBitsIntern - anzahlBelegt);
 
                 status = progressCb != null ? solver.Solve(model, progressCb) : solver.Solve(model);
+                LogSolveErgebnis(log, labelPrefix + "_" + (k + 1), solver, status, zeitlimitSekunden,
+                                 istFolgelösung: true);
 
                 if (status != CpSolverStatus.Optimal && status != CpSolverStatus.Feasible)
                     break;
@@ -4158,6 +4774,7 @@ namespace Stundenplan_V2
                 var intern = PlanenIntern(
                     excelPfad, blocks, slots, fachraumLimit, extraFreieTage,
                     log, maxLösungen: 1, tauschKey: null,
+                    bewiesenInfeasible: out _,
                     zeitlimitSekunden: zeitlimitSekunden,
                     nichtFreieTage: nichtFreieTage,
                     randomSeed: i + 1,

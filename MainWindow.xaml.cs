@@ -211,118 +211,96 @@ namespace Stundenplan_V2
                 return;
             }
 
-            // ZZ-Lehrer-Trick: auf Wunsch wird pro UNr zusätzlich ein Dummy-
-            // Lehrer "ZZ<UNr>" exportiert, dessen Zeitwünsche (separate
-            // GPU016.TXT) überall außer am tatsächlichen Slot der UNr (aus
-            // einer hier gewählten Lösung) auf -3 gesetzt werden. Zweck: der
-            // Untis-Optimierer wird dadurch gezwungen, die UNr beim Neu-
-            // Verplanen an der vorgesehenen Stelle zu belassen, ohne sie
-            // manuell dorthin ziehen zu müssen. Wird ZUERST abgefragt, weil
-            // davon abhängt, ob überhaupt ein vollständiger UV-Export nötig
-            // ist (siehe nurZzZeilen unten).
-            var zzAntwort = MessageBox.Show(
-                "ZZ-Lehrer-Trick aktivieren?\n\n" +
-                "Fügt pro Unterrichtsnummer einen Dummy-Lehrer 'ZZ<UNr>' hinzu und erzeugt " +
-                "zusätzlich eine Zeitwunsch-Datei, die diesen Dummy-Lehrer überall außer am " +
-                "tatsächlichen Slot (aus einer von dir gewählten Lösung) sperrt (-3). " +
-                "Damit verplant der Untis-Optimierer die Unterrichte automatisch an die " +
-                "gewünschte Stelle, ohne manuelles Ziehen.",
-                "ZZ-Lehrer-Trick", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            // Filterlisten wie beim Fixieren/Ignorieren-Dialog aus UV lesen …
+            var (alleKlassen, alleLehrer, alleFächer, alleZeilentext2) = LeseFilterListenAusUV();
 
-            bool zzTrick = false;
+            // … plus die UNr-Attribute (für "Aus Filter uebernehmen" im Dialog).
+            var uvEintraege = LeseUvEintraegeFuerExport();
+
+            // Verfügbare Lösungen als Slot-Quelle für den ZZ-Trick.
+            var quelleLösungen = letzteSolutions.Count > 0 ? letzteSolutions : LadeLösungenAusExcel();
+            var labels = quelleLösungen.Select(s => s.label).ToList();
+
+            var dlg = new GpuExportDialog(
+                uvEintraege, alleKlassen, alleLehrer, alleFächer, alleZeilentext2, labels)
+            { Owner = this };
+            if (dlg.ShowDialog() != true) return;
+
+            bool zzTrick = dlg.ZzTrick;
+            GpuEncoding encoding = dlg.Encoding;
+
+            // UNr-Filter: null = alle exportieren.
+            HashSet<int> nurUNrn = dlg.AlleUNrn ? null : dlg.GewählteUNrn;
+
+            // Für den ZZ-Trick die gewählte Lösung auflösen und die belegten
+            // Slots je UNr bestimmen (wie bisher, nur auf die gewählten UNrn
+            // beschränkt).
             bool nurZzZeilen = false;
             (int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks) zzLösung = default;
-
-            if (zzAntwort == MessageBoxResult.Yes)
-            {
-                // Lösung wählen — wird für den ZZ-Trick in JEDEM Fall benötigt
-                // (voll oder nur ZZ-Zeilen), da sie bestimmt, welcher Slot je
-                // UNr NICHT gesperrt werden darf.
-                var quelleLösungen = letzteSolutions.Count > 0 ? letzteSolutions : LadeLösungenAusExcel();
-                if (quelleLösungen.Count == 0)
-                {
-                    MessageBox.Show("Keine Lösung verfügbar — ZZ-Lehrer-Trick wird deaktiviert, " +
-                        "normaler Export läuft weiter. Bitte zuerst Button 7 (Stundenplanerstellung) ausführen.");
-                }
-                else
-                {
-                    var labels = quelleLösungen.Select(s => s.label).ToList();
-                    string gewählt = ZeigeAuswahlDialog(
-                        "ZZ-Lehrer-Trick: Lösung wählen",
-                        "Welche Lösung bestimmt, wo jede UNr tatsächlich liegen soll?",
-                        labels);
-                    if (gewählt != null)
-                    {
-                        zzLösung = quelleLösungen.First(s => s.label == gewählt);
-                        zzTrick = true;
-
-                        // Umfang wählen: da die UV meist ohnehin schon aus der
-                        // Untis-Datei stammt, muss sie i.d.R. nicht erneut
-                        // importiert werden — dann genügt es, Untis nur die
-                        // ZZ-Dummy-Lehrer als zusätzliche Beteiligte der schon
-                        // bestehenden UNrn mitzuteilen (viel kleinere Datei).
-                        var umfang = MessageBox.Show(
-                            "Export-Umfang wählen:\n\n" +
-                            "[Ja] = Vollständig — kompletter UV-Export inkl. ZZ-Zeilen " +
-                            "(nur nötig, wenn die UV-Daten selbst noch nicht in Untis stehen)\n\n" +
-                            "[Nein] = Nur ZZ-Lehrer-Zeilen — kleine Datei, die nur die Dummy-Lehrer " +
-                            "als zusätzliche Beteiligte an den bestehenden UNrn einträgt " +
-                            "(Regelfall, da die UV meist schon aus Untis stammt)",
-                            "Export-Umfang", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                        nurZzZeilen = umfang == MessageBoxResult.No;
-                    }
-                }
-            }
-
-            // Belegte Slots je UNr aus der gewählten Lösung berechnen — VOR dem
-            // eigentlichen Export, damit unverplante UNrn (kein Slot belegt)
-            // schon beim Schreiben der GPU002.TXT ausgeschlossen werden können
-            // (für sie wird kein ZZ-Lehrer generiert).
             Dictionary<int, HashSet<(int tag, int stunde)>> unrZuBelegtenSlots = null;
             List<(int tag, int stunde)> alleSlots = null;
             HashSet<int> verplanteUNrn = null;
 
             if (zzTrick)
             {
-                unrZuBelegtenSlots = new Dictionary<int, HashSet<(int tag, int stunde)>>();
-                int B = zzLösung.blocks.Count;
-                int S = input.Slots.Count;
-                int TagNr(string wtag) => wtag switch
+                if (quelleLösungen.Count == 0 || string.IsNullOrEmpty(dlg.GewählteLösung))
                 {
-                    "Mo" => 1, "Di" => 2, "Mi" => 3, "Do" => 4, "Fr" => 5, _ => 0
-                };
-                alleSlots = input.Slots
-                    .Select(sl => (tag: TagNr(sl.WTag), stunde: sl.Stunde))
-                    .Where(ts => ts.tag > 0)
-                    .Distinct()
-                    .ToList();
-
-                for (int b = 0; b < B; b++)
-                {
-                    int unr = zzLösung.blocks[b].UNr;
-                    if (!unrZuBelegtenSlots.TryGetValue(unr, out var set))
-                    {
-                        set = new HashSet<(int, int)>();
-                        unrZuBelegtenSlots[unr] = set;
-                    }
-                    for (int s = 0; s < S; s++)
-                    {
-                        if (zzLösung.belegung[b, s] != 1) continue;
-                        int tag = TagNr(input.Slots[s].WTag);
-                        if (tag > 0) set.Add((tag, input.Slots[s].Stunde));
-                    }
+                    MessageBox.Show("Keine Lösung verfügbar — ZZ-Lehrer-Trick wird deaktiviert, " +
+                        "normaler Export läuft weiter. Bitte zuerst Button 10 (Stundenplanerstellung) ausführen.");
+                    zzTrick = false;
                 }
+                else
+                {
+                    zzLösung = quelleLösungen.First(s => s.label == dlg.GewählteLösung);
 
-                // Nur UNrn mit mindestens einem belegten Slot gelten als
-                // "verplant" — für alle anderen (unverplant/ignoriert) wird
-                // kein ZZ-Lehrer erzeugt (siehe ErzeugeGpu002).
-                verplanteUNrn = new HashSet<int>(
-                    unrZuBelegtenSlots.Where(kv => kv.Value.Count > 0).Select(kv => kv.Key));
+                    // Umfang wählen: vollständiger UV-Export inkl. ZZ-Zeilen oder
+                    // nur die ZZ-Lehrer-Zeilen (kleine Datei) — wie bisher.
+                    var umfang = MessageBox.Show(
+                        "Export-Umfang wählen:\n\n" +
+                        "[Ja] = Vollständig — kompletter UV-Export der gewählten Unterrichte inkl. ZZ-Zeilen\n\n" +
+                        "[Nein] = Nur ZZ-Lehrer-Zeilen — kleine Datei, die nur die Dummy-Lehrer " +
+                        "als zusätzliche Beteiligte an den bestehenden UNrn einträgt " +
+                        "(Regelfall, da die UV meist schon aus Untis stammt)",
+                        "Export-Umfang", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+                    if (umfang == MessageBoxResult.Cancel) return;
+                    nurZzZeilen = umfang == MessageBoxResult.No;
+
+                    // Belegte Slots je UNr aus der gewählten Lösung berechnen.
+                    unrZuBelegtenSlots = new Dictionary<int, HashSet<(int tag, int stunde)>>();
+                    int B = zzLösung.blocks.Count;
+                    int S = input.Slots.Count;
+                    int TagNr(string wtag) => wtag switch
+                    {
+                        "Mo" => 1, "Di" => 2, "Mi" => 3, "Do" => 4, "Fr" => 5, _ => 0
+                    };
+                    alleSlots = input.Slots
+                        .Select(sl => (tag: TagNr(sl.WTag), stunde: sl.Stunde))
+                        .Where(ts => ts.tag > 0)
+                        .Distinct()
+                        .ToList();
+
+                    for (int b = 0; b < B; b++)
+                    {
+                        int unr = zzLösung.blocks[b].UNr;
+                        if (!unrZuBelegtenSlots.TryGetValue(unr, out var set))
+                        {
+                            set = new HashSet<(int, int)>();
+                            unrZuBelegtenSlots[unr] = set;
+                        }
+                        for (int s = 0; s < S; s++)
+                        {
+                            if (zzLösung.belegung[b, s] != 1) continue;
+                            int tag = TagNr(input.Slots[s].WTag);
+                            if (tag > 0) set.Add((tag, input.Slots[s].Stunde));
+                        }
+                    }
+
+                    verplanteUNrn = new HashSet<int>(
+                        unrZuBelegtenSlots.Where(kv => kv.Value.Count > 0).Select(kv => kv.Key));
+                }
             }
 
-            // Referenz-GPU002.TXT nur beim vollständigen Export sinnvoll (füllt
-            // Felder ohne UV-Spalte auf) — bei "Nur ZZ-Zeilen" überflüssig,
-            // da dort ohnehin nur der Dummy-Lehrer pro UNr geschrieben wird.
+            // Referenz-GPU002.TXT nur beim vollständigen Export sinnvoll.
             string gpuReferenzPfad = "";
             if (!nurZzZeilen)
             {
@@ -348,11 +326,20 @@ namespace Stundenplan_V2
                 int anzahl = GpuImportExport.ErzeugeGpu002(
                     excelPfad, dlgSave.FileName, gpuReferenzPfad, zzTrick, nurZzZeilen,
                     verplanteUNrn,
-                    out var hinweise, out var exportierteUNrn);
+                    out var hinweise, out var exportierteUNrn,
+                    nurUNrn, encoding);
 
-                TxtStatus.Text = $"GPU002.TXT mit {anzahl} Zeile(n) exportiert.";
-                Log($"GPU002.TXT exportiert: {anzahl} Zeile(n) nach '{dlgSave.FileName}'" +
-                    (nurZzZeilen ? " (nur ZZ-Lehrer-Zeilen)." : "."));
+                string encText = encoding switch
+                {
+                    GpuEncoding.Utf8Bom => "UTF-8 mit BOM",
+                    GpuEncoding.Ansi => "ANSI (Windows-1252)",
+                    _ => "UTF-8"
+                };
+
+                TxtStatus.Text = $"GPU002.TXT mit {anzahl} Zeile(n) exportiert ({encText}).";
+                Log($"GPU002.TXT exportiert: {anzahl} Zeile(n) nach '{dlgSave.FileName}' [{encText}]" +
+                    (nurZzZeilen ? " (nur ZZ-Lehrer-Zeilen)." : ".") +
+                    (nurUNrn != null ? $" Auswahl: {nurUNrn.Count} UNr(n)." : " Alle UNrn."));
 
                 if (hinweise.Count > 0)
                 {
@@ -365,16 +352,12 @@ namespace Stundenplan_V2
                 int zzAnzahl = 0;
                 if (zzTrick)
                 {
-                    // ZZ-Zeitwunschdatei nur für die tatsächlich verplanten
-                    // UNrn erzeugen — für unverplante gibt es ja auch keinen
-                    // ZZ-Lehrer in der GPU002.TXT, ein Zeitwunsch-Eintrag dazu
-                    // wäre wirkungslos.
                     var zzZielUNrn = exportierteUNrn.Where(u => verplanteUNrn.Contains(u)).ToList();
 
                     zzDateiPfad = System.IO.Path.Combine(
                         System.IO.Path.GetDirectoryName(dlgSave.FileName), "GPU016_ZZ.TXT");
                     zzAnzahl = GpuImportExport.ErzeugeZzZeitwunschDatei(
-                        zzDateiPfad, zzZielUNrn, unrZuBelegtenSlots, alleSlots);
+                        zzDateiPfad, zzZielUNrn, unrZuBelegtenSlots, alleSlots, encoding);
 
                     Log($"ZZ-Zeitwunschdatei erzeugt: {zzAnzahl} Zeile(n) nach '{zzDateiPfad}' " +
                         $"(Lösung '{zzLösung.label}', {zzZielUNrn.Count} verplante UNr(n) " +
@@ -382,7 +365,7 @@ namespace Stundenplan_V2
                 }
 
                 MessageBox.Show(
-                    $"{(nurZzZeilen ? "ZZ-Lehrer-Zeilen" : "GPU002.TXT")} mit {anzahl} Zeile(n) erzeugt:\n{dlgSave.FileName}" +
+                    $"{(nurZzZeilen ? "ZZ-Lehrer-Zeilen" : "GPU002.TXT")} mit {anzahl} Zeile(n) erzeugt ({encText}):\n{dlgSave.FileName}" +
                     (zzTrick
                         ? $"\n\nZZ-Zeitwunschdatei mit {zzAnzahl} Zeile(n) erzeugt:\n{zzDateiPfad}\n\n" +
                           "Bitte beide Dateien zusammen in Untis importieren."
@@ -396,6 +379,58 @@ namespace Stundenplan_V2
             {
                 MessageBox.Show("Fehler beim Export: " + ex.Message);
             }
+        }
+
+        // Liest je UV-Zeile die zum Export-Filter nötigen Attribute (UNr,
+        // Klassen-Zellinhalt, Lehrer, Fach, ZeilenText-2). Grundlage für die
+        // "Aus Filter uebernehmen"-Funktion des GpuExportDialog.
+        private List<GpuExportDialog.UvEintrag> LeseUvEintraegeFuerExport()
+        {
+            var liste = new List<GpuExportDialog.UvEintrag>();
+            try
+            {
+                using var wb = new ClosedXML.Excel.XLWorkbook(excelPfad);
+                var sheet = wb.Worksheet("UV");
+
+                int colUNr = -1, colLehrer = -1, colFach = -1, colKlassen = -1, colZt2 = -1;
+                foreach (var cc in sheet.Row(1).CellsUsed())
+                {
+                    string hdr = cc.GetString().Trim();
+                    if (string.Equals(hdr, "U-Nr", System.StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(hdr, "UNr", System.StringComparison.OrdinalIgnoreCase))
+                        colUNr = cc.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Lehrer", System.StringComparison.OrdinalIgnoreCase))
+                        colLehrer = cc.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Fach", System.StringComparison.OrdinalIgnoreCase))
+                        colFach = cc.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Klasse(n)", System.StringComparison.OrdinalIgnoreCase))
+                        colKlassen = cc.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "ZeilenText-2", System.StringComparison.OrdinalIgnoreCase))
+                        colZt2 = cc.Address.ColumnNumber;
+                }
+
+                if (colUNr < 0) return liste;
+
+                foreach (var row in sheet.RangeUsed().RowsUsed().Skip(1))
+                {
+                    string uStr = row.Cell(colUNr).GetString().Trim();
+                    if (!int.TryParse(uStr, out int unr)) continue;
+
+                    liste.Add(new GpuExportDialog.UvEintrag
+                    {
+                        UNr = unr,
+                        Klassen = colKlassen > 0 ? NormalisiereKlassenStr(row.Cell(colKlassen).GetString()) : "",
+                        Lehrer = colLehrer > 0 ? row.Cell(colLehrer).GetString().Trim() : "",
+                        Fach = colFach > 0 ? row.Cell(colFach).GetString().Trim() : "",
+                        ZeilenText2 = colZt2 > 0 ? row.Cell(colZt2).GetString().Trim() : ""
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Konnte UV-Einträge für den Export nicht lesen: {ex.Message}");
+            }
+            return liste;
         }
 
         // =====================================================
@@ -432,6 +467,18 @@ namespace Stundenplan_V2
 
             if (modus == MessageBoxResult.Cancel) return;
             bool ueberschreiben = modus == MessageBoxResult.Yes;
+
+            // Zeichensatz der Quelldatei wählen. Standard "Automatisch" erkennt
+            // UTF-8 (mit/ohne BOM) bzw. ANSI selbst — bei exotischen Dateien kann
+            // man den Satz aber auch erzwingen.
+            string encWahl = ZeigeAuswahlDialog(
+                "Zeichensatz der GPU002-Datei",
+                "Wie ist die zu importierende Datei kodiert?",
+                new List<string> { "Automatisch erkennen", "UTF-8", "ANSI (Windows-1252)" });
+            if (encWahl == null) return;
+            GpuEncoding importEncoding = encWahl.StartsWith("UTF-8") ? GpuEncoding.Utf8
+                : encWahl.StartsWith("ANSI") ? GpuEncoding.Ansi
+                : GpuEncoding.Auto;
 
             List<string> fehlendeHeader;
             try
@@ -488,7 +535,7 @@ namespace Stundenplan_V2
 
             try
             {
-                int anzahl = GpuImportExport.ImportiereInUv(excelPfad, dlgOpen.FileName, ueberschreiben);
+                int anzahl = GpuImportExport.ImportiereInUv(excelPfad, dlgOpen.FileName, ueberschreiben, importEncoding);
                 string modusText = ueberschreiben ? "importiert (UV überschrieben)" : "in UV importiert (angehängt)";
                 TxtStatus.Text = $"{anzahl} UV-Zeile(n) aus GPU002.TXT {modusText}.";
                 Log(ueberschreiben
@@ -606,8 +653,44 @@ namespace Stundenplan_V2
                 return;
             }
 
-            var dialog = new PMParameterDialog(excelPfad, () => LadeExcelDatenNeu(zeigeWarnungen: false))
-                { Owner = this };
+            // Der Dialog schließt sich nach dem Speichern selbst. Die
+            // Bestätigung landet deshalb hier im Log-Fenster statt in einer
+            // MessageBox im Dialog — der Callback läuft ausschließlich nach
+            // einem erfolgreichen Schreibvorgang.
+            var dialog = new PMParameterDialog(excelPfad, () =>
+            {
+                LadeExcelDatenNeu(zeigeWarnungen: false);
+                Log("PM-Parameter gespeichert und Excel-Daten neu eingelesen.");
+            })
+            { Owner = this };
+            dialog.ShowDialog();
+        }
+
+        // =====================================================
+        // STAMMDATEN (StD) BEARBEITEN / IMPORTIEREN / EXPORTIEREN
+        // =====================================================
+        private void BtnStammdaten_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(excelPfad))
+            {
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 1).");
+                return;
+            }
+
+            // "Speichern und schließen" schließt den Dialog wie beim PM-Dialog.
+            // Der Callback kann hier trotzdem mehrfach laufen: ein Import
+            // schreibt sofort und lässt das Fenster offen, damit man das
+            // Ergebnis durchsehen und die hart-Flags setzen kann.
+            // zeigeWarnungen: true ist bewusst gesetzt — nach jedem Schreiben
+            // steht die StD-Diagnose im Log, man sieht also sofort, welche
+            // harten Regeln man sich eingehandelt hat und welche Flags mangels
+            // Wert ignoriert wurden.
+            var dialog = new StammdatenDialog(excelPfad, () =>
+            {
+                LadeExcelDatenNeu(zeigeWarnungen: true);
+                Log("Stammdaten (StD) gespeichert und Excel-Daten neu eingelesen.");
+            })
+            { Owner = this };
             dialog.ShowDialog();
         }
 
@@ -632,6 +715,21 @@ namespace Stundenplan_V2
 
             input = ExcelLoader.Lade(excelPfad);
 
+            // PM-Warnungen: Werte, die sich nicht als Zahl lesen ließen oder
+            // gerundet werden mussten. Bewusst NICHT über zeigeWarnungen
+            // gesteuert, sondern immer — anders als die übrigen Diagnosen
+            // beschreiben sie keinen Datenbestand, sondern einen stillen
+            // Unterschied zwischen dem, was in PM steht, und dem, womit der
+            // Solver rechnet. Genau nach dem Speichern im PM-Dialog (der mit
+            // zeigeWarnungen: false neu lädt) will man das sehen. Solange in PM
+            // saubere Zahlen stehen, ist die Liste leer und es erscheint nichts.
+            if (input.PmWarnungen != null && input.PmWarnungen.Count > 0)
+            {
+                Log($"⚠ {input.PmWarnungen.Count} Hinweis(e) zur Tabelle PM:");
+                foreach (var w in input.PmWarnungen)
+                    Log("   " + w);
+            }
+
             // FT-Diagnose ausgeben: welche freien Tage aus Tabelle "FT"
             // registriert bzw. (mit Grund) verworfen wurden. Nur beim
             // manuellen Laden (Button 1) protokollieren — bei stillen
@@ -639,6 +737,14 @@ namespace Stundenplan_V2
             // schritt unnötig mit denselben Zeilen zugemüllt.
             if (zeigeWarnungen && input.FtDiagnose != null)
                 foreach (var zeile in input.FtDiagnose)
+                    Log(zeile);
+
+            // StD-Diagnose: welche "hart"-Flags aus dem Sheet StD registriert
+            // wurden und welche mangels Wert ignoriert werden mussten. Jedes
+            // harte Flag kann den Lauf infeasible machen — man sollte im Log
+            // sehen, welche überhaupt scharf sind.
+            if (zeigeWarnungen && input.StdDiagnose != null)
+                foreach (var zeile in input.StdDiagnose)
                     Log(zeile);
 
             // Warnung, falls UV-Zeilen ohne Fach und/oder Klasse gefunden wurden.
@@ -772,12 +878,31 @@ namespace Stundenplan_V2
             Action<string> logUi = s => Dispatcher.BeginInvoke(new Action(() => Log(s)));
             Action<SolverFortschritt> prog = f => Dispatcher.BeginInvoke(new Action(() => fenster.Aktualisiere(f)));
 
+            // Rückfrage vor der Ursachensuche. Der Solver-Thread ruft diesen
+            // Callback synchron auf, sobald Unlösbarkeit feststeht und die
+            // (u. U. langwierige) Diagnose beginnen würde. Die MessageBox muss im
+            // UI-Thread laufen, daher Dispatcher.Invoke (blockiert den
+            // Solver-Thread bis zur Antwort — gewollt).
+            Func<bool> darfDiagnose = () => Dispatcher.Invoke(() =>
+            {
+                var antwort = MessageBox.Show(
+                    this,
+                    "Der Plan ist mit den aktuellen Vorgaben unlösbar.\n\n" +
+                    "Soll das Programm jetzt nach der Ursache suchen?\n" +
+                    "Diese Suche kann je nach Modellgröße mehrere Minuten dauern.\n\n" +
+                    "[Ja] = Ursache suchen (Details erscheinen im Log)\n" +
+                    "[Nein] = keine Suche, Lauf sofort beenden",
+                    "Unlösbar – Ursache suchen?",
+                    MessageBoxButton.YesNo, MessageBoxImage.Question);
+                return antwort == MessageBoxResult.Yes;
+            });
+
             string debug = "";
             List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> solutions = null;
             try
             {
                 await System.Threading.Tasks.Task.Run(
-                    () => { solutions = service.Generate(input, logUi, out debug, prog, cts.Token); });
+                    () => { solutions = service.Generate(input, logUi, out debug, prog, cts.Token, darfDiagnose); });
             }
             finally
             {
@@ -788,7 +913,8 @@ namespace Stundenplan_V2
 
             if (solutions == null || solutions.Count == 0)
             {
-                MessageBox.Show("Keine Lösung gefunden – weder mit noch ohne Tausch.\n\n" + debug);
+                MessageBox.Show("Keine Lösung gefunden – weder mit noch ohne Tausch.\n\n" +
+                    "Falls der Plan nicht bewiesen unlösbar ist, evtl. das Zeitlimit erhöhen (Tabelle PM).\n\n" + debug);
                 TxtStatus.Text = "Planung fehlgeschlagen.";
 
                 var fixAnzahl = input.Slots.SelectMany(s => s.FixUNrn).Distinct().Count();
@@ -1985,6 +2111,149 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
+        // UV-SPALTE "Fix (X)" FÜR EINE UNR SETZEN/LÖSCHEN
+        // Ergänzung zum Rechtsklick im Plan-Editor: dort wird immer nur EINE
+        // Einzelstunde in "Fix UNrn" ein-/ausgetragen; das "X" in der UV gilt
+        // dagegen für die ganze UNr und damit für ALLE UV-Zeilen dieser UNr
+        // (eine UNr kann mehrere Zeilen haben, z.B. mehrere Beteiligte).
+        // Daraus ergibt sich die Semantik:
+        //   fixieren = true  -> "X" in alle UV-Zeilen dieser UNr, sobald
+        //                       mindestens ein Slot fixiert ist.
+        //   fixieren = false -> "X" NUR entfernen, wenn die UNr nach dem
+        //                       Entfixieren in "Fix UNrn" nirgends mehr
+        //                       vorkommt. Sonst bliebe eine weiterhin fixierte
+        //                       Stunde in der UV unsichtbar.
+        // Wird direkt NACH dem Schreiben in "Fix UNrn" aufgerufen und liest
+        // deshalb bereits den aktualisierten Stand dieses Sheets.
+        //
+        // Hinweis zur Wirkung: Der Solver selbst wertet die UV-Spalte "Fix (X)"
+        // nicht aus (er liest ausschließlich "Fix UNrn"). Das "X" ist Marker
+        // für den GPU-Export (Kennzeichen), die UV-Anzeige und die Statusfarben
+        // im Unterrichte-Dialog — es geht hier also um Konsistenz der Anzeige.
+        //
+        // Rückgabe: Anzahl der geänderten UV-Zellen (0 = nichts zu tun).
+        // =====================================================
+        private int SetzeUvFixKennzeichen(int unr, bool fixieren)
+        {
+            using var wb = new XLWorkbook(excelPfad);
+
+            if (!wb.Worksheets.Any(ws => ws.Name == "UV"))
+            {
+                Log("UV-Fix: Tabelle 'UV' nicht gefunden — 'Fix (X)' nicht geändert.");
+                return 0;
+            }
+
+            var sheet = wb.Worksheet("UV");
+            var headerRow = sheet.Row(1);
+
+            int colFix = -1, colUNr = -1;
+            foreach (var c in headerRow.CellsUsed())
+            {
+                string hdr = c.GetString().Trim();
+                if (string.Equals(hdr, "Fix (X)", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(hdr, "Fix", StringComparison.OrdinalIgnoreCase))
+                    colFix = c.Address.ColumnNumber;
+                else if (string.Equals(hdr, "U-Nr", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(hdr, "UNr", StringComparison.OrdinalIgnoreCase))
+                    colUNr = c.Address.ColumnNumber;
+            }
+
+            if (colFix < 0 || colUNr < 0)
+            {
+                Log("UV-Fix: Spalte 'Fix (X)' und/oder 'U-Nr' in UV nicht gefunden — 'X' nicht geändert.");
+                return 0;
+            }
+
+            // Entfixieren: solange die UNr noch an irgendeinem Slot fixiert ist,
+            // bleibt das "X" stehen.
+            if (!fixieren && UNrNochInFixUNrn(wb, unr))
+                return 0;
+
+            // Gleiche robuste UNr-Lesung wie im Unterrichte-Dialog: erst als Zahl,
+            // sonst als Text (UNr kann je nach Zellformat beides sein).
+            bool TryUNr(IXLRow row, out int gelesen)
+            {
+                gelesen = 0;
+                try { gelesen = row.Cell(colUNr).GetValue<int>(); return gelesen > 0; }
+                catch
+                {
+                    return int.TryParse(row.Cell(colUNr).GetString().Trim(), out gelesen) && gelesen > 0;
+                }
+            }
+
+            int geaendert = 0;
+
+            foreach (var row in sheet.RowsUsed().Skip(1))
+            {
+                if (!TryUNr(row, out int zeilenUNr) || zeilenUNr != unr)
+                    continue;
+
+                string aktuell = row.Cell(colFix).GetString().Trim();
+                bool istX = string.Equals(aktuell, "X", StringComparison.OrdinalIgnoreCase);
+
+                if (fixieren && !istX)
+                {
+                    row.Cell(colFix).Value = "X";
+                    geaendert++;
+                }
+                else if (!fixieren && istX)
+                {
+                    row.Cell(colFix).Value = "";
+                    geaendert++;
+                }
+            }
+
+            if (geaendert > 0)
+                wb.Save();
+
+            return geaendert;
+        }
+
+        // Bequemer Wrapper um SetzeUvFixKennzeichen für den Plan-Editor:
+        // liefert den Zusatztext für die Log-Zeile und fängt Fehler ab, damit ein
+        // Problem beim UV-Schreiben (z.B. Datei gerade in Excel geöffnet) nie die
+        // eigentliche Fixierung in "Fix UNrn" zerreißt — die ist zu diesem
+        // Zeitpunkt bereits sauber gespeichert.
+        private string UvFixKennzeichenNachziehen(int unr, bool fixieren)
+        {
+            try
+            {
+                int geaendert = SetzeUvFixKennzeichen(unr, fixieren);
+                if (geaendert == 0)
+                    return fixieren ? "" : " ('X' in UV bleibt — UNr ist noch an anderer Stelle fixiert.)";
+
+                return fixieren
+                    ? $" 'X' in {geaendert} UV-Zeile(n) gesetzt."
+                    : $" 'X' in {geaendert} UV-Zeile(n) entfernt.";
+            }
+            catch (Exception ex)
+            {
+                return $" ⚠ 'Fix (X)' in UV konnte nicht geschrieben werden: {ex.Message}";
+            }
+        }
+
+        // Prüft im bereits geöffneten Workbook, ob die UNr im Sheet "Fix UNrn"
+        // noch an mindestens einem Slot eingetragen ist. Grundlage für die
+        // Entscheidung, ob das "X" in der UV entfernt werden darf.
+        private static bool UNrNochInFixUNrn(XLWorkbook wb, int unr)
+        {
+            if (!wb.Worksheets.Any(ws => ws.Name == "Fix UNrn"))
+                return false;
+
+            var sheet = wb.Worksheet("Fix UNrn");
+
+            foreach (var row in sheet.RowsUsed().Skip(1))
+            {
+                int lastCol = row.LastCellUsed()?.Address.ColumnNumber ?? 2;
+                for (int col = 3; col <= lastCol; col++)
+                    if (int.TryParse(row.Cell(col).GetString().Trim(), out int v) && v == unr)
+                        return true;
+            }
+
+            return false;
+        }
+
+        // =====================================================
         // ALLE LÖSUNGEN IN TABELLE "LÖS" SCHREIBEN
         // (früher auf die ersten 10 Lösungen begrenzt — das führte dazu,
         // dass z.B. eine neu hinzugefügte "Plan"-Lösung lautlos wegfiel,
@@ -2373,9 +2642,15 @@ namespace Stundenplan_V2
                 MeldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0
             };
 
+            // Merker: wurde im Editor überhaupt etwas fixiert/entfixiert? Nur dann
+            // wird die Excel-Datei nach dem Schließen des Editors neu eingelesen
+            // (siehe unten hinter ShowDialog).
+            bool fixAenderungImEditor = false;
+
             // Callback: einzelne Stunde im Plan-Editor fixieren/entfixieren
             // (Rechtsklick-Kontextmenü, nur Einzelstunden-Modus). Schreibt direkt
-            // in die Excel-Tabelle "Fix UNrn" und aktualisiert input.Slots, damit
+            // in die Excel-Tabellen "Fix UNrn" (slotgenau) und "UV" (Spalte
+            // "Fix (X)", für die ganze UNr) und aktualisiert input.Slots, damit
             // das blaue "F" im Editor sofort ohne Neuladen erscheint/verschwindet.
             Action<int, int, bool> aendereFixUNr = (slotIdx, unr, fixieren) =>
             {
@@ -2385,14 +2660,18 @@ namespace Stundenplan_V2
                     SchreibeFixUNrn(new Dictionary<int, List<int>> { [slotIdx] = new List<int> { unr } });
                     if (!slot.FixUNrn.Contains(unr))
                         slot.FixUNrn.Add(unr);
-                    Log($"Plan-Editor: UNr {unr} in {slot.WTag} Std{slot.Stunde} fixiert.");
+                    Log($"Plan-Editor: UNr {unr} in {slot.WTag} Std{slot.Stunde} fixiert." +
+                        UvFixKennzeichenNachziehen(unr, true));
                 }
                 else
                 {
                     EntferneAusFixUNrnSlot(slotIdx, unr);
                     slot.FixUNrn.Remove(unr);
-                    Log($"Plan-Editor: Fixierung von UNr {unr} in {slot.WTag} Std{slot.Stunde} entfernt.");
+                    Log($"Plan-Editor: Fixierung von UNr {unr} in {slot.WTag} Std{slot.Stunde} entfernt." +
+                        UvFixKennzeichenNachziehen(unr, false));
                 }
+
+                fixAenderungImEditor = true;
             };
 
             // Ignorierte UV-Zeilen (i/x) laden — nur für die Anzeige
@@ -2421,6 +2700,24 @@ namespace Stundenplan_V2
             { Owner = this };
 
             editor.ShowDialog();
+
+            // Wurde im Editor per Rechtsklick (oder beim Mitziehen fixierter
+            // Stunden) etwas fixiert/entfixiert, sind "Fix UNrn" und die UV-Spalte
+            // "Fix (X)" in der Datei inzwischen weiter als der Speicherstand.
+            // Deshalb hier einmal komplett neu einlesen.
+            //
+            // Bewusst erst NACH dem Schließen: LadeExcelDatenNeu ersetzt "input"
+            // durch ein neues Objekt, während der Editor noch mit der alten
+            // Slot-Liste arbeitet (das blaue "F" würde sonst nicht mehr
+            // aktualisiert). Außerdem ruft der Editor den Callback bei
+            // Tauschketten und beim Verschieben fixierter Stunden in Schleifen
+            // auf — ein Reload je Aufruf wären etliche Vollladungen hintereinander.
+            if (fixAenderungImEditor)
+            {
+                LadeExcelDatenNeu(zeigeWarnungen: false);
+                Log("Plan-Editor: Fixierungen geändert — Excel-Datei neu eingelesen.");
+                TxtStatus.Text = $"Fixierungen geändert, Excel neu eingelesen um {DateTime.Now:HH:mm:ss} Uhr.";
+            }
         }
 
         // =====================================================
@@ -3363,11 +3660,14 @@ namespace Stundenplan_V2
         // Gemeinsamer Einstiegspunkt für Button 8 (Gezielt fixieren und
         // ignorieren): öffnet den kombinierten UnterrichteDialog
         // (Kategorie-Filter + Einzelzeilen-Tabelle mit Checkboxen für alle vier
-        // Aktionen) und führt die vom Dialog zurückgegebene Auswahl aus. Das
-        // eigentliche Excel-Schreiben (inkl. optionaler Fix-UNrn-Übernahme über
-        // die bestehenden Methoden TrageInFixUNrnEin/EntferneAusFixUNrn) bleibt
-        // unverändert hier in MainWindow, nur die Auswahl kommt jetzt aus der
-        // neuen Tabelle statt aus einem erneuten Filter-Abgleich gegen die UV.
+        // Aktionen).
+        //
+        // Der Dialog schließt sich nach einer Aktion nicht mehr, sondern meldet
+        // sie über einen Callback und bleibt offen (mehrere Aktionen pro
+        // Sitzung, ohne die Filter jedes Mal neu zu setzen). Der Rückgabewert
+        // von ShowDialog() ist deshalb bedeutungslos geworden — ausgeführt wird
+        // in WendeUnterrichteAktionAn, sooft der Nutzer einen der vier
+        // Aktions-Buttons drückt.
         private void OeffneUnterrichteDialog()
         {
             if (input == null)
@@ -3381,15 +3681,37 @@ namespace Stundenplan_V2
                 ? letzteSolutions.Select(s => s.label).ToList()
                 : new List<string>();
 
-            var dialog = new UnterrichteDialog(excelPfad, alleKlassen, alleLehrer, alleFächer, alleZeilentext2, verfügbareLösungen)
+            // Vorwärtsdeklaration: der Callback muss den Dialog kennen, den er
+            // selbst mit erzeugt. Beim Aufruf des Lambdas (frühestens nach dem
+            // ersten Button-Klick) ist die Variable längst zugewiesen — daher
+            // null! statt null: das Projekt läuft mit <Nullable>enable</Nullable>,
+            // und die Zuweisung in der Folgezeile macht die Warnung gegenstandslos.
+            UnterrichteDialog dialog = null!;
+            dialog = new UnterrichteDialog(excelPfad, alleKlassen, alleLehrer, alleFächer,
+                                           alleZeilentext2, verfügbareLösungen,
+                                           () => WendeUnterrichteAktionAn(dialog))
                 { Owner = this };
-            if (dialog.ShowDialog() != true) return;
+            dialog.ShowDialog();
+        }
+
+        // Führt genau eine im UnterrichteDialog ausgelöste Aktion aus: schreibt
+        // die 'i'/'X'-Kennzeichen in die UV-Tabelle, übernimmt auf Wunsch die
+        // betroffenen UNrn in die Tabelle "Fix UNrn" (über die unveränderten
+        // Methoden TrageInFixUNrnEin/EntferneAusFixUNrn) und lädt die Excel-
+        // Daten am Ende neu ein.
+        //
+        // Der Code ist gegenüber der Fassung, in der er direkt hinter
+        // dialog.ShowDialog() stand, inhaltlich unverändert — er läuft jetzt
+        // nur mehrfach statt einmal. Die return-Ausstiege im Fehlerfall
+        // beenden dadurch nicht mehr den ganzen Vorgang, sondern nur diese eine
+        // Aktion; der Dialog bleibt offen und der Nutzer kann es korrigiert
+        // erneut versuchen.
+        private void WendeUnterrichteAktionAn(UnterrichteDialog dialog)
+        {
             if (dialog.AusgewählteZeilen.Count == 0) return;
 
             bool istIgnorierenAktion = dialog.Aktion == UnterrichteDialog.AktionArt.Ignorieren
                                     || dialog.Aktion == UnterrichteDialog.AktionArt.NichtIgnorieren;
-            bool istEntfernenModus = dialog.Aktion == UnterrichteDialog.AktionArt.NichtIgnorieren
-                                   || dialog.Aktion == UnterrichteDialog.AktionArt.Entfixieren;
 
             int markiert = 0;
             var getroffeneUNrn = new HashSet<int>();   // für FixUNrn-Übernahme

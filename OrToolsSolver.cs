@@ -7,7 +7,8 @@ public interface ISolver
         Action<string> log,
         out string debug,
         Action<SolverFortschritt> fortschritt = null,
-        System.Threading.CancellationToken abbruch = default);
+        System.Threading.CancellationToken abbruch = default,
+        Func<bool> darfDiagnose = null);
 }
 
 public class OrToolsSolver : ISolver
@@ -17,7 +18,8 @@ public class OrToolsSolver : ISolver
         Action<string> log,
         out string debug,
         Action<SolverFortschritt> fortschritt = null,
-        System.Threading.CancellationToken abbruch = default)
+        System.Threading.CancellationToken abbruch = default,
+        Func<bool> darfDiagnose = null)
     {
         return StundenplanEngine.Planen(
             input.ExcelPfad,
@@ -53,7 +55,8 @@ public class OrToolsSolver : ISolver
             out debug,
             fortschritt,
             abbruch,
-            input.MindestAbstandLösungenBloecke
+            input.MindestAbstandLösungenBloecke,
+            darfDiagnose
         );
     }
 }
