@@ -42,7 +42,7 @@ namespace Stundenplan_V2
         Ansi       // Windows-1252 / ISO-8859-1
     }
 
-    public static class GpuImportExport
+    public static partial class GpuImportExport
     {
         // Liefert das .NET-Encoding zum Schreiben passend zur Auswahl. Auto wird
         // beim Schreiben wie Utf8 behandelt (ohne BOM), da es dort keine

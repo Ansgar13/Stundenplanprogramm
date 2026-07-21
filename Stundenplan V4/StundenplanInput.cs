@@ -68,5 +68,16 @@ public class StundenplanInput
     public int StrafeEinzelstunde { get; set; } = 0;
     public int StrafeSpäteLkStunden { get; set; } = 0;
     public int GrenzeSpäteLk { get; set; } = 2;
+
+    // Späte pädagogische Einheiten – konfigurierbare Zählung:
+    // Fächer (exakter Fach-String, Groß/Klein egal) aus PM-Zeile
+    // "Fächer ohne Spätzählung"; eine Einheit fällt nur raus, wenn ALLE ihre
+    // Teile ein solches Fach tragen.
+    public HashSet<string> AusgenommeneSpaetFaecher { get; set; }
+        = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+    // Wst -> Schwelle (Anzahl später Slots ab Stunde 6, ab der eine Einheit als
+    // "spät/bad" gilt) aus Sheet "SpätSchwelle". Fehlt eine Wst, gilt 2.
+    public Dictionary<int, int> SpaetSchwelleJeWst { get; set; }
+        = new Dictionary<int, int>();
 }
 

@@ -17,7 +17,14 @@ namespace Stundenplan_V2
     /// (nicht aus input.Blocks), damit auch ignorierte Zeilen und Zeilen mit
     /// Wst = 0 sichtbar sind, die es in der Lösung gar nicht mehr gibt.
     ///
-    /// Rein lesend: es wird nichts in die Excel-Datei zurückgeschrieben.
+    /// Editierbar (Stufe 1): Datenspalten (Klasse(n), Fach, Lehrer, Wst, LTKZ,
+    /// Dopp.Std., Fachraum, ZeilenText-2) lassen sich direkt bearbeiten; jede
+    /// bestaetigte Aenderung wird sofort in die exakte Excel-Zeile
+    /// (UvZeile.ExcelZeile) zurueckgeschrieben. UNr und die abgeleitete Spalte
+    /// Status bleiben schreibgeschuetzt. WICHTIG: Die Aenderung landet nur in der
+    /// Datei — sie wirkt sich erst nach erneutem Einlesen (Button 1) und, bei
+    /// strukturellen Spalten, nach erneutem Rechnen (Button 10) aus; der aktuell
+    /// im Plan-Editor angezeigte Plan bleibt unveraendert.
     ///
     /// Vom Plan-Editor können MEHRERE dieser Fenster gleichzeitig geöffnet
     /// werden (z.B. zwei Lehrer nebeneinander vergleichen). Jedes Fenster
@@ -55,6 +62,14 @@ namespace Stundenplan_V2
         private readonly string _excelPfad;
         private List<UvZeile> _alleZeilen = new();
         private readonly ObservableCollection<UvZeile> _anzeige = new();
+
+        // Spaltennummern im UV-Sheet (in LadeZeilen gemerkt), damit editierte
+        // Zellen exakt zurueckgeschrieben werden koennen. -1 = Spalte fehlt.
+        private int _colLehrer = -1, _colFach = -1, _colKlassen = -1,
+                    _colWst = -1, _colLtkz = -1, _colDopp = -1, _colFachraum = -1, _colZt2 = -1;
+
+        // Der Warnhinweis-Dialog wird nur einmal pro Fenster-Sitzung gezeigt.
+        private bool _warnungGezeigt = false;
 
         // Rückruf in den Plan-Editor: (lehrer, klasse) -> Meldungstext.
         // Beide Parameter dürfen null sein (dann bleibt das jeweilige Dropdown
@@ -148,6 +163,20 @@ namespace Stundenplan_V2
 
             dock.Children.Add(top);
 
+            // ---- Warnbanner: dauerhaft sichtbar ----
+            var banner = new TextBlock
+            {
+                Text = "⚠ UV editierbar: Änderungen werden sofort in die Excel-Datei geschrieben, " +
+                       "wirken aber erst nach Neu-Einlesen (Button 1) und – bei Lehrer/Fach/Klasse(n)/Wst – " +
+                       "nach Neu-Rechnen (Button 10). Der aktuell angezeigte Plan ändert sich dadurch nicht.",
+                Foreground = Brushes.DarkRed,
+                FontWeight = FontWeights.SemiBold,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+            DockPanel.SetDock(banner, Dock.Top);
+            dock.Children.Add(banner);
+
             // ---- Fußzeile: Zähler/Summen + Meldung zum letzten Sprung ----
             var fuss = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
             _txtFuss = new TextBlock { FontWeight = FontWeights.SemiBold };
@@ -166,7 +195,7 @@ namespace Stundenplan_V2
             _grid = new DataGrid
             {
                 AutoGenerateColumns = false,
-                IsReadOnly = true,
+                IsReadOnly = false,   // Datenspalten editierbar (UNr/Status je Spalte gesperrt)
                 CanUserAddRows = false,
                 CanUserDeleteRows = false,
                 CanUserSortColumns = true,
@@ -176,12 +205,13 @@ namespace Stundenplan_V2
                 ItemsSource = _anzeige
             };
             _grid.MouseDoubleClick += Grid_MouseDoubleClick;
+            _grid.CellEditEnding += Grid_CellEditEnding;
 
             var rowStyle = new Style(typeof(DataGridRow));
             rowStyle.Setters.Add(new Setter(DataGridRow.BackgroundProperty, new Binding(nameof(UvZeile.ZeilenFarbe))));
             _grid.RowStyle = rowStyle;
 
-            AddCol("UNr", nameof(UvZeile.UNr), 60);
+            AddCol("UNr", nameof(UvZeile.UNr), 60, readOnly: true);        // Gruppierungsschluessel: nur lesen
             AddCol("Klasse(n)", nameof(UvZeile.Klassen), 110);
             AddCol("Fach", nameof(UvZeile.Fach), 90);
             AddCol("Lehrer", nameof(UvZeile.Lehrer), 80);
@@ -190,7 +220,7 @@ namespace Stundenplan_V2
             AddCol("Dopp.Std.", nameof(UvZeile.DoppStd), 75);
             AddCol("Fachraum", nameof(UvZeile.Fachraum), 85);
             AddCol("ZeilenText-2", nameof(UvZeile.Zt2), 120);
-            AddCol("Status", nameof(UvZeile.Status), 120);
+            AddCol("Status", nameof(UvZeile.Status), 120, readOnly: true); // abgeleitet aus Ignore/Fix: nur lesen
 
             dock.Children.Add(_grid);
 
@@ -205,13 +235,14 @@ namespace Stundenplan_V2
             AktualisiereAnzeige();
         }
 
-        private void AddCol(string header, string pfad, double breite)
+        private void AddCol(string header, string pfad, double breite, bool readOnly = false)
         {
             _grid.Columns.Add(new DataGridTextColumn
             {
                 Header = header,
                 Binding = new Binding(pfad),
-                Width = new DataGridLength(breite)
+                Width = new DataGridLength(breite),
+                IsReadOnly = readOnly
             });
         }
 
@@ -301,6 +332,12 @@ namespace Stundenplan_V2
                         "UV anzeigen", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
+
+                // Spaltennummern fuers Zurueckschreiben editierter Zellen merken
+                // (UNr bleibt read-only und wird daher nicht benoetigt).
+                _colLehrer = colLehrer; _colFach = colFach; _colKlassen = colKlassen;
+                _colWst = colWst; _colLtkz = colLtkz; _colDopp = colDopp;
+                _colFachraum = colFachraum; _colZt2 = colZt2;
 
                 var bereich = sheet.RangeUsed();
                 if (bereich == null) return;
@@ -459,6 +496,120 @@ namespace Stundenplan_V2
                 _txtMeldung.Foreground = Brushes.DarkRed;
                 _txtMeldung.Text = meldung;
             }
+        }
+
+        // =====================================================
+        // Editieren -> in die exakte Excel-Zeile zurueckschreiben
+        // =====================================================
+        private void Grid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+        {
+            if (e.EditAction != DataGridEditAction.Commit) return;
+            if (e.Row?.Item is not UvZeile zeile) return;
+
+            string header = e.Column?.Header as string ?? "";
+
+            // Zielspalte im UV-Sheet bestimmen. Nicht editierbare/unbekannte
+            // Spalten (UNr, Status) werden ignoriert.
+            int col = header switch
+            {
+                "Klasse(n)"    => _colKlassen,
+                "Fach"         => _colFach,
+                "Lehrer"       => _colLehrer,
+                "Wst"          => _colWst,
+                "LTKZ"         => _colLtkz,
+                "Dopp.Std."    => _colDopp,
+                "Fachraum"     => _colFachraum,
+                "ZeilenText-2" => _colZt2,
+                _              => -1
+            };
+            if (col < 0) return;
+
+            // Neuen Text aus dem Editier-Element holen (das Binding hat die
+            // Quelle zu diesem Zeitpunkt noch nicht aktualisiert).
+            string neu = (e.EditingElement as TextBox)?.Text?.Trim() ?? "";
+
+            // Wst muss numerisch bleiben (leer erlaubt = 0 Stunden).
+            if (header == "Wst" && neu.Length > 0 &&
+                !double.TryParse(neu, System.Globalization.NumberStyles.Any,
+                    System.Globalization.CultureInfo.CurrentCulture, out _))
+            {
+                MessageBox.Show("Wst muss eine Zahl sein (z.B. 2 oder 1,5).",
+                    "UV bearbeiten", MessageBoxButton.OK, MessageBoxImage.Warning);
+                e.Cancel = true;
+                return;
+            }
+
+            // Einmaliger Warnhinweis pro Fenster – abbrechbar.
+            if (!_warnungGezeigt)
+            {
+                var antwort = MessageBox.Show(
+                    "Änderungen an der UV werden sofort in die Excel-Datei geschrieben.\n\n" +
+                    "Sie wirken sich aber ERST nach erneutem Einlesen (Button 1) und – bei " +
+                    "strukturellen Spalten wie Lehrer, Fach, Klasse(n) oder Wst – nach erneutem " +
+                    "Rechnen (Button 10) aus. Der aktuell angezeigte Plan ändert sich dadurch nicht.\n\n" +
+                    "Fortfahren?",
+                    "UV bearbeiten", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (antwort != MessageBoxResult.Yes)
+                {
+                    e.Cancel = true;
+                    return;
+                }
+                _warnungGezeigt = true;
+            }
+
+            // In die exakte Excel-Zeile schreiben.
+            try
+            {
+                using var wb = new XLWorkbook(_excelPfad);
+                if (!wb.Worksheets.Any(w => w.Name == "UV"))
+                {
+                    MessageBox.Show("Kein Sheet „UV“ in der Datei gefunden.",
+                        "UV bearbeiten", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    e.Cancel = true;
+                    return;
+                }
+                wb.Worksheet("UV").Cell(zeile.ExcelZeile, col).Value = neu;
+                wb.Save();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    "Speichern fehlgeschlagen – ist die Datei gerade in Excel geöffnet?\n\n" + ex.Message,
+                    "UV bearbeiten", MessageBoxButton.OK, MessageBoxImage.Warning);
+                e.Cancel = true;
+                return;
+            }
+
+            // Abgeleitete Felder synchron halten, damit Filter, Σ Wst und der
+            // Doppelklick-Sprung sofort konsistent sind (ohne komplettes Neuladen).
+            switch (header)
+            {
+                case "Klasse(n)":
+                    zeile.Klassen = neu;
+                    zeile.KlassenListe = neu
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(x => x.Trim())
+                        .Where(x => x.Length > 0)
+                        .ToList();
+                    break;
+                case "Fach":         zeile.Fach = neu; break;
+                case "Lehrer":       zeile.Lehrer = neu; break;
+                case "Wst":
+                    zeile.Wst = neu;
+                    double.TryParse(neu, System.Globalization.NumberStyles.Any,
+                        System.Globalization.CultureInfo.CurrentCulture, out double w);
+                    zeile.WstZahl = w;
+                    break;
+                case "LTKZ":         zeile.Ltkz = neu; break;
+                case "Dopp.Std.":    zeile.DoppStd = neu; break;
+                case "Fachraum":     zeile.Fachraum = neu; break;
+                case "ZeilenText-2": zeile.Zt2 = neu; break;
+            }
+
+            // Fußzeile (Σ Wst, Zähler) nachziehen – verzoegert, damit der Commit
+            // des DataGrid zuerst vollstaendig abgeschlossen ist.
+            Dispatcher.BeginInvoke(new Action(AktualisiereAnzeige),
+                System.Windows.Threading.DispatcherPriority.Background);
         }
 
         // =====================================================

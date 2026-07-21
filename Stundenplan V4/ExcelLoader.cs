@@ -325,12 +325,12 @@ namespace Stundenplan_V2
             var lehrerFreiTageMinus3 = new HashSet<string>();
             var ftDiagnose = new List<string>();
 
-            // Zusaetzliche freie Tage aus eigener Tabelle "FT" lesen
+            // Zusaetzliche freie Tage kommen jetzt aus den Spalten "FT" und
+            // "FT-Gewicht" im Sheet "StD" (siehe StAMMDATEN-Block weiter unten).
+            // Die fruehere eigene Tabelle "FT" wird bewusst NICHT mehr gelesen.
             if (workbook.Worksheets.Any(ws => ws.Name == "FT"))
-                LeseFreieTageTabelle(workbook.Worksheet("FT"), extraFreieTage,
-                    lehrerFreiTageMinus2, lehrerFreiTageMinus3, ftDiagnose);
-            else
-                ftDiagnose.Add("FT: kein Tabellenblatt 'FT' gefunden - keine zusätzlichen freien Tage.");
+                ftDiagnose.Add("Hinweis: Tabellenblatt 'FT' wird nicht mehr ausgewertet - " +
+                               "freie Tage werden aus den Spalten 'FT'/'FT-Gewicht' im Sheet 'StD' gelesen.");
 
             // Slot-Zeitwuensche weiterhin aus ZWL (Lehrer) / ZWK (Klassen)
             if (workbook.Worksheets.Any(ws => ws.Name == "ZWL"))
@@ -347,12 +347,21 @@ namespace Stundenplan_V2
             {
                 var sheetFG = workbook.Worksheet("FGR");
 
-                foreach (var row in sheetFG.RangeUsed().RowsUsed().Skip(1))
+                // Nur eine ECHTE Kopfzeile überspringen. Hat das Blatt keine
+                // (Zeile 1 ist bereits eine Datenzeile), würde ein pauschales
+                // Skip(1) die ERSTE Fachgruppe (z.B. "Bio") verschlucken.
+                bool hatKopf = FgrHatKopfzeile(workbook);
+                IEnumerable<IXLRangeRow> zeilen = sheetFG.RangeUsed().RowsUsed();
+                if (hatKopf) zeilen = zeilen.Skip(1);
+
+                foreach (var row in zeilen)
                 {
                     string gruppe = row.Cell(1).GetString().Trim();
-                    int anzahl = row.Cell(2).GetValue<int>();
+                    if (string.IsNullOrWhiteSpace(gruppe)) continue;
 
-                    if (!string.IsNullOrWhiteSpace(gruppe))
+                    // Sicher parsen (kein GetValue<int>, das bei leeren/nicht-
+                    // numerischen Zellen wirft und das Einlesen abbräche).
+                    if (int.TryParse(row.Cell(2).GetString().Trim(), out int anzahl))
                         fachgruppenRaeume[gruppe] = anzahl;
                 }
             }
@@ -401,6 +410,13 @@ namespace Stundenplan_V2
             int strafeHauptfachSpät = 0;
             var grossePausen = new List<(int stundeVor, int stundeNach)>();
 
+            // Späte-päd.-Einheiten-Konfiguration:
+            // - ausgenommeneSpaetFaecher: PM-Zeile "Fächer ohne Spätzählung"
+            //   (kommasepariert, exakter Fach-String, Groß/Klein egal).
+            // - spaetSchwelle: Sheet "SpätSchwelle" (Wst -> Schwelle).
+            var ausgenommeneSpaetFaecher = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var spaetSchwelle = new Dictionary<int, int>();
+
             // Hinweise auf PM-Werte, die sich nicht sauber lesen ließen.
             var pmWarnungen = new List<string>();
 
@@ -415,7 +431,21 @@ namespace Stundenplan_V2
                     string label = labelRoh.ToLower();
                     string wert  = row.Cell(2).GetString().Trim();
 
-                    if (label.Contains("zeitlimit"))
+                    // Fächer ohne Spätzählung: kommaseparierte Liste exakter
+                    // Fach-Strings. Bewusst als ERSTE Prüfung, damit kein
+                    // anderes PM-Label diese Zeile abfängt (und "fächer" in
+                    // keinem anderen Label vorkommt). Groß/Klein egal.
+                    if (label.Contains("fächer ohne spätzählung") ||
+                        label.Contains("faecher ohne spaetzaehlung") ||
+                        label.Contains("ohne spätzählung") ||
+                        label.Contains("ohne spaetzaehlung"))
+                    {
+                        if (!string.IsNullOrWhiteSpace(wert))
+                            ausgenommeneSpaetFaecher = new HashSet<string>(
+                                wert.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)),
+                                StringComparer.OrdinalIgnoreCase);
+                    }
+                    else if (label.Contains("zeitlimit"))
                         LiesPmInt(wert, labelRoh, ref zeitlimit, pmWarnungen);
                     else if (label.Contains("ohne tausch"))
                         LiesPmInt(wert, labelRoh, ref anzahlOhne, pmWarnungen);
@@ -486,6 +516,28 @@ namespace Stundenplan_V2
             }
 
             // =====================================================
+            // SPÄTSCHWELLE  (Wst -> Schwelle für späte päd. Einheiten)
+            // Spalte A = Wst, Spalte B = Schwelle. Eine etwaige Kopfzeile
+            // ("Wst"/"Schwelle") wird automatisch übersprungen, da sie sich
+            // nicht als Ganzzahl lesen lässt. Fehlt das Sheet, bleibt die Map
+            // leer und es gilt überall der Fallback 2 (bisheriges Verhalten).
+            // =====================================================
+            if (workbook.Worksheets.TryGetWorksheet("SpätSchwelle", out var sheetSchw) ||
+                workbook.Worksheets.TryGetWorksheet("SpaetSchwelle", out sheetSchw))
+            {
+                foreach (var row in sheetSchw.RangeUsed()?.RowsUsed()
+                                    ?? Enumerable.Empty<IXLRangeRow>())
+                {
+                    if (int.TryParse(row.Cell(1).GetString().Trim(), out int wstKey) &&
+                        int.TryParse(row.Cell(2).GetString().Trim(), out int schwelleWert))
+                    {
+                        // Spätere Zeile gewinnt bei doppelter Wst.
+                        spaetSchwelle[wstKey] = schwelleWert;
+                    }
+                }
+            }
+
+            // =====================================================
             // STAMMDATEN – HohlStd. soll + Std.Folge
             // =====================================================
             var lehrerStammdaten = new Dictionary<string, LehrerStammdaten>();
@@ -517,6 +569,18 @@ namespace Stundenplan_V2
                 int colEinzelHart   = FindeSpalte(headerSD, "Einzel hart");
                 int colDoppelHart   = FindeSpalte(headerSD, "DoppelHohl hart");
                 int colDreifachHart = FindeSpalte(headerSD, "DreifachHohl hart");
+
+                // ---- Freie Tage aus StD (ersetzen die fruehere Tabelle "FT") ----
+                // "Freie Tage"        = Anzahl zusaetzlicher freier Tage
+                // "Gewicht freie Tage" = -3 (zwingend/hart) oder -2 (Wunsch)
+                // Beide werden per Ueberschrift gesucht und duerfen daher an
+                // beliebiger Stelle stehen. Die Finder erkennen auch die alten
+                // Namen ("FT" / "FT-Gewicht"). Achtung: der Freie-Tage-Bezug
+                // steckt in beiden Ueberschriften — deshalb zuerst die
+                // Gewicht-Spalte bestimmen und sie bei der Suche nach der
+                // Anzahl-Spalte ausschliessen, damit nicht die falsche trifft.
+                int colFtGewicht = FindeFtGewichtSpalte(headerSD);
+                int colFtAnzahl  = FindeFtAnzahlSpalte(headerSD, colFtGewicht);
 
                 // Zelle als gesetzt werten: "x", "X", "ja", "1" — wie es
                 // "Sperr." und "( _ )" in diesem Sheet schon handhaben.
@@ -597,6 +661,45 @@ namespace Stundenplan_V2
                         stdDiagnose.Add($"StD: '{name}' HART: {string.Join(", ", teile)}.");
                     }
 
+                    // ---- Freie Tage aus StD ----
+                    // Anzahl (Spalte "FT") und Gewicht (Spalte "FT-Gewicht") wie
+                    // frueher in der Tabelle FT: -3 zwingend, -2 Wunsch, sonst
+                    // ignorieren. Wird direkt in die schon bestehenden
+                    // Sammlungen geschrieben, damit der restliche Code unveraendert
+                    // bleibt.
+                    if (colFtAnzahl > 0)
+                    {
+                        LiesGanzzahlTolerant(row.Cell(colFtAnzahl), out int ftAnzahl);
+
+                        int ftMarker = 0;
+                        bool markerVorhanden = colFtGewicht > 0 &&
+                            LiesGanzzahlTolerant(row.Cell(colFtGewicht), out ftMarker);
+
+                        if (ftAnzahl > 0 && markerVorhanden && ftMarker == -3)
+                        {
+                            if (!extraFreieTage.ContainsKey(name))
+                                extraFreieTage[name] = ftAnzahl;
+                            lehrerFreiTageMinus3.Add(name);
+                            ftDiagnose.Add($"StD/FT: '{name}' -> {ftAnzahl} freie(r) Tag(e), -3 (ZWINGEND/hart).");
+                        }
+                        else if (ftAnzahl > 0 && markerVorhanden && ftMarker == -2)
+                        {
+                            if (!extraFreieTage.ContainsKey(name))
+                                extraFreieTage[name] = ftAnzahl;
+                            lehrerFreiTageMinus2.Add(name);
+                            ftDiagnose.Add($"StD/FT: '{name}' -> {ftAnzahl} freie(r) Tag(e), -2 (Wunsch; hart nur bei 'Verbot -2 = ja', sonst Strafe).");
+                        }
+                        else if (ftAnzahl > 0 || markerVorhanden)
+                        {
+                            // Nur meckern, wenn ueberhaupt etwas eingetragen war.
+                            string grund =
+                                ftAnzahl <= 0 ? "Anzahl (Spalte 'Freie Tage') fehlt oder <= 0"
+                                : !markerVorhanden ? "Gewichtung (Spalte 'Gewicht freie Tage') fehlt oder keine Zahl"
+                                : $"Gewichtung {ftMarker} ist weder -3 noch -2";
+                            ftDiagnose.Add($"StD/FT: '{name}' verworfen ({grund}).");
+                        }
+                    }
+
                     lehrerStammdaten[name] = sd;
                 }
 
@@ -612,6 +715,13 @@ namespace Stundenplan_V2
                                     "Hohlstunden-/Folge-Regeln wirken wie bisher nur als Strafe.");
                 }
             }
+
+            // Zentrale Konfiguration der Spät-Zählung setzen: Berechne()
+            // (Anzeige/Diagnose) UND SolverSpaetePaedEinheiten() (Solver-Ziel)
+            // lesen sie gemeinsam, damit angezeigte Qualität und Solver-Ziel
+            // garantiert identisch bleiben.
+            PlanBewertung.AusgenommeneSpaetFaecher = ausgenommeneSpaetFaecher;
+            PlanBewertung.SpaetSchwelleJeWst = spaetSchwelle;
 
             return new StundenplanInput
             {
@@ -650,6 +760,8 @@ namespace Stundenplan_V2
                 LehrerFreiTageMinus3 = lehrerFreiTageMinus3,
                 FtDiagnose = ftDiagnose,
                 StdDiagnose = stdDiagnose,
+                AusgenommeneSpaetFaecher = ausgenommeneSpaetFaecher,
+                SpaetSchwelleJeWst = spaetSchwelle,
             };
         }
 
@@ -720,7 +832,10 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
-        // FT-TABELLE (zusaetzliche freie Tage)
+        // FT-TABELLE (zusaetzliche freie Tage)  —  NICHT MEHR AKTIV
+        // Freie Tage werden jetzt aus den Spalten "FT"/"FT-Gewicht" im Sheet
+        // "StD" gelesen (siehe STAMMDATEN-Block). Diese Methode bleibt nur als
+        // Referenz erhalten, falls die eigene FT-Tabelle je wieder gebraucht wird.
         // Spalte A = Name, B = Anzahl zusaetzliche FT, C = Gewichtung (-2 / -3)
         // Eigene Tabelle "FT" (zeilenweise, ein Lehrer pro Zeile).
         // =====================================================
@@ -908,6 +1023,22 @@ namespace Stundenplan_V2
             return BestimmeFachgruppeHardcoded(f);
         }
 
+        // Prüft, ob das FGR-Blatt eine echte Kopfzeile hat. Kriterium: In der
+        // ERSTEN benutzten Zeile ist Spalte B (Raumanzahl) KEINE ganze Zahl
+        // (z.B. steht dort "Anzahl"). Nur dann darf die erste Zeile beim
+        // Einlesen als Kopfzeile übersprungen werden – sonst würde die erste
+        // Fachgruppe (z.B. "Bio") verschluckt.
+        private static bool FgrHatKopfzeile(IXLWorkbook workbook)
+        {
+            if (!workbook.Worksheets.Any(ws => ws.Name == "FGR"))
+                return false;
+
+            var ersteZeile = workbook.Worksheet("FGR").RangeUsed()?.RowsUsed().FirstOrDefault();
+            if (ersteZeile == null) return false;
+
+            return !int.TryParse(ersteZeile.Cell(2).GetString().Trim(), out _);
+        }
+
         // Liest aus dem Blatt "FGR" je Zeile die Fachgruppe (Spalte A) und ihre
         // Präfixe (ab Spalte C bis zur letzten benutzten Zelle der Zeile).
         // Leere Zellen werden übersprungen, Präfixe getrimmt.
@@ -920,7 +1051,11 @@ namespace Stundenplan_V2
                 return result;
 
             var sheet = workbook.Worksheet("FGR");
-            foreach (var row in sheet.RangeUsed().RowsUsed().Skip(1))
+            // Nur eine echte Kopfzeile überspringen (sonst würde die erste
+            // Fachgruppe mit ihren Präfixen verloren gehen).
+            IEnumerable<IXLRangeRow> zeilen = sheet.RangeUsed().RowsUsed();
+            if (FgrHatKopfzeile(workbook)) zeilen = zeilen.Skip(1);
+            foreach (var row in zeilen)
             {
                 string gruppe = row.Cell(1).GetString().Trim();
                 if (string.IsNullOrWhiteSpace(gruppe)) continue;
@@ -1001,6 +1136,63 @@ namespace Stundenplan_V2
                     map[text] = col;
             }
             return map;
+        }
+
+        // Sucht die Gewicht-Spalte der freien Tage. Erkennt sowohl die neuen
+        // Namen ("Gewicht freie Tage") als auch die alten ("FT-Gewicht"):
+        // exakter Treffer einer bekannten Variante ODER ein normalisierter
+        // Kandidat, der "gewicht"/"gew" UND einen Freie-Tage-Bezug
+        // ("freietage" oder "ft") enthaelt. So wird die reine Anzahlspalte
+        // ("Freie Tage" / "FT") nie faelschlich als Gewicht getroffen.
+        private static int FindeFtGewichtSpalte(Dictionary<string, int> map)
+        {
+            string[] exakt =
+            {
+                "Gewicht freie Tage", "Gewicht Freie Tage", "GewichtFreieTage",
+                "FT-Gewicht", "FT Gewicht", "FTGewicht", "FT-Gew", "FT Gew"
+            };
+            foreach (var name in exakt)
+                foreach (var kv in map)
+                    if (string.Equals(kv.Key.Trim(), name, StringComparison.OrdinalIgnoreCase))
+                        return kv.Value;
+
+            string Norm(string s) => new string(s.Where(ch => !char.IsWhiteSpace(ch)).ToArray()).ToLowerInvariant();
+            foreach (var kv in map)
+            {
+                string k = Norm(kv.Key);
+                bool hatGewicht = k.Contains("gewicht") || k.Contains("gew");
+                bool hatFtBezug = k.Contains("freietage") || k.Contains("ft");
+                if (hatGewicht && hatFtBezug)
+                    return kv.Value;
+            }
+            return -1;
+        }
+
+        // Sucht die Anzahl-Spalte der freien Tage ("Freie Tage" bzw. "FT") und
+        // schliesst die bereits bestimmte Gewicht-Spalte aus. Wichtig, weil
+        // "FT"/"freie tage" als Teilstring in der Gewicht-Ueberschrift steckt und
+        // der flexible Vergleich sonst die falsche Spalte treffen koennte. Ein
+        // Kandidat mit "gewicht"/"gew" wird grundsaetzlich ausgeschlossen.
+        private static int FindeFtAnzahlSpalte(Dictionary<string, int> map, int colFtGewicht)
+        {
+            string[] exakt = { "Freie Tage", "FreieTage", "FT" };
+
+            foreach (var name in exakt)
+                foreach (var kv in map)
+                    if (kv.Value != colFtGewicht &&
+                        string.Equals(kv.Key.Trim(), name, StringComparison.OrdinalIgnoreCase))
+                        return kv.Value;
+
+            string Norm(string s) => new string(s.Where(ch => !char.IsWhiteSpace(ch)).ToArray()).ToLowerInvariant();
+            foreach (var kv in map)
+            {
+                if (kv.Value == colFtGewicht) continue;
+                string k = Norm(kv.Key);
+                if (k.Contains("gewicht") || k.Contains("gew")) continue;
+                if (k == "freietage" || k == "ft")
+                    return kv.Value;
+            }
+            return -1;
         }
 
         // Sucht die Spaltennummer zu einem Header robust:

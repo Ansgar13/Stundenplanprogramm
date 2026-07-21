@@ -99,6 +99,33 @@ namespace Stundenplan_V2
             // trotzdem sauber abgeschlossen, statt sich darauf zu verlassen.
             DgParameter.CommitEdit(DataGridEditingUnit.Row, true);
 
+            // Validierung: NUR "Anzahl Lösungen ohne Tausch" muss eine ganze Zahl
+            // > 0 sein. Steht dort etwas anderes (0, leer, nicht-numerisch), wird
+            // eine gefundene Lösung sonst verworfen und fälschlich "keine Lösung
+            // gefunden" gemeldet. "Anzahl Lösungen mit Tausch" darf dagegen 0 sein
+            // (= Phase 2 / Tauschsuche bewusst überspringen) und wird hier nicht
+            // geprüft. Warnung anzeigen und Speichern abbrechen.
+            var ungültigeAnzahl = new System.Collections.Generic.List<string>();
+            foreach (var z in Zeilen)
+            {
+                // Genau die Zeile treffen, die der ExcelLoader als "Anzahl
+                // Lösungen ohne Tausch" liest (dort: label.Contains("ohne tausch")).
+                string b = (z.Beschriftung ?? "").ToLower();
+                bool istAnzahlOhneTausch = b.Contains("ohne tausch");
+                if (!istAnzahlOhneTausch) continue;
+
+                if (!int.TryParse((z.Wert ?? "").Trim(), out int v) || v <= 0)
+                    ungültigeAnzahl.Add(z.Beschriftung);
+            }
+            if (ungültigeAnzahl.Count > 0)
+            {
+                MessageBox.Show(
+                    "Anzahl Lösungen ohne Tausch muss eine ganze Zahl größer als 0 sein.\n\n" +
+                    "Bitte korrigieren:\n• " + string.Join("\n• ", ungültigeAnzahl),
+                    "Ungültiger Wert", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return; // Fenster offen lassen, nicht speichern
+            }
+
             try
             {
                 using var wb = new XLWorkbook(_excelPfad);

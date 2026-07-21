@@ -15,6 +15,10 @@ namespace Stundenplan_V2
         private readonly List<(string label, int[,] belegung, List<UnterrichtsBlock> blocks)> _loesungen;
         private readonly List<ZeitSlot> _slots;
         private readonly Dictionary<string, int> _fachraumLimit;
+
+        // Popup mit der vollständigen Belegungsliste einer Fachgruppen-Zelle
+        // (Klick auf Badge / "+N weitere"). Wird wiederverwendet.
+        private System.Windows.Controls.Primitives.Popup _fgBelegungPopup;
         private readonly List<(int stundeVor, int stundeNach)> _grossePausen;
 
         // Callback an MainWindow: (label, geänderte belegung, blocks) -> übernimmt in Lös + Diag
@@ -185,10 +189,226 @@ namespace Stundenplan_V2
             foreach (var l in _loesungen)
                 CboLoesung.Items.Add(l.label);
 
+            // Gespeicherte Ansichts-Einstellungen (Sheet "EdCfg") lesen. Die
+            // "einfachen" Schalter (Farbmodus, Bearbeitungsmodus, SpaetePaed,
+            // Ignorierte, Filter-/Ausweich-Checkbox, Parkkontext, Diag-Filter)
+            // sowie die Fenstergeometrie werden JETZT gesetzt — noch VOR
+            // _initialisiert=true, damit die Changed-Handler nichts zeichnen; der
+            // Erst-Aufbau weiter unten uebernimmt den Zustand. Die layout-
+            // aendernden Schalter (Klassenvergleich/Fachgruppenplan/Vergleichs-
+            // modus) kommen erst NACH dem Laden der ersten Loesung, weil ihre
+            // Handler eine geladene Belegung brauchen.
+            var startCfg = EditorConfig.Lade(_excelPfad);
+            WendeEinfacheEinstellungenAn(startCfg);
+            WendeFenstergeometrieAn(startCfg);
+
             _initialisiert = true;
 
+            // Gespeicherte Loesung waehlen, falls ihr Label noch existiert; sonst
+            // die erste. Die Auswahl loest CboLoesung_SelectionChanged aus, das
+            // die Belegung laedt, zeichnet und die Lehrer-/Klassen-Dropdowns
+            // fuellt. Nicht mehr vorhandene Labels (nach Solverlauf/"Uebernehmen"/
+            // UV-Aenderung) fallen still auf die erste Loesung zurueck.
             if (CboLoesung.Items.Count > 0)
-                CboLoesung.SelectedIndex = 0;
+            {
+                int solIdx = 0;
+                if (!string.IsNullOrEmpty(startCfg?.LoesungName))
+                {
+                    int fi = FindeItem(CboLoesung, startCfg.LoesungName);
+                    if (fi >= 0) solIdx = fi;
+                }
+                CboLoesung.SelectedIndex = solIdx;
+            }
+
+            // Zuletzt gewaehlten Lehrer/Klasse wiederherstellen (nur wenn in der
+            // geladenen Loesung vorhanden). MUSS vor WendeLayoutEinstellungenAn
+            // stehen, weil der Vergleichsmodus die aktuelle Lehrer-/Klassenwahl in
+            // seine 2x2-Ansicht spiegelt.
+            WendeAuswahlAn(startCfg);
+
+            WendeLayoutEinstellungenAn(startCfg);
+        }
+
+        // =====================================================
+        // Persistenz der Editor-Einstellungen (Sheet "EdCfg", EditorConfig.cs)
+        // =====================================================
+
+        // "Einfache" Schalter setzen: Sie beeinflussen nur das Zeichnen und
+        // werden von ihren (per _initialisiert gesperrten) Changed-Handlern beim
+        // ersten Aufbau ohnehin gelesen. Deshalb hier VOR _initialisiert=true
+        // aufrufen — sonst zeichnet jeder Setter einzeln neu.
+        private void WendeEinfacheEinstellungenAn(EditorConfig cfg)
+        {
+            if (cfg == null) return;
+
+            switch (cfg.Farbmodus)
+            {
+                case "Klasse": RbFarbeKlasse.IsChecked = true; break;
+                case "Fach":   RbFarbeFach.IsChecked = true; break;
+                case "Beide":  RbFarbeBeide.IsChecked = true; break;
+                default:       RbFarbeAus.IsChecked = true; break;
+            }
+
+            if (cfg.Bearbeitungsmodus == "Block") RbBlock.IsChecked = true;
+            else                                   RbEinzel.IsChecked = true;
+
+            ChkSpaetePaed.IsChecked          = cfg.SpaetePaed;
+            ChkIgnorierteZeigen.IsChecked    = cfg.IgnorierteZeigen;
+            ChkFilterVerletzungen.IsChecked  = cfg.FilterVerletzungen;
+            ChkAusweichSuche.IsChecked       = cfg.AusweichSuche;
+
+            _parkKontextLehrer = cfg.ParkkontextLehrer;
+
+            _diagFilterKriterien = (cfg.DiagFilter != null && cfg.DiagFilter.Count > 0)
+                ? new List<int>(cfg.DiagFilter)
+                : null;
+            _diagFilterUnd = cfg.DiagFilterUnd;
+            if (_diagFilterKriterien != null)
+                BtnDiagFilter.Content = $"Diag-Filter ({_diagFilterKriterien.Count})";
+        }
+
+        // Layout-aendernde Schalter: ihre Handler bauen ganze Ansichten auf und
+        // brauchen eine geladene Loesung. Deshalb erst NACH CboLoesung-Auswahl,
+        // mit _initialisiert=true — hier feuern die Handler bewusst und richten
+        // die Ansicht ein. Reihenfolge: Fachgruppenplan unabhaengig; danach
+        // Vergleichsmodus (schaltet Klassenvergleich selbst aus) ODER, falls
+        // nicht aktiv, der Klassenvergleich.
+        private void WendeLayoutEinstellungenAn(EditorConfig cfg)
+        {
+            if (cfg == null || _belegung == null) return;
+
+            if (cfg.Fachgruppenplan && ChkFachgruppenPlan.IsChecked != true)
+                ChkFachgruppenPlan.IsChecked = true;
+
+            if (cfg.Vergleichsmodus)
+            {
+                if (ChkVergleichsModus.IsChecked != true)
+                    ChkVergleichsModus.IsChecked = true;
+            }
+            else if (cfg.Klassenvergleich && ChkKlassenVergleich.IsChecked != true)
+            {
+                ChkKlassenVergleich.IsChecked = true;
+            }
+        }
+
+        // Zuletzt gewaehlten Lehrer und Klasse wiederherstellen, sofern sie in
+        // der aktuell geladenen Loesung vorkommen. Nicht (mehr) vorhandene Werte
+        // werden still ignoriert — es bleibt bei der Standardauswahl (erster
+        // Lehrer / erste Klasse). Das Setzen loest die jeweiligen
+        // SelectionChanged-Handler aus, die Diag-/UV-Fenster und die
+        // Vergleichsmodus-Spiegelung aktuell halten.
+        private void WendeAuswahlAn(EditorConfig cfg)
+        {
+            if (cfg == null || _belegung == null) return;
+
+            int li = FindeItem(CboLehrer, cfg.Lehrer);
+            if (li >= 0) CboLehrer.SelectedIndex = li;
+
+            int ki = FindeItem(CboKlasse, cfg.Klasse);
+            if (ki >= 0) CboKlasse.SelectedIndex = ki;
+        }
+
+        // Gespeicherte Fenstergroesse/-position wiederherstellen. Ohne
+        // gespeicherte Geometrie bleibt es beim XAML-Standard (CenterOwner).
+        private void WendeFenstergeometrieAn(EditorConfig cfg)
+        {
+            if (cfg == null || !cfg.HatGeometrie) return;
+
+            Width = cfg.FensterBreite;
+            Height = cfg.FensterHoehe;
+
+            if (cfg.HatPosition && GeometrieSichtbar(cfg.FensterLeft, cfg.FensterTop, cfg.FensterBreite, cfg.FensterHoehe))
+            {
+                // Manual, damit Left/Top greifen (sonst zentriert WPF ueber Owner).
+                WindowStartupLocation = WindowStartupLocation.Manual;
+                Left = cfg.FensterLeft;
+                Top = cfg.FensterTop;
+            }
+            // Liegt die gespeicherte Position ausserhalb aller Bildschirme (z.B.
+            // nach Monitorwechsel), bleibt WindowStartupLocation=CenterOwner und
+            // nur die Groesse wird uebernommen.
+        }
+
+        // Prueft grob, ob ein Fenster an (left,top) mit (w,h) noch auf der
+        // virtuellen Bildschirmflaeche sichtbar waere (mind. ein Streifen der
+        // Titelleiste). Verhindert "verschwundene" Fenster nach Monitorwechsel.
+        private static bool GeometrieSichtbar(double left, double top, double w, double h)
+        {
+            double vsl = SystemParameters.VirtualScreenLeft;
+            double vst = SystemParameters.VirtualScreenTop;
+            double vsw = SystemParameters.VirtualScreenWidth;
+            double vsh = SystemParameters.VirtualScreenHeight;
+
+            const double rand = 60;   // so viel muss horizontal sichtbar bleiben
+            const double titel = 24;  // Titelleiste vertikal
+
+            bool xOk = (left + w - rand) > vsl && (left + rand) < (vsl + vsw);
+            bool yOk = (top + titel) < (vst + vsh) && (top + titel) > vst;
+            return xOk && yOk;
+        }
+
+        // Beim Schliessen (Button "Schliessen" UND Fenster-X) aktuelle
+        // Einstellungen in das Sheet "EdCfg" zurueckschreiben.
+        protected override void OnClosed(EventArgs e)
+        {
+            base.OnClosed(e);
+            SpeichereEinstellungen();
+        }
+
+        private void SpeichereEinstellungen()
+        {
+            if (string.IsNullOrWhiteSpace(_excelPfad)) return;
+
+            try
+            {
+                var cfg = new EditorConfig
+                {
+                    Farbmodus          = AktuellerFarbmodus(),
+                    Bearbeitungsmodus  = RbBlock.IsChecked == true ? "Block" : "Einzel",
+                    SpaetePaed         = ChkSpaetePaed.IsChecked == true,
+                    Klassenvergleich   = ChkKlassenVergleich.IsChecked == true,
+                    Fachgruppenplan    = ChkFachgruppenPlan.IsChecked == true,
+                    Vergleichsmodus    = ChkVergleichsModus.IsChecked == true,
+                    IgnorierteZeigen   = ChkIgnorierteZeigen.IsChecked == true,
+                    FilterVerletzungen = ChkFilterVerletzungen.IsChecked == true,
+                    AusweichSuche      = ChkAusweichSuche.IsChecked == true,
+                    ParkkontextLehrer  = _parkKontextLehrer,
+                    DiagFilter         = _diagFilterKriterien != null ? new List<int>(_diagFilterKriterien) : new List<int>(),
+                    DiagFilterUnd      = _diagFilterUnd,
+                    LoesungName        = CboLoesung.SelectedItem as string ?? "",
+                    Lehrer             = CboLehrer.SelectedItem as string ?? "",
+                    Klasse             = CboKlasse.SelectedItem as string ?? "",
+                };
+
+                // Geometrie im "normalen" Zustand sichern; ist das Fenster
+                // maximiert/minimiert, liefert RestoreBounds die letzte normale
+                // Groesse/Position.
+                var b = (WindowState == WindowState.Normal)
+                    ? new Rect(Left, Top, Width, Height)
+                    : RestoreBounds;
+                if (b.Width > 0 && b.Height > 0)
+                {
+                    cfg.FensterBreite = b.Width;
+                    cfg.FensterHoehe  = b.Height;
+                    cfg.FensterLeft   = b.Left;
+                    cfg.FensterTop    = b.Top;
+                }
+
+                cfg.Speichere(_excelPfad);
+            }
+            catch
+            {
+                // Ein Schreibfehler (z.B. Datei in Excel geoeffnet/gesperrt) darf
+                // das Schliessen des Editors niemals blockieren.
+            }
+        }
+
+        private string AktuellerFarbmodus()
+        {
+            if (RbFarbeKlasse?.IsChecked == true) return "Klasse";
+            if (RbFarbeFach?.IsChecked == true) return "Fach";
+            if (RbFarbeBeide?.IsChecked == true) return "Beide";
+            return "Aus";
         }
 
         // =====================================================
@@ -1188,7 +1408,7 @@ namespace Stundenplan_V2
 
         // Wie viele Bloecke eine Zelle maximal ausschreibt; der Rest wird als
         // "+n weitere" angedeutet (Ueberbuchungen koennen beliebig gross sein).
-        private const int FgMaxBloeckeProZelle = 4;
+        private const int FgMaxBloeckeProZelle = 3;
 
         // Wird aus ZeichneBeideGrids nach jeder Aenderung mitgerufen. Solange
         // die Spalte ausgeblendet ist, kostet das nichts: angeheftete
@@ -1342,23 +1562,54 @@ namespace Stundenplan_V2
                 border.BorderThickness = new Thickness(2);
             }
 
+            // (A) Tooltip mit der VOLLSTÄNDIGEN Belegung an der Zelle.
+            string vollTip = FachgruppenSlotTooltip(slotIdx, gruppe);
+            if (vollTip != null) border.ToolTip = vollTip;
+
             var stapel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 14, 0, 0) };
             foreach (int b in bloecke.Take(FgMaxBloeckeProZelle))
                 stapel.Children.Add(BaueFachgruppenTeil(b, slotIdx, ueberbucht));
 
             if (bloecke.Count > FgMaxBloeckeProZelle)
-                stapel.Children.Add(new TextBlock
+            {
+                // (C) "+N weitere" als anklickbarer Trigger fuer die volle Liste.
+                var mehr = new TextBlock
                 {
-                    Text = "+" + (bloecke.Count - FgMaxBloeckeProZelle) + " weitere",
+                    Text = "+" + (bloecke.Count - FgMaxBloeckeProZelle) + " weitere \u2026",
                     FontSize = 10,
-                    Foreground = Brushes.Gray,
-                    Margin = new Thickness(2, 0, 0, 0)
-                });
+                    Foreground = new SolidColorBrush(Color.FromRgb(0x10, 0x4A, 0xE0)),
+                    Margin = new Thickness(2, 0, 0, 0),
+                    Cursor = Cursors.Hand,
+                    ToolTip = vollTip
+                };
+                int slotL = slotIdx; string gruppeL = gruppe;
+                mehr.MouseLeftButtonDown += (s, e) =>
+                {
+                    OeffneFachgruppenBelegungPopup(mehr, slotL, gruppeL);
+                    e.Handled = true;
+                };
+                stapel.Children.Add(mehr);
+            }
 
             var zellInhalt = new Grid();
             zellInhalt.Children.Add(stapel);
-            zellInhalt.Children.Add(BaueFachgruppenBadge(
-                anzahlA, anzahlB, hatWochenTrennung, limit, ueberbucht, voll));
+
+            // (C) Badge ebenfalls anklickbar (und mit Tooltip) — zeigt die Liste.
+            var badge = BaueFachgruppenBadge(
+                anzahlA, anzahlB, hatWochenTrennung, limit, ueberbucht, voll);
+            if (badge != null)
+            {
+                badge.ToolTip = vollTip;
+                badge.Cursor = Cursors.Hand;
+                int slotB = slotIdx; string gruppeB = gruppe;
+                badge.MouseLeftButtonDown += (s, e) =>
+                {
+                    OeffneFachgruppenBelegungPopup(badge, slotB, gruppeB);
+                    e.Handled = true;
+                };
+            }
+            zellInhalt.Children.Add(badge);
+
             border.Child = zellInhalt;
 
             return border;
@@ -1466,6 +1717,108 @@ namespace Stundenplan_V2
             };
 
             return innerBorder;
+        }
+
+        // Einzeiliger Beschreibungstext eines Blocks für Tooltip/Popup.
+        private string FachgruppenBlockText(int blockIdx)
+        {
+            var block = _blocks[blockIdx];
+            var teile = block.Teile;
+            string klassen = string.Join(",", teile.SelectMany(t => t.Klassen).Distinct());
+            string faecher = string.Join(",", teile.Select(t => t.Fach).Distinct());
+            string lehrer = string.Join(",", teile.Select(t => t.Lehrer)
+                                                  .Where(l => !string.IsNullOrWhiteSpace(l)).Distinct());
+            string wg = (block.WochenGruppe ?? "").Trim();
+            return "UNr " + block.UNr + " · " + faecher + " · " + klassen + " · " + lehrer +
+                   (wg == "" ? "" : "  [" + wg + "]");
+        }
+
+        // (A) Tooltip-Text mit der VOLLSTÄNDIGEN Belegung eines Fachgruppen-Slots.
+        private string FachgruppenSlotTooltip(int slotIdx, string gruppe)
+        {
+            if (slotIdx < 0) return null;
+            var bloecke = BloeckeDerFachgruppeImSlot(slotIdx, gruppe);
+            if (bloecke.Count == 0) return null;
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append("Belegung (" + bloecke.Count + "):");
+            foreach (int b in bloecke)
+                sb.Append("\n\u2022 " + FachgruppenBlockText(b));
+            if (bloecke.Count > FgMaxBloeckeProZelle)
+                sb.Append("\n\nKlick auf Badge / \u201E+N weitere\u201C: anklickbare Liste mit Sprung");
+            return sb.ToString();
+        }
+
+        // (C) Popup mit der vollständigen, anklickbaren Belegungsliste des Slots.
+        // Jede Zeile springt (wie im Plan) auf den Unterricht; das Popup schließt
+        // sich beim Wegklicken (StaysOpen=false) oder nach dem Sprung.
+        private void OeffneFachgruppenBelegungPopup(UIElement anker, int slotIdx, string gruppe)
+        {
+            if (slotIdx < 0) return;
+            var bloecke = BloeckeDerFachgruppeImSlot(slotIdx, gruppe);
+            if (bloecke.Count == 0) return;
+
+            int? limit = FachgruppenLimit(gruppe);
+            var (anzahlA, anzahlB, _) = ZaehleFachgruppe(bloecke);
+            int belegt = Math.Max(anzahlA, anzahlB);
+            bool ueberbucht = limit.HasValue && (anzahlA > limit.Value || anzahlB > limit.Value);
+
+            var panel = new StackPanel { Margin = new Thickness(8) };
+
+            string slotName = _slots[slotIdx].WTag + " " + _slots[slotIdx].Stunde + ". Std";
+            string limitTxt = limit.HasValue ? limit.Value.ToString() : "-";
+            var kopf = new TextBlock
+            {
+                Text = gruppe + " · " + slotName + " · belegt " + belegt + "/" + limitTxt,
+                FontWeight = FontWeights.Bold,
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+            if (ueberbucht)
+                kopf.Foreground = new SolidColorBrush(Color.FromRgb(0xC0, 0x20, 0x20));
+            panel.Children.Add(kopf);
+
+            foreach (int b in bloecke)
+            {
+                int idxLokal = b;
+                var zeile = new TextBlock
+                {
+                    Text = FachgruppenBlockText(b),
+                    Cursor = Cursors.Hand,
+                    Padding = new Thickness(3, 2, 3, 2),
+                    FontSize = 12,
+                    TextWrapping = TextWrapping.NoWrap
+                };
+                zeile.MouseEnter += (s, e) => zeile.Background = new SolidColorBrush(Color.FromRgb(0xEE, 0xF3, 0xFF));
+                zeile.MouseLeave += (s, e) => zeile.Background = Brushes.Transparent;
+                zeile.MouseLeftButtonDown += (s, e) =>
+                {
+                    ZeigeDetails(idxLokal);
+                    SynchronisiereBeidePlaeneAufBlock(idxLokal);
+                    if (_fgBelegungPopup != null) _fgBelegungPopup.IsOpen = false;
+                    e.Handled = true;
+                };
+                panel.Children.Add(zeile);
+            }
+
+            var rahmen = new Border
+            {
+                Background = Brushes.White,
+                BorderBrush = Brushes.Gray,
+                BorderThickness = new Thickness(1),
+                Child = panel
+            };
+
+            if (_fgBelegungPopup == null)
+                _fgBelegungPopup = new System.Windows.Controls.Primitives.Popup
+                {
+                    AllowsTransparency = true,
+                    StaysOpen = false,
+                    Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom
+                };
+            _fgBelegungPopup.IsOpen = false;
+            _fgBelegungPopup.PlacementTarget = anker;
+            _fgBelegungPopup.Child = rahmen;
+            _fgBelegungPopup.IsOpen = true;
         }
 
         // Alle Block-Indizes, die in diesem Slot einen Raum der Fachgruppe
@@ -4766,64 +5119,45 @@ namespace Stundenplan_V2
             return frei;
         }
 
-        // Päd. Einheit = (Klasse, Zeilentext). Spät = >=2 Stunden ab Stunde 6.
-        // Nicht voll fixiert = mindestens ein Slot der Einheit ist NICHT in FixUNrn.
+        // Päd. Einheit, Spät-Schwelle und Fach-Ausnahme EINHEITLICH über
+        // PlanBewertung (Klasse | ZeilenText-sonst-Fach; Schwelle Wst-abhängig,
+        // Fallback 2; ausgenommene Fächer übersprungen) — identisch zu Qualität
+        // und Solver-Ziel. Zusätzlich die editor-eigene Bedingung:
+        // "nicht voll fixiert" (mindestens ein Slot der Einheit ist NICHT in FixUNrn).
         private void AktualisiereSpaetePaedEinheiten()
         {
             _spaetePaedBloecke = new HashSet<int>();
             if (ChkSpaetePaed.IsChecked != true || _belegung == null) return;
 
-            int B = _blocks.Count, S = _slots.Count;
+            int S = _slots.Count;
 
-            // Pro (Klasse|Fach)-Einheit sammeln:
-            //   spaeteSlots: Liste (b, s) der Slots ab Stunde 6
-            //   alleSlots:   Liste (b, s) aller Slots der Einheit
-            var spaeteProEinheit = new Dictionary<string, List<(int b, int s)>>();
-            var alleProEinheit   = new Dictionary<string, List<(int b, int s)>>();
-
-            for (int b = 0; b < B; b++)
+            foreach (var einheit in PlanBewertung.BauePaedEinheiten(_blocks))
             {
-                var block = _blocks[b];
-                for (int s = 0; s < S; s++)
-                {
-                    if (_belegung[b, s] != 1) continue;
+                if (PlanBewertung.IstAusgenommen(einheit)) continue;
 
-                    var gezaehlt = new HashSet<string>();
-                    foreach (var teil in block.Teile)
-                    {
-                        if (string.IsNullOrWhiteSpace(teil.Fach)) continue; // leeres Fach bildet keine päd. Einheit
-                        foreach (var k in teil.Klassen)
+                // späte Zeitpunkte (dedupliziert nach WTag+Stunde) und alle
+                // belegten (b,s)-Positionen dieser Einheit sammeln.
+                var späteSlots = new HashSet<(string wtag, int stunde)>();
+                var alleBS     = new List<(int b, int s)>();
+                foreach (int b in einheit.BlockIds)
+                    for (int s = 0; s < S; s++)
+                        if (_belegung[b, s] == 1)
                         {
-                            // pro (Klasse, Fach)-Kombination nur einmal pro Slot zählen
-                            string kf = k + "|" + teil.Fach;
-                            if (gezaehlt.Contains(kf)) continue;
-                            gezaehlt.Add(kf);
-
-                            if (!alleProEinheit.ContainsKey(kf))
-                            {
-                                alleProEinheit[kf] = new List<(int, int)>();
-                                spaeteProEinheit[kf] = new List<(int, int)>();
-                            }
-                            alleProEinheit[kf].Add((b, s));
+                            alleBS.Add((b, s));
                             if (_slots[s].Stunde >= 6)
-                                spaeteProEinheit[kf].Add((b, s));
+                                späteSlots.Add((_slots[s].WTag, _slots[s].Stunde));
                         }
-                    }
-                }
-            }
 
-            foreach (var kv in spaeteProEinheit)
-            {
-                // spät: mindestens 2 Stunden ab Stunde 6
-                if (kv.Value.Count < 2) continue;
+                // spät: Zahl später Slots >= Wst-abhängige Schwelle
+                if (späteSlots.Count < PlanBewertung.SchwelleFuerWst(einheit.Wst)) continue;
 
-                // voll fixiert? -> alle Slots der Einheit müssen in FixUNrn stehen
-                bool alleFixiert = alleProEinheit[kv.Key]
-                    .All(bs => _slots[bs.s].FixUNrn.Contains(_blocks[bs.b].UNr));
+                // voll fixiert? -> alle belegten Slots der Einheit in FixUNrn
+                bool alleFixiert = alleBS.All(bs =>
+                    _slots[bs.s].FixUNrn.Contains(_blocks[bs.b].UNr));
                 if (alleFixiert) continue;
 
                 // nicht voll fixiert + spät -> alle Blöcke dieser Einheit rot markieren
-                foreach (var bs in alleProEinheit[kv.Key])
+                foreach (var bs in alleBS)
                     _spaetePaedBloecke.Add(bs.b);
             }
         }

@@ -11,6 +11,15 @@ namespace Stundenplan_V2
     /// ZeilenText-2, zusätzlich eine direkt bearbeitbare U-Nr-Liste. Dazu die
     /// Wahl des Zeichensatzes und optional der ZZ-Lehrer-Trick (nur für die
     /// gewählten U-Nrn) samt Lösungsauswahl als Slot-Quelle.
+    ///
+    /// ZZ-QUELLE: Zusätzlich lässt sich wählen, WORAUS der ZZ-Trick die Zeilen
+    /// bezieht — aus dem UV-Sheet (bisheriges Verhalten, mit Filter/Auswahl)
+    /// oder aus einer bestehenden GPU002-Datei. Im GPU002-Modus wird die
+    /// gewählte Datei zeilenweise byte-identisch übernommen und jede verplante
+    /// Zeile zusätzlich mit dem ZZ-Lehrer geschrieben; Filter, U-Nr-Auswahl und
+    /// Zeichensatz sind dann ohne Wirkung (die Quelle bestimmt den Zeichensatz).
+    /// Der ZZ-Trick ist in diesem Modus implizit aktiv und benötigt weiterhin
+    /// eine gewählte Lösung (für die verplanten U-Nrn und die GPU016_ZZ).
     /// </summary>
     public partial class GpuExportDialog : Window
     {
@@ -32,6 +41,12 @@ namespace Stundenplan_V2
         public bool ZzTrick { get; private set; } = false;
         public string GewählteLösung { get; private set; } = "";
         public GpuEncoding Encoding { get; private set; } = GpuEncoding.Utf8;
+
+        // ---- Ergebnis: ZZ-Quelle GPU002-Datei ----
+        // true  = Zeilen kommen aus einer bestehenden GPU002.TXT (byte-identisch
+        //         durchgeschrieben + ZZ-Zeilen). false = bisheriger UV-Pfad.
+        public bool ZzQuelleGpu { get; private set; } = false;
+        public string GpuQuellPfad { get; private set; } = "";
 
         public GpuExportDialog(
             IEnumerable<UvEintrag> eintraege,
@@ -59,12 +74,40 @@ namespace Stundenplan_V2
                 CboLoesung.SelectedIndex = 0;
 
             AktualisiereAnzahl();
+            AktualisiereZzQuelleUi();
         }
 
         private void ChkZz_Changed(object sender, RoutedEventArgs e)
+            => AktualisiereZzQuelleUi();
+
+        // ZZ-Quelle umgeschaltet: im GPU002-Modus ist der ZZ-Trick implizit
+        // aktiv (ChkZz deaktiviert), die Datei-Auswahl wird freigeschaltet und
+        // die Lösung MUSS wählbar sein.
+        private void RbZzQuelle_Changed(object sender, RoutedEventArgs e)
+            => AktualisiereZzQuelleUi();
+
+        private void AktualisiereZzQuelleUi()
         {
+            bool gpu = RbZzQuelleGpu?.IsChecked == true;
+
+            if (BtnGpuQuelle != null) BtnGpuQuelle.IsEnabled = gpu;
+            if (ChkZz != null) ChkZz.IsEnabled = !gpu;   // im GPU-Modus ZZ implizit
             if (CboLoesung != null)
-                CboLoesung.IsEnabled = ChkZz.IsChecked == true;
+                CboLoesung.IsEnabled = gpu || (ChkZz != null && ChkZz.IsChecked == true);
+        }
+
+        private void BtnGpuQuelle_Click(object sender, RoutedEventArgs e)
+        {
+            var ofd = new Microsoft.Win32.OpenFileDialog
+            {
+                Filter = "Untis GPU002 (*.txt)|*.txt|Alle Dateien (*.*)|*.*",
+                Title = "GPU002-Quelldatei für den ZZ-Trick wählen"
+            };
+            if (ofd.ShowDialog() == true)
+            {
+                GpuQuellPfad = ofd.FileName;
+                TxtGpuQuelle.Text = System.IO.Path.GetFileName(GpuQuellPfad);
+            }
         }
 
         // Bei jeder Änderung der Filter die Anzeige der Treffer aktualisieren
@@ -151,6 +194,41 @@ namespace Stundenplan_V2
         private void BtnOk_Click(object sender, RoutedEventArgs e)
         {
             Encoding = GewaehltesEncoding();
+
+            // ---- NEUER MODUS: ZZ-Quelle = bestehende GPU002-Datei ----
+            // Eigenständiger Pfad: Durchschrieb + ZZ, keine UNr-Auswahl. Es
+            // müssen nur eine Quelldatei und eine Lösung gewählt sein.
+            if (RbZzQuelleGpu.IsChecked == true)
+            {
+                if (string.IsNullOrWhiteSpace(GpuQuellPfad))
+                {
+                    MessageBox.Show(
+                        "Bitte eine GPU002-Quelldatei wählen (Knopf 'GPU002-Datei…').",
+                        "Hinweis", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                GewählteLösung = CboLoesung.SelectedItem as string ?? "";
+                if (string.IsNullOrEmpty(GewählteLösung))
+                {
+                    MessageBox.Show(
+                        "Für den GPU-Quelle-Modus muss eine Lösung als Slot-Quelle gewählt sein " +
+                        "(bestimmt die verplanten U-Nrn und die GPU016_ZZ).\n" +
+                        "Bitte zuerst Button 10 ausführen und eine Lösung auswählen.",
+                        "Hinweis", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                ZzQuelleGpu = true;
+                ZzTrick = true;     // im GPU-Modus immer aktiv
+                AlleUNrn = true;    // keine UNr-Auswahl in diesem Modus
+                GewählteUNrn = new HashSet<int>();
+                DialogResult = true;
+                return;
+            }
+
+            // ---- BISHERIGER UV-PFAD ----
+            ZzQuelleGpu = false;
             ZzTrick = ChkZz.IsChecked == true;
             GewählteLösung = CboLoesung.SelectedItem as string ?? "";
 

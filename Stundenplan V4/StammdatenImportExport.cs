@@ -98,6 +98,18 @@ namespace Stundenplan_V2
             "DoppelHohl hart", "DreifachHohl hart"
         };
 
+        // Freie-Tage-Spalten in StD (loesen die fruehere Tabelle "FT" ab).
+        // "Freie Tage"         = Anzahl zusaetzlicher freier Tage
+        // "Gewicht freie Tage" = -3 (zwingend) oder -2 (Wunsch)
+        // Wie die Hart-Spalten stammen sie NICHT aus Untis und werden bei einem
+        // GPU004-Import nie ueberschrieben, sondern aus dem Bestand uebernommen.
+        public const string SpalteFreieTage = "Freie Tage";
+        public const string SpalteGewichtFreieTage = "Gewicht freie Tage";
+        public static readonly string[] FreieTageSpalten =
+        {
+            SpalteFreieTage, SpalteGewichtFreieTage
+        };
+
         // StD schreibt Dezimalzahlen mit Komma ("24,500"). Bewusst fest auf
         // de-DE statt CurrentCulture: die Excel-Datei soll auf jedem Rechner
         // gleich aussehen, nicht je nach Windows-Spracheinstellung anders.
@@ -126,6 +138,36 @@ namespace Stundenplan_V2
 
             public string Wert(Dictionary<string, string> zeile, string spalte)
                 => zeile.TryGetValue(spalte, out string v) ? (v ?? "") : "";
+        }
+
+        // Erkennt tolerant, ob die Tabelle bereits eine Freie-Tage-Anzahlspalte
+        // bzw. Gewicht-Spalte besitzt — unabhaengig von der genauen Schreibweise
+        // und auch unter den alten Namen "FT"/"FT-Gewicht". Muss zur Erkennung im
+        // ExcelLoader passen, damit Import und Solver dieselbe Spalte meinen.
+        private static string NormSpalte(string s)
+            => new string((s ?? "").Where(ch => !char.IsWhiteSpace(ch)).ToArray()).ToLowerInvariant();
+
+        internal static bool HatFreieTageGewichtSpalte(StdTabelle tab)
+        {
+            foreach (var sp in tab.Spalten)
+            {
+                string k = NormSpalte(sp);
+                bool hatGewicht = k.Contains("gewicht") || k.Contains("gew");
+                bool hatFtBezug = k.Contains("freietage") || k.Contains("ft");
+                if (hatGewicht && hatFtBezug) return true;
+            }
+            return false;
+        }
+
+        internal static bool HatFreieTageAnzahlSpalte(StdTabelle tab)
+        {
+            foreach (var sp in tab.Spalten)
+            {
+                string k = NormSpalte(sp);
+                if (k.Contains("gewicht") || k.Contains("gew")) continue; // das ist die Gewicht-Spalte
+                if (k == "freietage" || k == "ft") return true;
+            }
+            return false;
         }
 
         public static StdTabelle LiesStd(string excelPfad)
@@ -407,6 +449,14 @@ namespace Stundenplan_V2
             foreach (var s in bestand.Spalten) ergebnis.Spalten.Add(s);
             foreach (var s in ImportierteSpalten.Concat(HartSpalten))
                 if (!ergebnis.HatSpalte(s)) ergebnis.Spalten.Add(s);
+
+            // Freie-Tage-Spalten ebenfalls sicherstellen — aber nur, wenn nicht
+            // schon eine passende Spalte existiert (auch unter dem alten Namen
+            // "FT"/"FT-Gewicht" oder mit abweichender Schreibweise). Sonst
+            // entstuenden doppelte Spalten. Vorhandene Werte bleiben so oder so
+            // erhalten, da die Spalte als Bestandsspalte mitlaeuft.
+            if (!HatFreieTageAnzahlSpalte(ergebnis))       ergebnis.Spalten.Add(SpalteFreieTage);
+            if (!HatFreieTageGewichtSpalte(ergebnis))      ergebnis.Spalten.Add(SpalteGewichtFreieTage);
 
             var bestandNachName = new Dictionary<string, Dictionary<string, string>>(
                 StringComparer.OrdinalIgnoreCase);

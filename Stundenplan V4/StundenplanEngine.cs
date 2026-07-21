@@ -879,6 +879,108 @@ namespace Stundenplan_V2
         // entfallen. Timeouts liefern 'Unknown' (nicht Infeasible) und werden
         // daher konservativ NICHT als Ursache gemeldet.
         // =====================================================
+        // =====================================================
+        // Automatische Klassen-Grobprüfung bei Unlösbarkeit:
+        // Für jede Klasse gegenüberstellen, wie viele Slots ihr Unterricht
+        // MINDESTENS braucht und wie viele Slots laut ZWK überhaupt frei sind
+        // (KlassenWunsch != -3). Parallelität wird berücksichtigt, damit keine
+        // Falschmeldungen entstehen:
+        //  - KKK-parallele Blöcke (gleiches nicht-leeres KKK) belegen dieselben
+        //    Slots -> je (WochenGruppe,KKK)-Gruppe zählt nur max(Wst).
+        //  - A-/B-Wochen-Blöcke teilen sich physische Slots -> benötigt =
+        //    (jede Woche) + max(A-Woche, B-Woche).
+        // Es ist eine notwendige Bedingung: benötigt > frei => sicher unlösbar.
+        // =====================================================
+        private static void PruefeKlassenUeberbelegung(
+            List<UnterrichtsBlock> blocks, List<ZeitSlot> slots, Action<string> log)
+        {
+            int S = slots.Count;
+
+            var klassen = new HashSet<string>();
+            foreach (var b in blocks)
+                foreach (var t in b.Teile)
+                    foreach (var k in t.Klassen)
+                        if (!string.IsNullOrWhiteSpace(k)) klassen.Add(k);
+
+            bool eineGemeldet = false;
+
+            foreach (var k in klassen.OrderBy(x => x))
+            {
+                // Freie Slots dieser Klasse (nicht -3 in ZWK).
+                int frei = 0;
+                for (int s = 0; s < S; s++)
+                {
+                    if (slots[s].KlassenWunsch != null &&
+                        slots[s].KlassenWunsch.TryGetValue(k, out int kw) && kw == -3)
+                        continue;
+                    frei++;
+                }
+
+                // Pflichtstunden bestimmen. Wichtig (ClassConstraint):
+                //  - Gleiches nicht-leeres KKK koexistiert IMMER, auch ueber
+                //    Wochengruppen hinweg -> je KKK-Gruppe zaehlt nur max(Wst).
+                //  - Wochencharakter einer Einheit: nur "A", wenn ALLE Mitglieder
+                //    "A" sind; nur "B", wenn alle "B"; sonst "jede Woche" (E).
+                //  - Nur echte A-/B-Einheiten koennen sich einen physischen Slot
+                //    teilen -> benoetigt = E + max(A, B).
+                var klassenBloecke = blocks.Where(blk => blk.Teile.Any(t => t.Klassen.Contains(k))).ToList();
+
+                var kkkGruppen = new Dictionary<string, List<UnterrichtsBlock>>();
+                var einzelBloecke = new List<UnterrichtsBlock>();
+                foreach (var blk in klassenBloecke)
+                {
+                    string kkk = (blk.KKK ?? "").Trim();
+                    if (kkk.Length > 0)
+                    {
+                        if (!kkkGruppen.TryGetValue(kkk, out var lst)) { lst = new List<UnterrichtsBlock>(); kkkGruppen[kkk] = lst; }
+                        lst.Add(blk);
+                    }
+                    else einzelBloecke.Add(blk);
+                }
+
+                string WocheVon(IEnumerable<UnterrichtsBlock> gruppe)
+                {
+                    var wgs = gruppe.Select(g =>
+                    {
+                        string w = (g.WochenGruppe ?? "").Trim().ToUpperInvariant();
+                        return (w == "A" || w == "B") ? w : "";
+                    }).Distinct().ToList();
+                    if (wgs.Count == 1 && wgs[0] == "A") return "A";
+                    if (wgs.Count == 1 && wgs[0] == "B") return "B";
+                    return "";  // gemischt oder "jede Woche" -> belegt beide Wochen
+                }
+
+                int e = 0, a = 0, bW = 0;
+                void AddEinheit(string woche, int wst)
+                {
+                    if (woche == "A") a += wst;
+                    else if (woche == "B") bW += wst;
+                    else e += wst;                 // jede Woche
+                }
+
+                foreach (var grp in kkkGruppen.Values)
+                    AddEinheit(WocheVon(grp), grp.Max(g => g.Wst));   // KKK-parallel -> max
+                foreach (var blk in einzelBloecke)
+                    AddEinheit(WocheVon(new[] { blk }), blk.Wst);
+
+                int benoetigt = e + Math.Max(a, bW);
+
+                if (benoetigt > frei)
+                {
+                    if (!eineGemeldet)
+                    {
+                        log("  [Klassencheck] Klassen mit mehr Pflichtunterricht als freien Slots (laut ZWK) – das macht den Plan allein schon unlösbar:");
+                        eineGemeldet = true;
+                    }
+                    string abInfo = (a > 0 || bW > 0) ? $"  [jede Woche {e}, A {a}, B {bW}]" : "";
+                    log($"     • {k}: braucht mind. {benoetigt} Slots, hat aber nur {frei} freie → {benoetigt - frei} zu viel{abInfo}");
+                }
+            }
+
+            if (!eineGemeldet)
+                log("  [Klassencheck] Keine Klasse hat mehr Pflichtunterricht als freie Slots (laut ZWK).");
+        }
+
         private static bool DiagnoseEinzelInfeasible(
             List<UnterrichtsBlock> blocks,
             List<ZeitSlot> slots,
@@ -893,6 +995,10 @@ namespace Stundenplan_V2
             Action<string> log)
         {
             int S = slots.Count;
+
+            // Automatische Grobprüfung: hat eine Klasse mehr Pflichtunterricht als
+            // freie Slots (laut ZWK)? Läuft immer bei Unlösbarkeit.
+            PruefeKlassenUeberbelegung(blocks, slots, log);
 
             // FixUNr-Blöcke: bleiben bei jedem Test hart im Spiel (mit ihren Fix-Slots).
             var fixUNrn = new HashSet<int>();
@@ -2159,7 +2265,8 @@ namespace Stundenplan_V2
             out string debug,
             Action<SolverFortschritt> fortschritt = null,
             System.Threading.CancellationToken abbruch = default,
-            int mindestAbstandBloecke = 5)
+            int mindestAbstandBloecke = 5,
+            Func<bool> darfDiagnose = null)
         {
             // Diagnose-Buffer für aktuellen Lauf zurücksetzen
             _infeasibleDetails.Clear();
@@ -2169,6 +2276,19 @@ namespace Stundenplan_V2
             int mindestAbstandBits = Math.Max(1, mindestAbstandBloecke * 2);
 
             var reporter = fortschritt != null ? new FortschrittReporter(fortschritt) : null;
+
+            // Memoisierte Rückfrage: Der Nutzer soll bei Unlösbarkeit nur EINMAL
+            // gefragt werden, obwohl es zwei Diagnose-Wege gibt (die stufenweise
+            // Diagnose in PlanenIntern und DiagnoseEinzelInfeasible). Der erste
+            // Aufruf ruft darfDiagnose auf und merkt sich die Antwort; alle
+            // weiteren liefern denselben Wert ohne erneuten Dialog.
+            bool? diagnoseErlaubtCache = null;
+            Func<bool> diagnoseGate = darfDiagnose == null ? null : () =>
+            {
+                if (diagnoseErlaubtCache == null)
+                    diagnoseErlaubtCache = darfDiagnose();
+                return diagnoseErlaubtCache.Value;
+            };
 
             // Live-Export: schreibt während des Laufs periodisch den aktuell
             // besten Zwischenstand in eine eigene, nummerierte Excel-Datei im
@@ -2223,6 +2343,7 @@ namespace Stundenplan_V2
             var ohneLösungen = PlanenIntern(
                 excelPfad, blocks, slots, fachraumLimit, extraFreieTage,
                 log, maxLösungen: anzahlLösungenOhne, tauschKey: null,
+                bewiesenInfeasible: out bool phase1Infeasible,
                 zeitlimitSekunden: zeitlimitSekunden,
                 nichtFreieTage: nichtFreieTage,
                 mindestAbstandBloecke: mindestAbstandBloecke,
@@ -2240,7 +2361,8 @@ namespace Stundenplan_V2
                 strafeMinus2Lehrer: strafeMinus2Lehrer,
                 lehrerFreiTageMinus2: lehrerFreiTageMinus2,
                 lehrerFreiTageMinus3: lehrerFreiTageMinus3,
-                reporter: reporter, abbruch: abbruch, liveState: liveState);
+                reporter: reporter, abbruch: abbruch, liveState: liveState,
+                darfDiagnose: diagnoseGate);
             if (reporter != null)
                 foreach (var l in ohneLösungen)
                     reporter.MeldeGefundeneLösung(l.label, l.quality, l.badUnits);
@@ -2255,20 +2377,37 @@ namespace Stundenplan_V2
             // Gruppe verursacht (zusammen mit den FixUNr) schon allein die
             // Unlösbarkeit? Dann sind Tauschversuche zwecklos → Phase 2 entfällt.
             // --------------------------------------------------
-            bool einzelInfeasible = false;
-            if (ohneLösungen.Count == 0)
-            {
-                log("Diagnose: prüfe einzelne Klassen / Zeilentext2-Gruppen auf Einzel-Infeasibilität...");
-                einzelInfeasible = DiagnoseEinzelInfeasible(
-                    blocks, slots, fachraumLimit, extraFreieTage, grossePausen,
-                    verbotSpäteDoppel, verbotMinus2Lehrer,
-                    lehrerFreiTageMinus2, lehrerFreiTageMinus3,
-                    zeitlimitSekunden, log);
+            // Keine Lösung, aber NICHT bewiesen unlösbar (Zeitlimit/Unknown):
+            // dann KEINE Infeasibilitäts-Diagnose und kein "unlösbar"-Dialog –
+            // der Plan könnte mit mehr Zeit lösbar sein.
+            if (ohneLösungen.Count == 0 && !phase1Infeasible)
+                log("Phase 1 ohne Lösung, aber nicht bewiesen unlösbar (Zeitlimit?) – " +
+                    "überspringe Infeasibilitäts-Diagnose; ggf. Zeitlimit (Tabelle PM) erhöhen.");
 
-                if (einzelInfeasible)
-                    log("→ Mindestens eine Klasse/Zeilentext2-Gruppe ist allein infeasible. Tauschversuche werden übersprungen.");
+            bool einzelInfeasible = false;
+            if (ohneLösungen.Count == 0 && phase1Infeasible)
+            {
+                // Dieselbe Rückfrage wie in PlanenIntern. Hat der Nutzer die
+                // Ursachensuche dort bereits verneint, liefert das Gate (memoisiert)
+                // ohne erneuten Dialog false und diese Diagnose entfällt ebenfalls.
+                if (diagnoseGate != null && !diagnoseGate())
+                {
+                    log("Diagnose: Einzel-Infeasibilitätsprüfung übersprungen (Nutzerwunsch).");
+                }
                 else
-                    log("→ Keine einzelne Klasse/Gruppe allein infeasible – die Ursache liegt in der Kombination. Phase 2 läuft wie gewohnt.");
+                {
+                    log("Diagnose: prüfe einzelne Klassen / Zeilentext2-Gruppen auf Einzel-Infeasibilität...");
+                    einzelInfeasible = DiagnoseEinzelInfeasible(
+                        blocks, slots, fachraumLimit, extraFreieTage, grossePausen,
+                        verbotSpäteDoppel, verbotMinus2Lehrer,
+                        lehrerFreiTageMinus2, lehrerFreiTageMinus3,
+                        zeitlimitSekunden, log);
+
+                    if (einzelInfeasible)
+                        log("→ Mindestens eine Klasse/Zeilentext2-Gruppe ist allein infeasible. Tauschversuche werden übersprungen.");
+                    else
+                        log("→ Keine einzelne Klasse/Gruppe allein infeasible – die Ursache liegt in der Kombination. Phase 2 läuft wie gewohnt.");
+                }
             }
 
             // --------------------------------------------------
@@ -2330,6 +2469,7 @@ namespace Stundenplan_V2
                         lösungen = PlanenIntern(
                             excelPfad, getauschteBlöcke, getauschteSlots, fachraumLimit, getauschteFreieTage,
                             log, maxLösungen: 1, tauschKey: tauschKey,
+                            bewiesenInfeasible: out _,
                             zeitlimitSekunden: zeitlimitSekunden,
                             nichtFreieTage: nichtFreieTage,
                             randomSeed: seed,
@@ -2525,6 +2665,7 @@ namespace Stundenplan_V2
             Action<string> log,
             int maxLösungen,
             string tauschKey,
+            out bool bewiesenInfeasible,
             int zeitlimitSekunden = 10,
             HashSet<string> nichtFreieTage = null,
             int randomSeed = 1,
@@ -2556,8 +2697,13 @@ namespace Stundenplan_V2
             int stabilitaetsGewicht = 0,
             FortschrittReporter reporter = null,
             System.Threading.CancellationToken abbruch = default,
-            LiveExportState liveState = null)
+            LiveExportState liveState = null,
+            Func<bool> darfDiagnose = null)
         {
+            // Standard: nicht bewiesen unlösbar. Wird nur im Infeasible-Zweig auf
+            // true gesetzt (Timeout/Unknown bleibt false).
+            bewiesenInfeasible = false;
+
             var model = new CpModel();
             int B = blocks.Count;
             int S = slots.Count;
@@ -3498,6 +3644,7 @@ namespace Stundenplan_V2
                 }
 
                 // Ab hier: status == Infeasible → bewiesen unlösbar
+                bewiesenInfeasible = true;
                 DiagLog(log, $"  [Diagnose] BEWIESEN unlösbar – keine Lösung existiert ({laufKontext})");
                 DiagLog(log, $"  [Diagnose] Status: {status}");
                 DiagLog(log, $"  [Diagnose] Blöcke: {B}, Slots: {S}");
@@ -3728,6 +3875,16 @@ namespace Stundenplan_V2
                 // =====================================================
                 if (tauschKey == null)
                 {
+                    // Vor der (u. U. langwierigen) Ursachensuche den Aufrufer
+                    // fragen. Der Callback läuft synchron; die UI-Seite zeigt
+                    // dafür einen Ja/Nein-Dialog im UI-Thread. Antwortet er mit
+                    // false, wird die komplette Diagnose übersprungen.
+                    if (darfDiagnose != null && !darfDiagnose())
+                    {
+                        DiagLog(log, "  [Diagnose] === Ursachensuche vom Nutzer übersprungen. ===");
+                        return lösungen;
+                    }
+
                     // Harte StD-Regeln fuer die Diagnosemodelle: nur Lehrer, bei
                     // denen die Regel im echten Modell auch hart ist.
                     Dictionary<string, LehrerStammdaten> stdRegelnHartDiag = null;
@@ -4617,6 +4774,7 @@ namespace Stundenplan_V2
                 var intern = PlanenIntern(
                     excelPfad, blocks, slots, fachraumLimit, extraFreieTage,
                     log, maxLösungen: 1, tauschKey: null,
+                    bewiesenInfeasible: out _,
                     zeitlimitSekunden: zeitlimitSekunden,
                     nichtFreieTage: nichtFreieTage,
                     randomSeed: i + 1,

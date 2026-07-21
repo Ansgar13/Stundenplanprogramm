@@ -57,7 +57,7 @@ namespace Stundenplan_V2
             public bool IstEingefärbt { get; set; }
 
             // Hintergrundfarbe der Tabellenzeile, passend zum Status:
-            // ignoriert = amber, fixiert = blau, beides = violett, sonst transparent.
+            // ignoriert = amber, fixiert = blau, beides = amber (wie ignoriert), sonst transparent.
             public Brush ZeilenFarbe { get; set; } = Brushes.Transparent;
 
             private bool _ausgewählt;
@@ -216,7 +216,7 @@ namespace Stundenplan_V2
 
                     Brush zeilenFarbe = (ignoriert, fixiert) switch
                     {
-                        (true, true) => new SolidColorBrush(Color.FromRgb(0xE5, 0xD4, 0xF5)),  // violett
+                        (true, true) => new SolidColorBrush(Color.FromRgb(0xFA, 0xE8, 0xB0)),  // wie ignoriert (amber): ignoriert hat Vorrang
                         (true, false) => new SolidColorBrush(Color.FromRgb(0xFA, 0xE8, 0xB0)),  // amber
                         (false, true) => new SolidColorBrush(Color.FromRgb(0xCF, 0xE2, 0xFF)),  // blau
                         _ => Brushes.Transparent

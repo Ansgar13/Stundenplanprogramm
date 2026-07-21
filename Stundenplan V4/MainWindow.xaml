@@ -87,7 +87,7 @@
             <Button Grid.Row="6" Grid.Column="0" Content="14. Lösung verbessern" Margin="0,0,6,10" Click="BtnPlanVerbessern_Click"/>
             <Button Grid.Row="6" Grid.Column="1" Content="15. Minimale Änderungen (Solver)" Margin="6,0,0,10" Click="BtnMinimalAenderung_Click"/>
 
-            <Button Grid.Row="7" Grid.Column="0" Content="16. Fix/Lösung in Tabelle Plan exportieren" Margin="0,0,6,10" Click="BtnFixExport_Click"/>
+            <Button Grid.Row="7" Grid.Column="0" Content="16. Fixierungen/Lösung exportieren (Plan/Lös)" Margin="0,0,6,10" Click="BtnFixExport_Click"/>
             <Button Grid.Row="7" Grid.Column="1" Content="17. Diagnose an Diag anhängen" Margin="6,0,0,10" Click="BtnDiagAnhaengen_Click"/>
 
             <Button Grid.Row="8" Grid.Column="0" Content="18. Klassenpläne erzeugen" Margin="0,0,6,10" Click="BtnKlassenplaene_Click"/>
