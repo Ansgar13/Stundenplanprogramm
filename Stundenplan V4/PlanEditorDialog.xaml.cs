@@ -253,6 +253,7 @@ namespace Stundenplan_V2
             else                                   RbEinzel.IsChecked = true;
 
             ChkSpaetePaed.IsChecked          = cfg.SpaetePaed;
+            ChkSpaetePaedFix.IsChecked       = cfg.SpaetePaedFix;
             ChkIgnorierteZeigen.IsChecked    = cfg.IgnorierteZeigen;
             ChkFilterVerletzungen.IsChecked  = cfg.FilterVerletzungen;
             ChkAusweichSuche.IsChecked       = cfg.AusweichSuche;
@@ -366,6 +367,7 @@ namespace Stundenplan_V2
                     Farbmodus          = AktuellerFarbmodus(),
                     Bearbeitungsmodus  = RbBlock.IsChecked == true ? "Block" : "Einzel",
                     SpaetePaed         = ChkSpaetePaed.IsChecked == true,
+                    SpaetePaedFix      = ChkSpaetePaedFix.IsChecked == true,
                     Klassenvergleich   = ChkKlassenVergleich.IsChecked == true,
                     Fachgruppenplan    = ChkFachgruppenPlan.IsChecked == true,
                     Vergleichsmodus    = ChkVergleichsModus.IsChecked == true,
@@ -502,6 +504,16 @@ namespace Stundenplan_V2
         // Checkbox "Späte nichtfixierte päd. Einheiten rot" — Zustand bleibt erhalten,
         // nur Neuzeichnen beider Pläne.
         private void ChkSpaetePaed_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_initialisiert || _belegung == null) return;
+            AktualisiereSpaetePaedEinheiten();
+            ZeichneBeideGrids();
+        }
+
+        // Checkbox "auch fixierte (heller)" — markiert zusätzlich die voll
+        // fixierten späten päd. Einheiten in hellerem Rot. Zustand bleibt
+        // erhalten, nur Neuzeichnen beider Pläne.
+        private void ChkSpaetePaedFix_Changed(object sender, RoutedEventArgs e)
         {
             if (!_initialisiert || _belegung == null) return;
             AktualisiereSpaetePaedEinheiten();
@@ -2322,6 +2334,7 @@ namespace Stundenplan_V2
             bool warnung = SlotHatWarnung(blockIdx, slotIdx);
             bool hervorheben = _highlightBloecke.Contains(blockIdx);
             bool spaetPaed = _spaetePaedBloecke.Contains(blockIdx);
+            bool spaetPaedFix = _spaetePaedFixBloecke.Contains(blockIdx);
             bool istFixiert = slotIdx >= 0 && slotIdx < _slots.Count && _slots[slotIdx].FixUNrn.Contains(block.UNr);
 
             // ---- Farbcode-Zonen ----
@@ -2330,15 +2343,20 @@ namespace Stundenplan_V2
             // Bei Warnung/spaeter paed. Einheit bleibt die Zelle einfarbig: ein
             // Farbrand wuerde die Warnflaeche sonst optisch zerschneiden.
             var (randFarbe, flaecheFarbe) = FarbcodeZonen(block);
-            bool zweizonig = !spaetPaed && !warnung && randFarbe != null;
+            bool zweizonig = !spaetPaed && !spaetPaedFix && !warnung && randFarbe != null;
 
-            // Hintergrund-Priorität: spaete päd. Einheit (rot) > Warnung (gelb) >
-            // Farbcode (Klasse/Fach) > normal (hellblau).
+            // Hintergrund-Priorität: späte päd. Einheit (kräftiges Rot = bewegbar,
+            // helleres Rot = voll fixiert) > Warnung (gelb) > Farbcode (Klasse/Fach)
+            // > normal (hellblau). Ein Block gehört immer höchstens einer der
+            // beiden Spät-Mengen an (eine Einheit ist entweder voll fixiert
+            // oder nicht), daher kein Farbkonflikt.
             // Der Farbcode steht bewusst UNTER den Warnfarben: er darf nie eine
             // Warnung uebermalen, sondern nur das sonst neutrale Hellblau ersetzen.
             Brush hintergrund;
             if (spaetPaed)
                 hintergrund = new SolidColorBrush(Color.FromRgb(0xFF, 0xC1, 0xC1)); // rot
+            else if (spaetPaedFix)
+                hintergrund = new SolidColorBrush(Color.FromRgb(0xFF, 0xDC, 0xDC)); // helleres Rot (spät + voll fixiert)
             else if (warnung)
                 hintergrund = new SolidColorBrush(Color.FromRgb(0xFF, 0xF3, 0x99)); // gelb
             else if (zweizonig)
@@ -2504,6 +2522,34 @@ namespace Stundenplan_V2
             };
             item.Click += (s2, e2) => UmschalteFixierung(blockIdx, slotIdx, istFixiert);
             menu.Items.Add(item);
+
+            // NuHos der Lehrer dieses Blocks anzeigen (nutzbare Hohlstunden).
+            foreach (var lehrer in block.Teile.Select(t => t.Lehrer)
+                                              .Where(l => !string.IsNullOrWhiteSpace(l))
+                                              .Distinct())
+            {
+                string lh = lehrer;
+                var nuhoItem = new MenuItem { Header = $"NuHos von {lh} anzeigen" };
+                nuhoItem.Click += (s3, e3) =>
+                {
+                    var erg = NuHoAnalyse.BerechneFuerLehrer(
+                        lh, _belegung, _blocks, _slots, _bewParam.LehrerStammdaten);
+
+                    string txt = erg.VberWstd <= 0
+                        ? $"{lh}: keine Vertretungsbereitschaft (Vber Wstd = 0) – keine NuHos."
+                        : erg.Slots.Count == 0
+                            ? $"{lh}: Vber Wstd = {erg.VberWstd}, aber 0 nutzbare Hohlstunden."
+                            : $"{lh}: Vber Wstd = {erg.VberWstd}, NuHo Wstd = {erg.NuHoWstd}\n" +
+                              string.Join("\n", erg.Slots
+                                  .OrderBy(x => x.wtag).ThenBy(x => x.stunde)
+                                  .Select(x => $"   {x.wtag} – {x.stunde}. Std"));
+
+                    MessageBox.Show(txt, "Nutzbare Hohlstunden (NuHo)",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                };
+                menu.Items.Add(nuhoItem);
+            }
+
             bd.ContextMenu = menu;
         }
 
@@ -2547,6 +2593,7 @@ namespace Stundenplan_V2
 
         // Blöcke, die zu einer späten, NICHT voll fixierten päd. Einheit gehören (rot).
         private HashSet<int> _spaetePaedBloecke = new();
+        private HashSet<int> _spaetePaedFixBloecke = new();
 
         private void Teil_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
@@ -5127,7 +5174,11 @@ namespace Stundenplan_V2
         private void AktualisiereSpaetePaedEinheiten()
         {
             _spaetePaedBloecke = new HashSet<int>();
-            if (ChkSpaetePaed.IsChecked != true || _belegung == null) return;
+            _spaetePaedFixBloecke = new HashSet<int>();
+
+            bool zeigeRot    = ChkSpaetePaed.IsChecked == true;
+            bool zeigeFixiert = ChkSpaetePaedFix != null && ChkSpaetePaedFix.IsChecked == true;
+            if ((!zeigeRot && !zeigeFixiert) || _belegung == null) return;
 
             int S = _slots.Count;
 
@@ -5154,11 +5205,21 @@ namespace Stundenplan_V2
                 // voll fixiert? -> alle belegten Slots der Einheit in FixUNrn
                 bool alleFixiert = alleBS.All(bs =>
                     _slots[bs.s].FixUNrn.Contains(_blocks[bs.b].UNr));
-                if (alleFixiert) continue;
 
-                // nicht voll fixiert + spät -> alle Blöcke dieser Einheit rot markieren
-                foreach (var bs in alleBS)
-                    _spaetePaedBloecke.Add(bs.b);
+                if (alleFixiert)
+                {
+                    // spät + voll fixiert -> orange (nur wenn gewünscht)
+                    if (zeigeFixiert)
+                        foreach (var bs in alleBS)
+                            _spaetePaedFixBloecke.Add(bs.b);
+                }
+                else
+                {
+                    // spät + (noch) bewegbar -> rot (wie bisher)
+                    if (zeigeRot)
+                        foreach (var bs in alleBS)
+                            _spaetePaedBloecke.Add(bs.b);
+                }
             }
         }
 

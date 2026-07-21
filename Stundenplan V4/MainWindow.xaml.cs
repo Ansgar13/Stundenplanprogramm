@@ -765,6 +765,7 @@ namespace Stundenplan_V2
             SchreibeInExcel(solutions);
             SchreibeLehrerAbweichungenLös(solutions);
             SchreibeRanking(solutions);
+            ErzeugeNuHoAusgaben(solutions);
 
             // Diagnose-Tabelle für alle Lösungen
             try
@@ -1064,6 +1065,7 @@ namespace Stundenplan_V2
                 SchreibeInExcel(letzteSolutions);
                 SchreibeLehrerAbweichungenLös(letzteSolutions);
                 SchreibeRanking(letzteSolutions);
+                ErzeugeNuHoAusgaben(letzteSolutions);
 
                 // Diagnose-Tabelle aktualisieren inkl. UNrPlan
                 try
@@ -1278,6 +1280,7 @@ namespace Stundenplan_V2
                 SchreibeInExcel(letzteSolutions);
                 SchreibeLehrerAbweichungenLös(letzteSolutions);
                 SchreibeRanking(letzteSolutions);
+                ErzeugeNuHoAusgaben(letzteSolutions);
 
                 // Diagnose-Tabelle um verbesserte Lösung erweitern (anhängend)
                 try
@@ -2195,6 +2198,7 @@ namespace Stundenplan_V2
             sheet.Cell(1, 11).Value = "späte LK-Stunden";
             sheet.Cell(1, 12).Value = "Hauptfach zu spät";
             sheet.Cell(1, 13).Value = "Details späte päd. Einheiten";
+            sheet.Cell(1, 14).Value = "zu wenig NuHos";
             sheet.Row(1).Style.Font.Bold = true;
 
             for (int p = 0; p < solutions.Count; p++)
@@ -2244,6 +2248,8 @@ namespace Stundenplan_V2
                     sheet.Cell(p + 2, 12).Value = bewertung.HauptfachSpätÜberschuss;
                     sheet.Cell(p + 2, 13).Value = string.Join("\n", bewertung.Details);
                     sheet.Cell(p + 2, 13).Style.Alignment.WrapText = true;
+                    sheet.Cell(p + 2, 14).Value =
+                        NuHoFehlendeFuerLoesung(solutions[p].belegung, solutions[p].blocks);
                 }
                 else
                 {
@@ -2251,6 +2257,8 @@ namespace Stundenplan_V2
                     sheet.Cell(p + 2, 3).Value  = solutions[p].quality;
                     sheet.Cell(p + 2, 6).Value  = solutions[p].badUnits;
                     sheet.Cell(p + 2, 13).Value = "(Neubewertung fehlgeschlagen - gespeicherte Werte)";
+                    sheet.Cell(p + 2, 14).Value =
+                        NuHoFehlendeFuerLoesung(solutions[p].belegung, solutions[p].blocks);
                 }
             }
 
@@ -2397,6 +2405,7 @@ namespace Stundenplan_V2
                 SchreibeInExcel(letzteSolutions);
                 SchreibeLehrerAbweichungenLös(letzteSolutions);
                 SchreibeRanking(letzteSolutions);
+                ErzeugeNuHoAusgaben(letzteSolutions);
 
                 // Diagnose anhängen (nur für die neue Lösung)
                 try
@@ -3249,6 +3258,7 @@ namespace Stundenplan_V2
                 SchreibeInExcel(letzteSolutions);
                 SchreibeLehrerAbweichungenLös(letzteSolutions);
                 SchreibeRanking(letzteSolutions);
+                ErzeugeNuHoAusgaben(letzteSolutions);
 
                 // Diagnose
                 try

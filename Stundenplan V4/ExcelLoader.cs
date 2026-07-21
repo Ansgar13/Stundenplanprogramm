@@ -397,6 +397,8 @@ namespace Stundenplan_V2
             int gewichtPäd = 5;
             int gewichtFrei = 2;
             int strafeHohl = 1;
+            int nuHoSollwertProZeitslot = 0;   // PM: NuHo-Sollwert je Zeitslot (Stunden 2..5)
+            int strafeZuWenigNuHo = 0;         // PM: Strafe pro fehlender NuHo
             int strafeDoppelHohl = 5;
             int strafeDreifachHohl = 5;
             int strafeStdFolge = 5;
@@ -445,6 +447,15 @@ namespace Stundenplan_V2
                                 wert.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)),
                                 StringComparer.OrdinalIgnoreCase);
                     }
+                    // NuHo (nutzbare Hohlstunden): Strafe ZUERST pruefen (spezifischer),
+                    // da beide Labels "nuho" enthalten. "zeitslot" kollidiert nicht
+                    // mit "zeitlimit".
+                    else if (label.Contains("nuho") && label.Contains("strafe") ||
+                             label.Contains("zu wenig nuho"))
+                        LiesPmInt(wert, labelRoh, ref strafeZuWenigNuHo, pmWarnungen);
+                    else if (label.Contains("nuho") &&
+                             (label.Contains("soll") || label.Contains("zeitslot")))
+                        LiesPmInt(wert, labelRoh, ref nuHoSollwertProZeitslot, pmWarnungen);
                     else if (label.Contains("zeitlimit"))
                         LiesPmInt(wert, labelRoh, ref zeitlimit, pmWarnungen);
                     else if (label.Contains("ohne tausch"))
@@ -716,6 +727,56 @@ namespace Stundenplan_V2
                 }
             }
 
+            // =====================================================
+            // Vber Wstd (Vertretungsbereitschaft) aus UV je Lehrer.
+            // "Vber" ist ein FACH (nicht eine Spalte): Lehrer, die in der UV das
+            // Fach "Vber" haben, sind vertretungsbereit. Ihre Vber Wstd sind die
+            // Wochenstunden (Spalte "Wst") dieser Vber-Zeilen. AUCH ignorierte
+            // Zeilen (Ignore = i/x) zaehlen mit. Mehrere Vber-Zeilen eines
+            // Lehrers werden summiert. Fehlt das Fach ganz, bleibt Vber ueberall
+            // 0 (NuHo-Feature inaktiv).
+            // =====================================================
+            int wstCol = header1.TryGetValue("Wst", out int wc) ? wc : -1;
+            var vberProLehrer = new Dictionary<string, int>();
+            foreach (var row in rows1)
+            {
+                // KEIN Ignore-Filter: ignorierte Zeilen zaehlen hier bewusst mit.
+                string fach = GetOptional(row, header1, "Fach").Trim();
+                if (!fach.Equals("Vber", StringComparison.OrdinalIgnoreCase)) continue;
+
+                string lehrer = GetOptional(row, header1, "Lehrer").Trim();
+                if (string.IsNullOrEmpty(lehrer)) continue;
+
+                int wstV = 0;
+                if (wstCol > 0) LiesGanzzahlTolerant(row.Cell(wstCol), out wstV);
+                if (wstV < 0) wstV = 0;
+
+                vberProLehrer[lehrer] =
+                    (vberProLehrer.TryGetValue(lehrer, out int alt) ? alt : 0) + wstV;
+            }
+
+            if (vberProLehrer.Count > 0)
+            {
+                foreach (var kv in vberProLehrer)
+                {
+                    if (!lehrerStammdaten.TryGetValue(kv.Key, out var sdV) || sdV == null)
+                    {
+                        sdV = new LehrerStammdaten { Name = kv.Key };
+                        lehrerStammdaten[kv.Key] = sdV;
+                    }
+                    sdV.VberWstd = kv.Value;
+                }
+
+                int mitWstd = vberProLehrer.Count(kv => kv.Value > 0);
+                stdDiagnose.Add($"UV/Vber: Fach 'Vber' gefunden bei {vberProLehrer.Count} Lehrer(n), " +
+                                $"davon {mitWstd} mit Vber Wstd > 0 (inkl. ignorierter Zeilen).");
+            }
+            else
+            {
+                stdDiagnose.Add("UV/Vber: kein Unterricht mit Fach 'Vber' in UV gefunden " +
+                                "-> NuHo inaktiv (alle Vber Wstd = 0).");
+            }
+
             // Zentrale Konfiguration der Spät-Zählung setzen: Berechne()
             // (Anzeige/Diagnose) UND SolverSpaetePaedEinheiten() (Solver-Ziel)
             // lesen sie gemeinsam, damit angezeigte Qualität und Solver-Ziel
@@ -744,6 +805,8 @@ namespace Stundenplan_V2
                 GewichtSpätePädEinheiten = gewichtPäd,
                 GewichtFreieTage = gewichtFrei,
                 StrafeHohlstunde = strafeHohl,
+                NuHoSollwertProZeitslot = nuHoSollwertProZeitslot,
+                StrafeZuWenigNuHo = strafeZuWenigNuHo,
                 StrafeDoppelHohlstunde = strafeDoppelHohl,
                 StrafeDreifachHohlstunde = strafeDreifachHohl,
                 StrafeStdFolge = strafeStdFolge,

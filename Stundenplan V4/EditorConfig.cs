@@ -16,6 +16,7 @@ namespace Stundenplan_V2
     ///     Farbmodus          | Aus
     ///     Bearbeitungsmodus  | Einzel
     ///     SpaetePaed         | 0
+    ///     SpaetePaedFix      | 0
     ///     ...                | ...
     ///
     /// Die Werte sind rein optisch (Bedien-Vorlieben des Plan-Editors) und
@@ -37,6 +38,7 @@ namespace Stundenplan_V2
         public string Farbmodus = "Aus";            // Klasse | Fach | Beide | Aus
         public string Bearbeitungsmodus = "Einzel"; // Block  | Einzel
         public bool SpaetePaed = false;
+        public bool SpaetePaedFix = false;
         public bool Klassenvergleich = false;
         public bool Fachgruppenplan = false;
         public bool Vergleichsmodus = false;
@@ -101,6 +103,7 @@ namespace Stundenplan_V2
                 cfg.Farbmodus         = LiesEnum(w, "Farbmodus", cfg.Farbmodus, "Klasse", "Fach", "Beide", "Aus");
                 cfg.Bearbeitungsmodus = LiesEnum(w, "Bearbeitungsmodus", cfg.Bearbeitungsmodus, "Block", "Einzel");
                 cfg.SpaetePaed        = LiesBool(w, "SpaetePaed", cfg.SpaetePaed);
+                cfg.SpaetePaedFix     = LiesBool(w, "SpaetePaedFix", cfg.SpaetePaedFix);
                 cfg.Klassenvergleich  = LiesBool(w, "Klassenvergleich", cfg.Klassenvergleich);
                 cfg.Fachgruppenplan   = LiesBool(w, "Fachgruppenplan", cfg.Fachgruppenplan);
                 cfg.Vergleichsmodus   = LiesBool(w, "Vergleichsmodus", cfg.Vergleichsmodus);
@@ -161,6 +164,7 @@ namespace Stundenplan_V2
             Schreibe("Farbmodus", Farbmodus);
             Schreibe("Bearbeitungsmodus", Bearbeitungsmodus);
             Schreibe("SpaetePaed", SpaetePaed ? "1" : "0");
+            Schreibe("SpaetePaedFix", SpaetePaedFix ? "1" : "0");
             Schreibe("Klassenvergleich", Klassenvergleich ? "1" : "0");
             Schreibe("Fachgruppenplan", Fachgruppenplan ? "1" : "0");
             Schreibe("Vergleichsmodus", Vergleichsmodus ? "1" : "0");

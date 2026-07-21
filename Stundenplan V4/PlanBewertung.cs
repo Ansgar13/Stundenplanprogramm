@@ -158,6 +158,69 @@ namespace Stundenplan_V2
         }
 
         // -------------------------------------------------
+        // Späte ("bad") päd. Einheiten JE LEHRER.
+        // Liefert je Lehrer die Anzahl später päd. Einheiten, an denen er mit
+        // mindestens einem Block beteiligt ist (All-Lehrer-Semantik: eine späte
+        // Einheit zählt für ALLE ihre Lehrer). Nutzt EXAKT dieselbe
+        // Einheiten-Bildung (BauePaedEinheiten), Ausnahme-Regel (IstAusgenommen)
+        // und Schwelle (SchwelleFuerWst, Slots ab ErsteSpaeteStunde) wie
+        // Berechne() und der Solver — so bleiben Diagnose, angezeigte Qualität
+        // und Solver-Ziel garantiert deckungsgleich.
+        // -------------------------------------------------
+        // nurNichtFixiert = true blendet voll fixierte späte Einheiten aus
+        // (alle belegten Slots der Einheit stehen in FixUNrn) — gleiche
+        // "voll fixiert"-Trennung wie Rot/Orange im Plan-Editor. Damit lässt
+        // sich per Diag-Filter gezielt auf die noch bewegbaren späten Einheiten
+        // einschränken.
+        public static Dictionary<string, int> SpaetePaedEinheitenJeLehrer(
+            int[,] belegung, List<UnterrichtsBlock> blocks, List<ZeitSlot> slots,
+            bool nurNichtFixiert = false)
+        {
+            var result = new Dictionary<string, int>();
+            if (belegung == null || blocks == null || slots == null) return result;
+            int S = slots.Count;
+
+            foreach (var einheit in BauePaedEinheiten(blocks))
+            {
+                if (IstAusgenommen(einheit)) continue;
+
+                var späteSlots = new HashSet<(string wtag, int stunde)>();
+                var alleBS     = new List<(int b, int s)>();
+                foreach (int b in einheit.BlockIds)
+                    for (int s = 0; s < S; s++)
+                        if (belegung[b, s] == 1)
+                        {
+                            alleBS.Add((b, s));
+                            if (slots[s].Stunde >= ErsteSpaeteStunde)
+                                späteSlots.Add((slots[s].WTag, slots[s].Stunde));
+                        }
+
+                if (späteSlots.Count < SchwelleFuerWst(einheit.Wst)) continue;
+
+                // Optional: voll fixierte Einheiten überspringen.
+                if (nurNichtFixiert)
+                {
+                    bool alleFixiert = alleBS.All(bs =>
+                        slots[bs.s].FixUNrn.Contains(blocks[bs.b].UNr));
+                    if (alleFixiert) continue;
+                }
+
+                // Beteiligte Lehrer dieser bad-Einheit einsammeln (distinct) …
+                var lehrerDerEinheit = new HashSet<string>();
+                foreach (int b in einheit.BlockIds)
+                    foreach (var t in blocks[b].Teile)
+                        if (!string.IsNullOrWhiteSpace(t.Lehrer))
+                            lehrerDerEinheit.Add(t.Lehrer);
+
+                // … und jedem als eine späte Einheit gutschreiben.
+                foreach (var lh in lehrerDerEinheit)
+                    result[lh] = (result.TryGetValue(lh, out int c) ? c : 0) + 1;
+            }
+
+            return result;
+        }
+
+        // -------------------------------------------------
         // EINHEITLICHE LK-ERKENNUNG
         // Ein Block gilt als LK-Block, wenn sein Zeilentext "LK"
         // enthält (LK01/LK1/LK02/LK2 …) ODER ein Fach auf "L1"/"L2"

@@ -31,6 +31,16 @@ namespace Stundenplan_V2
         public int DoppelstundenVerletzungen { get; set; }
         public int TagesregelVerletzungen { get; set; }
 
+        // Anzahl später ("bad") päd. Einheiten, an denen der Lehrer mit
+        // mindestens einem Block beteiligt ist (siehe
+        // PlanBewertung.SpaetePaedEinheitenJeLehrer).
+        public int SpaetePaedEinheiten { get; set; }
+
+        // Wie SpaetePaedEinheiten, aber ohne voll fixierte Einheiten (nur die
+        // noch bewegbaren späten päd. Einheiten). Für den Diag-Filter
+        // "Späte päd. Einheiten ohne fixierte".
+        public int SpaetePaedEinheitenNichtFix { get; set; }
+
         // Auffälligkeiten
         public bool HohlstundenZuViel => HohlStdSollMax.HasValue && HohlstundenGesamt > HohlStdSollMax;
         public bool HohlstundenZuWenig => HohlStdSollMin.HasValue && HohlstundenGesamt < HohlStdSollMin;
@@ -98,6 +108,12 @@ namespace Stundenplan_V2
             }
             catch { }
 
+            // Späte ("bad") päd. Einheiten je Lehrer — zentral aus PlanBewertung,
+            // damit dieselbe Regel wie Qualität/Solver gilt (All-Lehrer-Semantik).
+            var spaetePaedProLehrer = PlanBewertung.SpaetePaedEinheitenJeLehrer(belegung, blocks, slots);
+            var spaetePaedNichtFixProLehrer = PlanBewertung.SpaetePaedEinheitenJeLehrer(
+                belegung, blocks, slots, nurNichtFixiert: true);
+
             var result = new List<LehrerDiagnoseErgebnis>();
 
             foreach (var lehrer in alleLehrern)
@@ -105,6 +121,8 @@ namespace Stundenplan_V2
                 var diag = new LehrerDiagnoseErgebnis { Lehrer = lehrer };
                 diag.DoppelstundenVerletzungen = dstdProLehrer.TryGetValue(lehrer, out int dv) ? dv : 0;
                 diag.TagesregelVerletzungen = trProLehrer.TryGetValue(lehrer, out int tv) ? tv : 0;
+                diag.SpaetePaedEinheiten = spaetePaedProLehrer.TryGetValue(lehrer, out int sp) ? sp : 0;
+                diag.SpaetePaedEinheitenNichtFix = spaetePaedNichtFixProLehrer.TryGetValue(lehrer, out int spnf) ? spnf : 0;
 
                 // Stammdaten zuordnen
                 if (stammdaten.TryGetValue(lehrer, out var sd))
@@ -253,8 +271,9 @@ namespace Stundenplan_V2
             const string sheetName = "Diag";
             IXLWorksheet sheet;
             int startCol = 2;
-            // Spalten je Loesung: Basis 8 (+2 fuer -2-Meldung) +2 fuer Dstd-V/TR-V.
-            int colsProLösung = (meldeLeherMinus2 ? 10 : 8) + 2;
+            // Spalten je Loesung: Basis 8 (+2 fuer -2-Meldung) +2 fuer Dstd-V/TR-V
+            // +1 fuer "Spät päd." (späte päd. Einheiten je Lehrer).
+            int colsProLösung = (meldeLeherMinus2 ? 10 : 8) + 2 + 1;
             var existierendeLabels = new HashSet<string>();
 
             if (vorherLöschen)
@@ -349,10 +368,11 @@ namespace Stundenplan_V2
                     sheet.Cell(2, col + 8).Value = "-2 Verl.";
                     sheet.Cell(2, col + 9).Value = "FreiT.-2";
                 }
-                // Dstd-V und TR-V immer als letzte zwei Spalten
+                // Dstd-V und TR-V, danach "Spät päd." als letzte Spalte
                 int vOff = meldeLeherMinus2 ? 10 : 8;
                 sheet.Cell(2, col + vOff    ).Value = "Dstd-V";
                 sheet.Cell(2, col + vOff + 1).Value = "TR-V";
+                sheet.Cell(2, col + vOff + 2).Value = "Spät päd.";
 
                 for (int c = col; c < col + colsProLösung; c++)
                 {
@@ -409,6 +429,11 @@ namespace Stundenplan_V2
                     sheet.Cell(zeile, col + vOff + 1).Value = d.TagesregelVerletzungen;
                     if (d.TagesregelVerletzungen > 0)
                         sheet.Cell(zeile, col + vOff + 1).Style.Fill.BackgroundColor = XLColor.LightPink;
+
+                    // Spät päd.: Zahl später päd. Einheiten, an denen der Lehrer beteiligt ist
+                    sheet.Cell(zeile, col + vOff + 2).Value = d.SpaetePaedEinheiten;
+                    if (d.SpaetePaedEinheiten > 0)
+                        sheet.Cell(zeile, col + vOff + 2).Style.Fill.BackgroundColor = XLColor.LightPink;
 
                     // Auffälligkeiten rot markieren
                     if (d.HohlstundenZuViel || d.HohlstundenZuWenig)
@@ -499,6 +524,13 @@ namespace Stundenplan_V2
                 sheet.Cell(sumZeile, col + vOffS + 1).Style.Font.Bold = true;
                 sheet.Cell(sumZeile, col + vOffS + 1).Style.Fill.BackgroundColor =
                     sumTR > 0 ? XLColor.LightPink : XLColor.LightGray;
+
+                // Summe Spät päd. (Beteiligungen; eine Einheit kann mehrere Lehrer betreffen)
+                int sumSpaet = diags.Sum(d => d.SpaetePaedEinheiten);
+                sheet.Cell(sumZeile, col + vOffS + 2).Value = sumSpaet;
+                sheet.Cell(sumZeile, col + vOffS + 2).Style.Font.Bold = true;
+                sheet.Cell(sumZeile, col + vOffS + 2).Style.Fill.BackgroundColor =
+                    sumSpaet > 0 ? XLColor.LightPink : XLColor.LightGray;
             }
 
             // Zwei zusätzliche Zeilen direkt unter "Summe": Anzahl der späten

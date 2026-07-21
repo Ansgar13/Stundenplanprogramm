@@ -60,6 +60,13 @@ public class StundenplanInput
     public int HauptfachSpätAnteilProzent { get; set; } = 50; // max x% der Stunden nach Stunde 4
     public int StrafeHauptfachSpät { get; set; } = 0;         // Strafe pro Stunde über dem Limit
 
+    // Nutzbare Hohlstunden (NuHo)
+    // Sollwert je Zeitslot (gilt fuer jeden Wochentag und die Stunden 2..5).
+    // 0 = keine NuHo-Vorgabe/-Strafe (Standard).
+    public int NuHoSollwertProZeitslot { get; set; } = 0;
+    // Strafhoehe pro fehlender NuHo (je Slot: max(0, Soll - Ist)).
+    public int StrafeZuWenigNuHo { get; set; } = 0;
+
     // Hohlstunden-Strafen
     public int StrafeHohlstunde { get; set; } = 1;
     public int StrafeDoppelHohlstunde { get; set; } = 5;

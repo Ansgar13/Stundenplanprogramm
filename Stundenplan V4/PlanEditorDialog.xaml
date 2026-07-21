@@ -61,6 +61,11 @@
             <CheckBox x:Name="ChkSpaetePaed" Content="Spaete nichtfixierte paed. Einheiten rot"
                       VerticalAlignment="Center" Margin="0,0,20,0" Checked="ChkSpaetePaed_Changed" Unchecked="ChkSpaetePaed_Changed"/>
 
+            <CheckBox x:Name="ChkSpaetePaedFix" Content="auch fixierte (heller)"
+                      VerticalAlignment="Center" Margin="0,0,20,0"
+                      ToolTip="Markiert zusaetzlich die voll fixierten spaeten paed. Einheiten in hellerem Rot. Kraeftiges Rot = spaet und noch bewegbar, helleres Rot = spaet und voll fixiert (nur ohne Entfixieren aenderbar)."
+                      Checked="ChkSpaetePaedFix_Changed" Unchecked="ChkSpaetePaedFix_Changed"/>
+
             <CheckBox x:Name="ChkKlassenVergleich" Content="Klassenvergleich zeigen"
                       VerticalAlignment="Center" Margin="0,0,20,0" Checked="ChkKlassenVergleich_Changed" Unchecked="ChkKlassenVergleich_Changed"/>
 

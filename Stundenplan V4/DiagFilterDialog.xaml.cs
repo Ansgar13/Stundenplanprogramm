@@ -27,7 +27,12 @@ namespace Stundenplan_V2
             ("-2 Freie-Tage-Wunsch verletzt",            d => d.Minus2FreiTageVerletzungen > 0),
             ("Doppelstunden-Verletzungen",               d => d.DoppelstundenVerletzungen > 0),
             ("Tagesregel-Verletzungen",                  d => d.TagesregelVerletzungen > 0),
+            ("Späte päd. Einheiten (bad units)",         d => d.SpaetePaedEinheiten > 0),
             ("Irgendeine Verletzung (Gesamtstrafe > 0)", d => d.StrafeGesamt > 0),
+            // Bewusst ans ENDE angehängt: die Kriteriums-Indizes werden im
+            // EditorConfig (DiagFilter) persistiert; ein Einschub in der Mitte
+            // würde gespeicherte Filter auf ein anderes Kriterium verschieben.
+            ("Späte päd. Einheiten ohne fixierte",       d => d.SpaetePaedEinheitenNichtFix > 0),
         };
 
         /// <summary>Indizes (in <see cref="Kriterien"/>) der ausgewählten Kriterien.</summary>

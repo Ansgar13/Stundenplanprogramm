@@ -24,6 +24,11 @@ namespace Stundenplan_V2
         // Std.Folge: max aufeinanderfolgende Unterrichtsstunden pro Tag (leer = keine Vorgabe)
         public int? StdFolge { get; set; } = null;
 
+        // Vber Wstd: Vertretungsbereitschaft in Wochenstunden (StD-Spalte).
+        // Nur Lehrer mit VberWstd > 0 koennen nutzbare Hohlstunden (NuHo) haben.
+        // 0 = keine Vertretungsbereitschaft (Standard).
+        public int VberWstd { get; set; } = 0;
+
         // ---- Hart-Flags aus den Spalten T..X des Sheets "StD" ----
 
         // "HohlWoche hart": Wochensumme der Hohlstunden <= HohlStdMax.
