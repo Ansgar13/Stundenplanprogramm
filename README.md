@@ -6,7 +6,7 @@ Windows-Programm zur automatischen Erstellung von Schulstundenplänen mit dem Go
 
 Stundenplan liest alle Unterrichts- und Lehrerstammdaten aus einer einzigen Excel-Datei (`.xlsx`), berechnet mit Hilfe des Google-OR-Tools-Solvers optimale Stundenpläne unter Berücksichtigung diverser Constraints (Lehrer-/Klassenkonflikte, Zeitwünsche, Doppelstunden, Fachraum-Limits, Tauschgruppen, A-/B-Wochen u. v. m.) und schreibt die Ergebnisse direkt in dieselbe Excel-Datei zurück.
 
-Die Unterrichts- und Lehrerstammdaten können z. B. aus einer Untis-Datei per Copy & Paste übertragen werden.
+Die Unterrichts- und Lehrerstammdaten können z. B. aus einer Untis-Datei per Copy & Paste übertragen werden. 
 
 > **Besonderer Vorteil für Sek-II-Pläne:** Über ein Lehrertauschkennzeichen (LTKZ) lassen sich gekennzeichnete, gegenseitig austauschbare Lehrer definieren. Der Solver kann diese Lehrer bei der Planberechnung automatisch untereinander tauschen, um bessere Lösungen zu finden. Das ist gerade bei Kurssystemen der Sekundarstufe II (parallele Kurse mit mehreren gleichwertigen Fachlehrern) ein entscheidender Vorteil, da hier die Zuordnung Lehrer↔Kurs oft flexibel ist und so deutlich bessere bzw. überhaupt erst zulässige Pläne entstehen.
 
