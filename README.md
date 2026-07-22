@@ -1,6 +1,6 @@
 # Stundenplan V4
 
-Windows-Programm zur automatischen Erstellung von Schulstundenplänen mit dem Google-OR-Tools-Solver (CP-SAT).
+Windows-Programm zur automatischen Erstellung von Schulstundenplänen mit dem Google-OR-Tools-Solver (CP-SAT). 
 
 ## Überblick
 
@@ -13,10 +13,10 @@ Die Unterrichts- und Lehrerstammdaten können z. B. aus einer Untis-Datei per Co
 ### Kernfunktionen
 
 - Vollautomatische Planerstellung unter Berücksichtigung von Lehrer- und Klassenkonflikten
-- frei definierbare Qualitätskriterien entweder mit Gewichtung oder als harte/strenge Vorgaben. So lässt sich schnell ermitteln, ob Lösungen möglich
+- frei definierbare Qualitätskriterien entweder mit Gewichtung oder als harte/strenge Vorgaben. So lässt sich schnell ermitteln, ob Lösungen überhaupt existieren
 - Zeitwünsche und Sperrzeiten für Lehrer und Klassen
 - Doppelstunden-Vorgaben, Fachraum-Limits, **Tauschgruppen (LTKZ) – besonders wertvoll für Sek-II-Pläne**, A-/B-Wochen
-- frei definierbare Qualitaätsoptimierung von späten Unterrichten
+- frei definierbare Qualitaätsoptimierung zur Vermeidung von nur späten Unterrichten
 - Iterative Verbesserung bestehender Pläne
 - Export von Lehrer- und Klassenplänen als Excel-Sheets
 - Import des erzeugten Stundenplans in eine Untisdatei ist mit ein paar Klicks möglich, auch ohne offiziell vorgesehene Importfunktion
