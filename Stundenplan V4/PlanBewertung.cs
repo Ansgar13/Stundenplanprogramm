@@ -46,8 +46,12 @@ namespace Stundenplan_V2
         public static Dictionary<int, int> SpaetSchwelleJeWst { get; set; }
             = new Dictionary<int, int>();
 
-        // Erste Stunde, ab der ein Slot als "spät" zählt (bisher fest 6).
-        private const int ErsteSpaeteStunde = 6;
+        // Erste Stunde, ab der ein Slot als "spät" zählt.
+        // Default 6 (= bisheriges Verhalten). Wird beim Laden aus dem Sheet
+        // "SpätSchwelle", Zelle C2 ("Def spät ab Stunde") gesetzt und gilt für
+        // ALLE Spät-Funktionen: späte päd. Einheiten, späte LK-Stunden und das
+        // Verbot später Doppelstunden.
+        public static int ErsteSpaeteStunde { get; set; } = 6;
 
         // -------------------------------------------------
         // Eine (zusammengefasste) pädagogische Einheit.
@@ -125,13 +129,70 @@ namespace Stundenplan_V2
                     foreach (var f in keyFaecher[key]) e.Faecher.Add(f);
                     e.Bestandteile.Add(keyKlasseText[key]);
                 }
-                // Repräsentative Wst der Einheit: bei parallelen Blöcken derselben
-                // UNr identisch; bei fachweise zusammengefassten Blöcken (Sek I)
-                // das Maximum — so bläht ein Kurs-Band die Schwelle nicht auf.
-                e.Wst = e.BlockIds.Count > 0 ? e.BlockIds.Max(b => blocks[b].Wst) : 0;
+                // Maßgebliche Wst der Einheit — siehe EinheitWst(): je UNr ein
+                // Beitrag, verschiedene UNrn werden addiert. Echte Gleich-
+                // zeitigkeit korrigiert EinheitWstGedeckelt() aus der Belegung.
+                e.Wst = EinheitWst(e.BlockIds, blocks);
                 einheiten.Add(e);
             }
             return einheiten;
+        }
+
+        // -------------------------------------------------
+        // MASSGEBLICHE WOCHENSTUNDENZAHL EINER PÄD. EINHEIT
+        // -------------------------------------------------
+        // Regel: GLEICHZEITIG ist nur, was dieselbe UNr hat — parallele Blöcke
+        // derselben UNr (z. B. A/B-Wochengruppen) belegen dieselben Zeitslots
+        // und zählen deshalb nur EINMAL. Verschiedene UNrn laufen nacheinander
+        // und werden ADDIERT, auch wenn sie denselben ZeilenText tragen: ein
+        // Kurs-Band wie "GK06" aus 2 Std + 1 Std ist real eine 3-stündige
+        // Einheit (die Klassenregel verbietet Gleichzeitigkeit sogar, solange
+        // kein gemeinsames KKK gesetzt ist).
+        // ECHTE Gleichzeitigkeit wird nicht hier, sondern datengetrieben über
+        // EinheitWstGedeckelt() berücksichtigt: liegen UNrn tatsächlich im
+        // selben Slot, ist die Zahl der belegten Slots kleiner als diese Summe
+        // und der Wert wird entsprechend nach unten korrigiert.
+        private static int EinheitWst(List<int> blockIds, List<UnterrichtsBlock> blocks)
+        {
+            if (blockIds == null || blockIds.Count == 0) return 0;
+
+            // Je UNr nur EIN Beitrag (der größte Wst-Wert).
+            var jeUnr = new Dictionary<int, int>();
+            foreach (int b in blockIds)
+            {
+                var blk = blocks[b];
+                if (!jeUnr.TryGetValue(blk.UNr, out int vorhanden) || blk.Wst > vorhanden)
+                    jeUnr[blk.UNr] = blk.Wst;
+            }
+
+            // Verschiedene UNrn -> nacheinander -> addieren.
+            return jeUnr.Values.Sum();
+        }
+
+        // -------------------------------------------------
+        // GEDECKELTE Wst FÜR DIE AUSWERTUNG
+        // -------------------------------------------------
+        // Bei bekannter Belegung wird die maßgebliche Wst zusätzlich auf die
+        // Zahl der TATSÄCHLICH belegten verschiedenen Zeitpunkte (WTag+Stunde)
+        // begrenzt. Damit kann die Summenregel eine Einheit nie größer machen,
+        // als sie im Plan wirklich ist (z. B. bei echt gekoppelten Blöcken mit
+        // gleichem KKK oder A/B-Wochengruppen).
+        // Der Solver nutzt bewusst den UNGEDECKELTEN Wert (einheit.Wst), weil
+        // die Belegung dort erst das Ergebnis der Optimierung ist.
+        public static int EinheitWstGedeckelt(
+            PaedEinheit einheit, int[,] belegung, List<ZeitSlot> slots)
+        {
+            if (einheit == null) return 0;
+            if (belegung == null || slots == null) return einheit.Wst;
+
+            var belegt = new HashSet<(string wtag, int stunde)>();
+            foreach (int b in einheit.BlockIds)
+                for (int s = 0; s < slots.Count; s++)
+                    if (belegung[b, s] == 1)
+                        belegt.Add((slots[s].WTag, slots[s].Stunde));
+
+            if (belegt.Count == 0) return einheit.Wst;
+            return Math.Min(einheit.Wst, belegt.Count);
         }
 
         // Eine Einheit fällt NUR dann aus der Spät-Zählung, wenn ALLE ihre
@@ -195,7 +256,8 @@ namespace Stundenplan_V2
                                 späteSlots.Add((slots[s].WTag, slots[s].Stunde));
                         }
 
-                if (späteSlots.Count < SchwelleFuerWst(einheit.Wst)) continue;
+                if (späteSlots.Count <
+                    SchwelleFuerWst(EinheitWstGedeckelt(einheit, belegung, slots))) continue;
 
                 // Optional: voll fixierte Einheiten überspringen.
                 if (nurNichtFixiert)
@@ -308,7 +370,7 @@ namespace Stundenplan_V2
                         if (belegung[b, s] == 1 && slots[s].Stunde >= ErsteSpaeteStunde)
                             späteSlots.Add((slots[s].WTag, slots[s].Stunde));
 
-                int schwelle = SchwelleFuerWst(einheit.Wst);
+                int schwelle = SchwelleFuerWst(EinheitWstGedeckelt(einheit, belegung, slots));
                 if (späteSlots.Count >= schwelle)
                 {
                     result.BadUnits++;
@@ -406,7 +468,7 @@ namespace Stundenplan_V2
                 {
                     int späteLkDieserTag = 0;
                     var spätSlots = Enumerable.Range(0, S)
-                        .Where(s => slots[s].WTag == tag && slots[s].Stunde > 5)
+                        .Where(s => slots[s].WTag == tag && slots[s].Stunde >= ErsteSpaeteStunde)
                         .ToList();
 
                     foreach (var s in spätSlots)
@@ -519,8 +581,10 @@ namespace Stundenplan_V2
 
                 if (lateSlotVars.Count == 0) continue;
 
-                // Wst-abhängige Schwelle (Fallback 2, mind. 1) — identisch zu
-                // Berechne(). "bad" gdw. Zahl später Slots >= Schwelle.
+                // Wst-abhängige Schwelle (Fallback 2, mind. 1). Hier bewusst der
+                // UNGEDECKELTE Wert einheit.Wst: die Belegung ist im Modell erst
+                // das Ergebnis der Optimierung, eine Deckelung auf tatsächlich
+                // belegte Slots ist daher nicht möglich (vgl. EinheitWstGedeckelt).
                 int schwelle = SchwelleFuerWst(einheit.Wst);
 
                 IntVar lateCount = model.NewIntVar(

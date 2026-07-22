@@ -61,9 +61,22 @@ namespace Stundenplan_V2
                 {
                     NuHoAnalyse.ErzeugeNuHoTabelle(excelPfad, ergebnisse);
 
-                    int fehlend = ergebnisse.Sum(e => e.FehlendeGesamt);
-                    Log($"NuHo-Auswertung: Tabelle 'NuHo' + {ergebnisse.Count} NuHo-Klassenplan/-plaene erzeugt. " +
-                        $"Fehlende NuHos (Summe ueber alle Loesungen): {fehlend}.");
+                    // Bewusst KEINE Quersumme ueber alle Loesungen mehr:
+                    // FehlendeGesamt ist bereits die Summe EINER Loesung (ueber
+                    // alle Zeitslots). Die frueher hier ausgegebene Summe ueber
+                    // alle Loesungen wuchs mit der Anzahl der Loesungen statt mit
+                    // deren Qualitaet und wurde im Ausgabefenster als Planfehler
+                    // fehlgedeutet. Stattdessen eine Zeile je Loesung — im selben
+                    // Format wie die Lösungsausgabe "  [{label}] Qualität: ...".
+                    Log($"NuHo-Auswertung: Tabelle 'NuHo' + {ergebnisse.Count} NuHo-Klassenplan/-plaene erzeugt.");
+                    foreach (var e in ergebnisse)
+                    {
+                        // Loesungen ohne Unterschreitung werden bewusst mit
+                        // ausgegeben, damit die Liste vollstaendig zur
+                        // Lösungsliste passt.
+                        string label = string.IsNullOrWhiteSpace(e.Label) ? "?" : e.Label;
+                        Log($"  [{label}] fehlende NuHos: {e.FehlendeGesamt}");
+                    }
                 }
             }
             catch (Exception ex)

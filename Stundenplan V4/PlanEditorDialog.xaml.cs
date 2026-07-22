@@ -145,6 +145,17 @@ namespace Stundenplan_V2
         // oben/unten je 3 px Texthoehe.
         private const double FarbRandBreite = 5;
 
+        // ---- ZOOM ----
+        // Skaliert das gesamte Wurzel-Grid ueber ZoomTransform (XAML). Bewusst
+        // OHNE gleichzeitiges Aendern der Fenstergroesse: Die Geometrie wird
+        // separat in EdCfg gesichert und beim Oeffnen wiederhergestellt
+        // (WendeFenstergeometrieAn) — beides zusammen wuerde sich gegenseitig
+        // ueberschreiben. Der Zoomfaktor selbst wird ebenfalls in EdCfg gemerkt.
+        private const double ZOOM_MIN = 0.5;     // 50 % — darunter ist die UNr-Zeile unlesbar
+        private const double ZOOM_MAX = 1.5;     // 150 %
+        private const double ZOOM_SCHRITT = 0.05;
+        private double _zoomFaktor = 1.0;
+
         public PlanEditorDialog(
             List<(string label, int[,] belegung, List<UnterrichtsBlock> blocks)> loesungen,
             List<ZeitSlot> slots,
@@ -201,6 +212,7 @@ namespace Stundenplan_V2
             var startCfg = EditorConfig.Lade(_excelPfad);
             WendeEinfacheEinstellungenAn(startCfg);
             WendeFenstergeometrieAn(startCfg);
+            SetzeZoom(startCfg?.Zoom ?? 1.0);
 
             _initialisiert = true;
 
@@ -330,6 +342,57 @@ namespace Stundenplan_V2
             // nur die Groesse wird uebernommen.
         }
 
+        // =====================================================
+        // ZOOM (Ansicht vergroessern/verkleinern)
+        //
+        // Einziger Ort, an dem ZoomTransform.ScaleX/Y gesetzt werden. Buttons,
+        // Strg+Mausrad und das Wiederherstellen aus EdCfg laufen alle hierdurch,
+        // damit Anzeige (TxtZoomWert), _zoomFaktor und die tatsaechliche
+        // Skalierung nie auseinanderlaufen koennen.
+        // =====================================================
+        private void SetzeZoom(double faktor)
+        {
+            // Auf ganze Prozent runden: sonst summieren sich die
+            // Fliesskomma-Reste der 0,05-Schritte zu Werten wie 0,9500000000001,
+            // und die Prozentanzeige springt zwischen 94 % und 95 %.
+            _zoomFaktor = Math.Round(Math.Max(ZOOM_MIN, Math.Min(ZOOM_MAX, faktor)), 2);
+
+            if (ZoomTransform != null)
+            {
+                ZoomTransform.ScaleX = _zoomFaktor;
+                ZoomTransform.ScaleY = _zoomFaktor;
+            }
+            if (TxtZoomWert != null)
+                TxtZoomWert.Text = (_zoomFaktor * 100).ToString("0") + "%";
+
+            // Die Buttons an den Enden des Bereichs ausgrauen, damit sichtbar
+            // ist, dass weiter nichts geht (statt wirkungsloser Klicks).
+            if (BtnZoomPlus  != null) BtnZoomPlus.IsEnabled  = _zoomFaktor < ZOOM_MAX;
+            if (BtnZoomMinus != null) BtnZoomMinus.IsEnabled = _zoomFaktor > ZOOM_MIN;
+        }
+
+        private void BtnZoomPlus_Click(object sender, RoutedEventArgs e)
+            => SetzeZoom(_zoomFaktor + ZOOM_SCHRITT);
+
+        private void BtnZoomMinus_Click(object sender, RoutedEventArgs e)
+            => SetzeZoom(_zoomFaktor - ZOOM_SCHRITT);
+
+        private void BtnZoomReset_Click(object sender, RoutedEventArgs e)
+            => SetzeZoom(1.0);
+
+        // Strg+Mausrad zoomt. Bewusst PreviewMouseWheel am Fenster (Tunneling):
+        // so kommt das Ereignis gar nicht erst bei den ScrollViewern der Plaene
+        // an, die sonst gleichzeitig scrollen wuerden. Ohne Strg wird nichts
+        // abgefangen — das Rad scrollt dann wie bisher.
+        private void Fenster_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if (Keyboard.Modifiers != ModifierKeys.Control) return;
+            if (e.Delta == 0) return;
+
+            SetzeZoom(_zoomFaktor + (e.Delta > 0 ? ZOOM_SCHRITT : -ZOOM_SCHRITT));
+            e.Handled = true;
+        }
+
         // Prueft grob, ob ein Fenster an (left,top) mit (w,h) noch auf der
         // virtuellen Bildschirmflaeche sichtbar waere (mind. ein Streifen der
         // Titelleiste). Verhindert "verschwundene" Fenster nach Monitorwechsel.
@@ -380,6 +443,7 @@ namespace Stundenplan_V2
                     LoesungName        = CboLoesung.SelectedItem as string ?? "",
                     Lehrer             = CboLehrer.SelectedItem as string ?? "",
                     Klasse             = CboKlasse.SelectedItem as string ?? "",
+                    Zoom               = _zoomFaktor,
                 };
 
                 // Geometrie im "normalen" Zustand sichern; ist das Fenster
@@ -1155,7 +1219,7 @@ namespace Stundenplan_V2
             }
 
             var hStack = new System.Windows.Controls.Primitives.UniformGrid { Rows = 1 };
-            foreach (int b in betroffene.Take(3))
+            foreach (int b in betroffene.Take(MaxTeileProZelle))
             {
                 var block = blocks[b];
                 var teile = block.Teile;
@@ -1200,14 +1264,21 @@ namespace Stundenplan_V2
                 hStack.Children.Add(inner);
             }
 
-            if (wunsch.HasValue)
+            var g = new Grid();
+            g.Children.Add(hStack);
+
+            // Reine Ansicht: Badge + Tooltip, aber kein "-> Park"-Knopf.
+            var ueberlaufVgl = BaueUeberlaufBadge(betroffene, slotIdx, auswahl, lehrerAnsicht,
+                                                  blocks, interaktiv: false, vergleich: true);
+            if (ueberlaufVgl != null)
             {
-                var g = new Grid();
-                g.Children.Add(hStack);
-                g.Children.Add(BaueWunschLabel(wunsch.Value));
-                border.Child = g;
+                g.Children.Add(ueberlaufVgl);
+                border.ToolTip = ParallelSlotTooltip(betroffene, blocks, lehrerAnsicht);
             }
-            else border.Child = hStack;
+
+            if (wunsch.HasValue) g.Children.Add(BaueWunschLabel(wunsch.Value));
+
+            border.Child = g;
 
             return border;
         }
@@ -1858,19 +1929,7 @@ namespace Stundenplan_V2
         // hatWochenTrennung = false bedeutet anzahlA == anzahlB; dann genuegt
         // eine einzige Zahl im Badge.
         private (int anzahlA, int anzahlB, bool hatWochenTrennung) ZaehleFachgruppe(List<int> bloecke)
-        {
-            int anzahlA = 0, anzahlB = 0;
-            bool hatWochenTrennung = false;
-
-            foreach (int b in bloecke)
-            {
-                string wg = (_blocks[b].WochenGruppe ?? "").Trim();
-                if (wg == "A" || wg == "B") hatWochenTrennung = true;
-                if (wg != "B") anzahlA++; // A-Woche + ohne Wochengruppe
-                if (wg != "A") anzahlB++; // B-Woche + ohne Wochengruppe
-            }
-            return (anzahlA, anzahlB, hatWochenTrennung);
-        }
+            => ZaehleAB(bloecke, _blocks);
 
         // Raum-Limit der Gruppe aus Spalte B des Sheets FGR. null = kein
         // Eintrag: die Gruppe stammt dann aus der Fallback-Zuordnung in
@@ -2282,25 +2341,32 @@ namespace Stundenplan_V2
             // UniformGrid (1 Zeile) verteilt parallele Bloecke gleichmaessig auf die volle Zellbreite
             var hStack = new System.Windows.Controls.Primitives.UniformGrid { Rows = 1 };
 
-            foreach (int b in blockIdxInSlot.Take(3))
+            foreach (int b in blockIdxInSlot.Take(MaxTeileProZelle))
             {
                 var teil = BaueTeilbereich(b, slotIdx, lehrerAnsicht, interaktiv);
                 hStack.Children.Add(teil);
             }
 
+            // Ueberlagerungen auf Zellen-Ebene: unten links das Zaehl-Badge
+            // (nur bei Ueberlauf, siehe PlanEditorDialog_Parallelanzeige.cs),
+            // unten rechts die Zeitwunsch-Zahl.
+            var zellInhalt = new Grid();
+            zellInhalt.Children.Add(hStack);
+
+            var ueberlauf = BaueUeberlaufBadge(blockIdxInSlot, slotIdx, auswahl, lehrerAnsicht,
+                                               _blocks, interaktiv, vergleich: false);
+            if (ueberlauf != null)
+            {
+                zellInhalt.Children.Add(ueberlauf);
+                // Vollstaendige Belegung als Zell-Tooltip. Teilbereiche mit eigenem
+                // Warn-Tooltip behalten ihren Text (ToolTipService nimmt den naechsten).
+                border.ToolTip = ParallelSlotTooltip(blockIdxInSlot, _blocks, lehrerAnsicht);
+            }
+
             if (wunsch.HasValue)
-            {
-                // Ueberlagerung: hStack fuellt die ganze Zelle, das Label legt
-                // sich unten rechts unabhaengig darueber - einmal pro Zelle.
-                var zellInhalt = new Grid();
-                zellInhalt.Children.Add(hStack);
                 zellInhalt.Children.Add(BaueWunschLabel(wunsch.Value));
-                border.Child = zellInhalt;
-            }
-            else
-            {
-                border.Child = hStack;
-            }
+
+            border.Child = zellInhalt;
 
             return border;
         }
@@ -5195,12 +5261,13 @@ namespace Stundenplan_V2
                         if (_belegung[b, s] == 1)
                         {
                             alleBS.Add((b, s));
-                            if (_slots[s].Stunde >= 6)
+                            if (_slots[s].Stunde >= PlanBewertung.ErsteSpaeteStunde)
                                 späteSlots.Add((_slots[s].WTag, _slots[s].Stunde));
                         }
 
                 // spät: Zahl später Slots >= Wst-abhängige Schwelle
-                if (späteSlots.Count < PlanBewertung.SchwelleFuerWst(einheit.Wst)) continue;
+                if (späteSlots.Count < PlanBewertung.SchwelleFuerWst(
+                        PlanBewertung.EinheitWstGedeckelt(einheit, _belegung, _slots))) continue;
 
                 // voll fixiert? -> alle belegten Slots der Einheit in FixUNrn
                 bool alleFixiert = alleBS.All(bs =>
@@ -5667,14 +5734,12 @@ namespace Stundenplan_V2
             if (_dragQuelle.AusParkbereich) { _dragQuelle = null; return; }
 
             int blockIdx = _dragQuelle.BlockIndex;
-            foreach (int s in _dragQuelle.SlotIndizes)
-                _belegung[blockIdx, s] = 0;
-
-            SetStatus("UNr " + _blocks[blockIdx].UNr + " entplant (" + _dragQuelle.SlotIndizes.Count + " Stunde(n)).", false);
+            var slots = _dragQuelle.SlotIndizes;
             _dragQuelle = null;
-            ZeichneBeideGrids();
-            ZeichneParkbereich();
-            PruefeUndZeigeWarnungen();
+
+            // Gemeinsamer Kern mit dem Popup-Knopf "-> Park"
+            // (PlanEditorDialog_Parallelanzeige.cs).
+            EntplaneBlockSlots(blockIdx, slots);
         }
 
         // =====================================================

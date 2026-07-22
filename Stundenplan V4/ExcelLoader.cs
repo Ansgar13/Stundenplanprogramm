@@ -473,7 +473,11 @@ namespace Stundenplan_V2
                     }
                     else if (label.Contains("frühe"))
                         LiesPmInt(wert, labelRoh, ref gewichtFrüh, pmWarnungen);
-                    else if (label.Contains("verbot doppelstunde") || label.Contains("verbot späte dopp"))
+                    // Robust gegen Umformulierungen ("Verbot Doppelstunde auf
+                    // 6,7 ...", "Verbot später Doppelstunden"): es genügt, dass
+                    // die Beschriftung "verbot" UND "dopp" enthält. Kollidiert
+                    // nicht mit "Verbot -2 -Verletzungen".
+                    else if (label.Contains("verbot") && label.Contains("dopp"))
                         verbotSpäteDoppel = wert.Trim().ToLower() == "ja";
                     else if (label.Contains("verbot -2") || label.Contains("verbot minus2"))
                         verbotMinus2 = wert.Trim().ToLower() == "ja";
@@ -483,7 +487,10 @@ namespace Stundenplan_V2
                         // integer-basiert ist) — nur meldet LiesPmInt die Rundung
                         // jetzt, statt sie stillschweigend vorzunehmen.
                         LiesPmInt(wert, labelRoh, ref strafeMinus2, pmWarnungen);
-                    else if (label.Contains("späte dopp") || label.Contains("strafe späte dopp"))
+                    // "Strafe späte Doppelstunden" / "... später ...". Das
+                    // Verbot ist oben bereits abgefangen, "Doppelhohlstunden-
+                    // strafe" enthält kein "spät" — daher kollisionsfrei.
+                    else if (label.Contains("dopp") && label.Contains("spät"))
                         LiesPmInt(wert, labelRoh, ref gewichtSpät, pmWarnungen);
                     else if (label.Contains("pädagog") || label.Contains("päd"))
                         LiesPmInt(wert, labelRoh, ref gewichtPäd, pmWarnungen);
@@ -523,6 +530,15 @@ namespace Stundenplan_V2
                             pmWarnungen.Add($"PM '{labelRoh}': Wert '{wert}' passt nicht " +
                                             $"ins Format 'Stunde-Stunde' (z.B. '2-3') — Zeile ignoriert.");
                     }
+                    // Nicht erkannte Beschriftung mit Wert: bisher wurde eine
+                    // solche Zeile kommentarlos verworfen — eine umbenannte
+                    // Beschriftung schaltete den Parameter damit unbemerkt ab
+                    // (z.B. "Verbot später Doppelstunden"). Jetzt wird gewarnt.
+                    else if (!string.IsNullOrWhiteSpace(labelRoh) &&
+                             !string.IsNullOrWhiteSpace(wert))
+                        pmWarnungen.Add(
+                            $"PM '{labelRoh}': Beschriftung nicht erkannt — Wert '{wert}' " +
+                            $"wurde IGNORIERT. Bitte Schreibweise prüfen.");
                 }
             }
 
@@ -532,7 +548,16 @@ namespace Stundenplan_V2
             // ("Wst"/"Schwelle") wird automatisch übersprungen, da sie sich
             // nicht als Ganzzahl lesen lässt. Fehlt das Sheet, bleibt die Map
             // leer und es gilt überall der Fallback 2 (bisheriges Verhalten).
+            //
+            // Spalte C zusätzlich: C1 = Beschriftung "Def spät ab Stunde",
+            // C2 = die Stunde, ab der ein Slot als "spät" gilt (z. B. 5 -> die
+            // 5. Stunde ist bereits spät). Gilt für ALLE Spät-Funktionen.
+            // Der Wert wird bewusst IMMER gesetzt (Default 6), damit nach dem
+            // Laden einer Datei ohne Eintrag nicht der Wert der zuvor
+            // geladenen Datei stehen bleibt.
             // =====================================================
+            int ersteSpaeteStunde = 6;
+
             if (workbook.Worksheets.TryGetWorksheet("SpätSchwelle", out var sheetSchw) ||
                 workbook.Worksheets.TryGetWorksheet("SpaetSchwelle", out sheetSchw))
             {
@@ -546,7 +571,21 @@ namespace Stundenplan_V2
                         spaetSchwelle[wstKey] = schwelleWert;
                     }
                 }
+
+                // "Def spät ab Stunde" aus C2 (leer = Default 6).
+                string defSpaetRoh = sheetSchw.Cell(2, 3).GetString().Trim();
+                if (defSpaetRoh.Length > 0)
+                {
+                    if (int.TryParse(defSpaetRoh, out int defSpaet) && defSpaet >= 1)
+                        ersteSpaeteStunde = defSpaet;
+                    else
+                        pmWarnungen.Add(
+                            $"SpätSchwelle C2 ('Def spät ab Stunde'): Wert '{defSpaetRoh}' ist " +
+                            $"keine gültige Stunde (ganze Zahl >= 1) — es gilt weiterhin 6.");
+                }
             }
+
+            PlanBewertung.ErsteSpaeteStunde = ersteSpaeteStunde;
 
             // =====================================================
             // STAMMDATEN – HohlStd. soll + Std.Folge

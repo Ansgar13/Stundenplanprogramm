@@ -2,8 +2,20 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Plan-Editor" Width="1800" Height="1144"
-        WindowStartupLocation="CenterOwner">
+        WindowStartupLocation="CenterOwner"
+        PreviewMouseWheel="Fenster_PreviewMouseWheel">
     <Grid Margin="10">
+        <!-- ZOOM: skaliert das gesamte Wurzel-Grid (Zellen, Schrift, Park- und
+             Detailbereich) gleichmaessig. ScaleX/Y werden ausschliesslich in
+             SetzeZoom() im Code-Behind gesetzt, nie hier fest — sonst laufen
+             Buttons, Strg+Mausrad und der in EdCfg gemerkte Wert auseinander.
+             Die Fenstergroesse bleibt bewusst unberuehrt (die wird separat in
+             EdCfg gesichert); da die Zeilen Star-Hoehen haben, bekommt das Grid
+             bei kleinerem Zoom automatisch mehr logischen Platz — es wird also
+             nichts abgeschnitten, es passt schlicht mehr Plan ins Fenster. -->
+        <Grid.LayoutTransform>
+            <ScaleTransform x:Name="ZoomTransform" ScaleX="1" ScaleY="1"/>
+        </Grid.LayoutTransform>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -467,6 +479,23 @@
                 <Button x:Name="BtnReset"       Content="Zuruecksetzen" Width="120" Margin="0,0,6,0" Click="BtnReset_Click"/>
                 <Button x:Name="BtnUebernehmen" Content="Uebernehmen"   Width="180" Margin="0,0,6,0" Click="BtnUebernehmen_Click"/>
                 <Button x:Name="BtnSchliessen"  Content="Schliessen"    Width="100" Margin="0,0,20,0" Click="BtnSchliessen_Click"/>
+
+                <!-- Zoom-Bedienung. Der eigentliche Effekt haengt am
+                     ZoomTransform des Wurzel-Grids (siehe oben) und wird in
+                     SetzeZoom() gesetzt; der Wert wird in EdCfg gemerkt. -->
+                <TextBlock Text="Zoom:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <Button x:Name="BtnZoomMinus" Content="&#8722;" Width="28" Margin="0,0,2,0"
+                        ToolTip="Ansicht verkleinern (auch Strg + Mausrad nach unten)"
+                        Click="BtnZoomMinus_Click"/>
+                <TextBlock x:Name="TxtZoomWert" Text="100%" Width="46" TextAlignment="Center"
+                           VerticalAlignment="Center"/>
+                <Button x:Name="BtnZoomPlus" Content="+" Width="28" Margin="2,0,6,0"
+                        ToolTip="Ansicht vergroessern (auch Strg + Mausrad nach oben)"
+                        Click="BtnZoomPlus_Click"/>
+                <Button x:Name="BtnZoomReset" Content="100%" Width="52" Margin="0,0,20,0"
+                        ToolTip="Zoom auf 100 % zuruecksetzen"
+                        Click="BtnZoomReset_Click"/>
+
                 <TextBlock x:Name="TxtStatus" VerticalAlignment="Center" Text="Bereit." FontWeight="SemiBold"/>
             </StackPanel>
         </Grid>

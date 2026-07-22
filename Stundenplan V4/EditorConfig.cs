@@ -64,6 +64,13 @@ namespace Stundenplan_V2
         public double FensterLeft = double.NaN;
         public double FensterTop = double.NaN;
 
+        // ---- Zoomfaktor der Editor-Ansicht (1.0 = 100 %) ----
+        // Skaliert im Editor das gesamte Wurzel-Grid (siehe SetzeZoom() in
+        // PlanEditorDialog). Unabhaengig von der Fenstergeometrie oben: die
+        // beschreibt, wie gross das Fenster ist, dieser Wert, wie gross der
+        // Inhalt darin gerendert wird.
+        public double Zoom = 1.0;
+
         /// <summary>Es liegt eine (mindestens Groessen-) Geometrie zum Wiederherstellen vor.</summary>
         public bool HatGeometrie =>
             !double.IsNaN(FensterBreite) && !double.IsNaN(FensterHoehe) &&
@@ -123,6 +130,13 @@ namespace Stundenplan_V2
                 cfg.FensterHoehe  = LiesDouble(w, "FensterHoehe");
                 cfg.FensterLeft   = LiesDouble(w, "FensterLeft");
                 cfg.FensterTop    = LiesDouble(w, "FensterTop");
+
+                // Zoom nur uebernehmen, wenn er plausibel ist. Ein von Hand im
+                // Sheet verstellter Unsinnswert (0, negativ, 50) wuerde den
+                // Editor sonst unbedienbar machen; dann lieber still 100 %.
+                double zoom = LiesDouble(w, "Zoom");
+                if (!double.IsNaN(zoom) && zoom >= 0.2 && zoom <= 3.0)
+                    cfg.Zoom = zoom;
             }
             catch
             {
@@ -178,6 +192,7 @@ namespace Stundenplan_V2
             Schreibe("LoesungName", LoesungName ?? "");
             Schreibe("Lehrer", Lehrer ?? "");
             Schreibe("Klasse", Klasse ?? "");
+            Schreibe("Zoom", Zoom.ToString("0.00", CultureInfo.InvariantCulture));
 
             if (HatGeometrie)
             {

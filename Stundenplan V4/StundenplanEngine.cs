@@ -1,4 +1,4 @@
-using Google.OrTools.Sat;
+﻿using Google.OrTools.Sat;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -549,7 +549,7 @@ namespace Stundenplan_V2
                         for (int s = 0; s < S - 1; s++)
                         {
                             if (d[b, s] == null) continue;
-                            if (slots[s].Stunde >= 6)
+                            if (slots[s].Stunde >= PlanBewertung.ErsteSpaeteStunde)
                             {
                                 // Ausnahme: Wenn beide aufeinanderfolgenden Slots für
                                 // diese UNr per FixUNrn vorgegeben sind, gilt das Verbot
@@ -1424,7 +1424,7 @@ namespace Stundenplan_V2
                         grossePausen.Any(p => p.stundeVor == slots[s].Stunde && p.stundeNach == slots[s + 1].Stunde))
                         continue;
 
-                    if (verbotSpäteDoppel && slots[s].Stunde >= 6) continue;
+                    if (verbotSpäteDoppel && slots[s].Stunde >= PlanBewertung.ErsteSpaeteStunde) continue;
 
                     gültigePaare++;
                 }
@@ -2918,7 +2918,7 @@ namespace Stundenplan_V2
                     for (int s = 0; s < S - 1; s++)
                     {
                         if (d[b, s] == null) continue;
-                        if (slots[s].Stunde >= 6)
+                        if (slots[s].Stunde >= PlanBewertung.ErsteSpaeteStunde)
                         {
                             // Ausnahme: Wenn beide aufeinanderfolgenden Slots für
                             // diese UNr per FixUNrn vorgegeben sind, gilt das Verbot nicht.
@@ -3405,7 +3405,7 @@ namespace Stundenplan_V2
                     {
                         // Späte Slots dieses Tages (nach Stunde 5)
                         var spätSlots = Enumerable.Range(0, S)
-                            .Where(s => slots[s].WTag == tag && slots[s].Stunde > 5)
+                            .Where(s => slots[s].WTag == tag && slots[s].Stunde >= PlanBewertung.ErsteSpaeteStunde)
                             .ToList();
                         if (spätSlots.Count == 0) continue;
 
