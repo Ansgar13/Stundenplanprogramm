@@ -13,16 +13,17 @@ Die Unterrichts- und Lehrerstammdaten können z. B. aus einer Untis-Datei per Co
 ### Kernfunktionen
 
 - Vollautomatische Planerstellung unter Berücksichtigung von Lehrer- und Klassenkonflikten
+- frei definierbare Qualitätskriterien entweder mit Gewichtung oder als harte/strenge Vorgaben. So lässt sich schnell ermitteln, ob Lösungen möglich
 - Zeitwünsche und Sperrzeiten für Lehrer und Klassen
 - Doppelstunden-Vorgaben, Fachraum-Limits, **Tauschgruppen (LTKZ) – besonders wertvoll für Sek-II-Pläne**, A-/B-Wochen
-- Separate Tabelle für zusätzliche freie Lehrertage
+- frei definierbare Qualitaätsoptimierung von späten Unterrichten
 - Iterative Verbesserung bestehender Pläne
 - Export von Lehrer- und Klassenplänen als Excel-Sheets
 - Constraint-Prüfung mit farbcodiertem Verletzungs-Report
 - Automatische Sequenzdiagnose bei Infeasibility (identifiziert den schuldigen Constraint-Block)
 - Manueller Plan-Editor mit Drag & Drop, Tauschvorschlägen und Verschiebung-mit-Ausweich
 
-Eine ausführliche Bedienungsanleitung befindet sich in `Stundenplan_V70_Anleitung.docx`.
+Eine ausführliche Bedienungsanleitung befindet sich in `Anleitung V103.docx`.
 
 ## Technologie-Stack
 
