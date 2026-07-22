@@ -99,8 +99,14 @@
 
         <!-- Meldefenster (Protokoll-Log): bekommt durch die zweispaltigen Buttons
              oben jetzt deutlich mehr Höhe (Row="*" statt vieler Auto-Button-Zeilen). -->
+        <!-- TextWrapping="Wrap": lange Zeilen (Diagnosetexte, Dateipfade,
+             Tausch-Keys) werden umgebrochen statt nach rechts aus dem
+             sichtbaren Bereich zu laufen. Der waagerechte Rollbalken entfällt
+             damit; VerticalScrollBarVisibility bleibt auf "Auto". -->
         <TextBox x:Name="TxtLog" Grid.Row="2" Margin="0,0,0,10"
                  FontSize="15"
+                 TextWrapping="Wrap"
+                 HorizontalScrollBarVisibility="Disabled"
                  VerticalScrollBarVisibility="Auto" AcceptsReturn="True"
                  IsReadOnly="True" FontFamily="Consolas"/>
 

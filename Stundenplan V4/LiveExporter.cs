@@ -141,6 +141,11 @@ namespace Stundenplan_V2
         {
             if (state?.LiveOrdner == null) return;
 
+            // Einmal zu Beginn festhalten und überall dieselbe Uhrzeit
+            // verwenden, damit Logzeile und Zellwert nicht auseinanderlaufen
+            // (das Schreiben der Datei dauert je nach Größe merklich).
+            var zeitpunkt = DateTime.Now;
+
             int nr = state.NächsteNummer();
             string zielPfad = Path.Combine(state.LiveOrdner, $"live_{nr:D5}.xlsx");
 
@@ -177,10 +182,20 @@ namespace Stundenplan_V2
                     sheet.Cell(qualRow + 1, 1).Value = "BadUnits";
                     sheet.Cell(qualRow + 1, 3).Value = badUnits;
 
+                    // Uhrzeit des Zwischenstands mit in die Datei schreiben:
+                    // beim Ansehen in einer zweiten Instanz ist sonst nicht
+                    // erkennbar, wie alt der gezeigte Stand ist. Als TEXT in
+                    // Spalte C — der Lösungs-Leser wertet nur Zeilen aus, deren
+                    // Spalte B eine Stundenzahl enthält, diese Zeile wird also
+                    // beim Einlesen übersprungen.
+                    sheet.Cell(qualRow + 2, 1).Value = "Stand";
+                    sheet.Cell(qualRow + 2, 3).Value = zeitpunkt.ToString("dd.MM.yyyy HH:mm:ss");
+
                     wb.Save();
                 }
 
-                log?.Invoke($"  [Live] Zwischenstand geschrieben: {Path.GetFileName(zielPfad)} (Qualität {quality}, BadUnits {badUnits})");
+                log?.Invoke($"  [Live] {zeitpunkt:HH:mm:ss} Zwischenstand geschrieben: " +
+                            $"{Path.GetFileName(zielPfad)} (Qualität {quality}, BadUnits {badUnits})");
 
                 // Ältere Live-Dateien aufräumen (außer der gerade geschriebenen).
                 // Eine gerade in Excel geöffnete Datei lässt sich nicht löschen –
@@ -194,7 +209,7 @@ namespace Stundenplan_V2
             }
             catch (Exception ex)
             {
-                log?.Invoke($"  [Live] Zwischenstand konnte nicht geschrieben werden: {ex.Message}");
+                log?.Invoke($"  [Live] {zeitpunkt:HH:mm:ss} Zwischenstand konnte nicht geschrieben werden: {ex.Message}");
             }
         }
     }

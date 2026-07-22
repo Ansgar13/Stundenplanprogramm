@@ -169,6 +169,17 @@ namespace Stundenplan_V2
             }
         }
 
+        /// <summary>
+        /// Setzt die graue Hinweiszeile unter der Lösungsliste. Wird u. a. für
+        /// die Rückfrage vor der Ursachensuche verwendet: solange die Antwort
+        /// aussteht, rechnet die Engine nicht weiter, und ohne diesen Hinweis
+        /// wirkt das wie ein Hänger. Leerer Text blendet den Hinweis aus.
+        /// </summary>
+        public void SetzeHinweis(string text)
+        {
+            _hinweis.Text = text ?? "";
+        }
+
         /// <summary>Nach Klick auf „Abbrechen“: Knopf sperren, Hinweis zeigen.</summary>
         public void MarkiereAbbrechend()
         {

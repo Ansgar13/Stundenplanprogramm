@@ -703,18 +703,53 @@ namespace Stundenplan_V2
             // (u. U. langwierige) Diagnose beginnen würde. Die MessageBox muss im
             // UI-Thread laufen, daher Dispatcher.Invoke (blockiert den
             // Solver-Thread bis zur Antwort — gewollt).
+            //
+            // Besitzer ist bewusst das Suchfenster und NICHT das Hauptfenster:
+            // das Suchfenster läuft mit Topmost=true und lag deshalb über der
+            // an 'this' gehängten MessageBox — die Rückfrage war unsichtbar und
+            // das Programm sah aus, als hinge es. Ein Dialog liegt in Windows
+            // immer über seinem Besitzer, damit ist die Reihenfolge geklärt.
+            // Topmost wird zusätzlich kurz abgeschaltet, damit die Rückfrage
+            // auch dann sicher zu sehen ist, wenn der Nutzer inzwischen ein
+            // anderes Ausgabefenster in den Vordergrund geholt hat.
             Func<bool> darfDiagnose = () => Dispatcher.Invoke(() =>
             {
-                var antwort = MessageBox.Show(
-                    this,
-                    "Der Plan ist mit den aktuellen Vorgaben unlösbar.\n\n" +
-                    "Soll das Programm jetzt nach der Ursache suchen?\n" +
-                    "Diese Suche kann je nach Modellgröße mehrere Minuten dauern.\n\n" +
-                    "[Ja] = Ursache suchen (Details erscheinen im Log)\n" +
-                    "[Nein] = keine Suche, Lauf sofort beenden",
-                    "Unlösbar – Ursache suchen?",
-                    MessageBoxButton.YesNo, MessageBoxImage.Question);
-                return antwort == MessageBoxResult.Yes;
+                bool warTopmost = fenster.Topmost;
+                try
+                {
+                    fenster.Topmost = false;
+                    fenster.Activate();   // Fenster (und damit den Dialog) nach vorn holen
+                    fenster.Title = "Rückfrage – bitte antworten";
+                    fenster.SetzeHinweis(
+                        "Rückfrage offen: Soll nach der Ursache gesucht werden? "
+                        + "Solange die Antwort aussteht, rechnet die Engine nicht weiter. "
+                        + "Falls das Fragefenster nicht zu sehen ist: über die Taskleiste nach vorn holen.");
+
+                    var antwort = MessageBox.Show(
+                        fenster,
+                        "Der Plan ist mit den aktuellen Vorgaben unlösbar.\n\n" +
+                        "Soll das Programm jetzt nach der Ursache suchen?\n" +
+                        "Diese Suche kann je nach Modellgröße mehrere Minuten dauern.\n" +
+                        "Der Fortschritt ist in diesem Suchfenster und im Meldefenster zu sehen,\n" +
+                        "und die Suche lässt sich jederzeit über 'Abbrechen' beenden.\n\n" +
+                        "[Ja] = Ursache suchen (Details erscheinen im Log)\n" +
+                        "[Nein] = keine Suche, Lauf sofort beenden",
+                        "Unlösbar – Ursache suchen?",
+                        MessageBoxButton.YesNo, MessageBoxImage.Question);
+                    return antwort == MessageBoxResult.Yes;
+                }
+                finally
+                {
+                    // Auch bei einer Ausnahme zurücksetzen, sonst bliebe das
+                    // Suchfenster für den Rest des Laufs hinter anderen Fenstern.
+                    try
+                    {
+                        fenster.Topmost = warTopmost;
+                        fenster.Title = "Engine sucht …";
+                        fenster.SetzeHinweis("");
+                    }
+                    catch { }
+                }
             });
 
             string debug = "";

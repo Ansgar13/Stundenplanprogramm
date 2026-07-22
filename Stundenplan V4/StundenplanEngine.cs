@@ -1,4 +1,4 @@
-﻿using Google.OrTools.Sat;
+using Google.OrTools.Sat;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -12,6 +12,52 @@ namespace Stundenplan_V2
         // damit sie in der MessageBox angezeigt werden können.
         // =====================================================
         private static List<string> _infeasibleDetails = new List<string>();
+
+        // =====================================================
+        // Abbruch-Token des laufenden Planen()-Aufrufs.
+        //
+        // Warum statisch: die Diagnose-Kaskade ruft LöseModellMitFlags an gut
+        // einem Dutzend Stellen aus mehreren Hilfsmethoden auf, die das Token
+        // bisher nicht kennen. Es durch alle Signaturen zu schleifen wäre ein
+        // großer, fehleranfälliger Eingriff; hier genügt ein Lauf-Zustand.
+        // Zulässig, weil pro Prozess immer nur EIN Planen()-Lauf aktiv ist —
+        // dieselbe Annahme, auf der auch _infeasibleDetails bereits beruht.
+        // Wird zu Beginn von Planen() gesetzt und am Ende wieder geleert.
+        // =====================================================
+        private static System.Threading.CancellationToken _laufAbbruch
+            = System.Threading.CancellationToken.None;
+
+        /// <summary>
+        /// True, sobald der Nutzer den Lauf abgebrochen hat. Wird an allen
+        /// Schleifengrenzen und vor jedem Solve-Aufruf geprüft, damit nach
+        /// einem Abbruch kein neuer Solver-Lauf mehr gestartet wird.
+        /// </summary>
+        private static bool AbbruchAngefordert => _laufAbbruch.IsCancellationRequested;
+
+        /// <summary>
+        /// Hängt einen CpSolver an das Abbruch-Token: bei Cancel wird sofort
+        /// StopSearch() gerufen, unabhängig davon, ob CP-SAT gerade einen
+        /// Lösungs-Callback feuert. Der zurückgegebene Registrierungs-Handle
+        /// MUSS nach dem Solve wieder freigegeben werden (using), sonst hält
+        /// das Token Referenzen auf längst beendete Solver.
+        ///
+        /// Ist das Token bereits abgebrochen, ruft Register() die Aktion sofort
+        /// synchron auf; StopSearch() ist vor einem laufenden Solve wirkungslos,
+        /// deshalb steht zusätzlich vor jedem Solve eine explizite Prüfung.
+        /// </summary>
+        private static System.Threading.CancellationTokenRegistration
+            HängeAbbruchAn(CpSolver solver, System.Threading.CancellationToken tok)
+        {
+            if (solver == null || !tok.CanBeCanceled)
+                return default;
+            return tok.Register(() =>
+            {
+                // Darf den Abbruch-Pfad unter keinen Umständen sprengen: der
+                // Aufruf kommt aus dem UI-Thread, und ob der Solver in genau
+                // diesem Moment noch läuft, ist nicht garantiert.
+                try { solver.StopSearch(); } catch { /* Lauf bereits beendet */ }
+            });
+        }
 
         // =====================================================
         // Fortschritts-Reporter für die Live-Suchanzeige.
@@ -161,6 +207,66 @@ namespace Stundenplan_V2
             }
         }
 
+
+        // =====================================================
+        // Lebenszeichen für die Ursachensuche.
+        //
+        // Die Diagnose besteht aus vielen einzelnen Solver-Läufen, von denen
+        // jeder bis zu 'maxSekunden' dauern kann. Während eines Laufs meldet
+        // CP-SAT hier nichts (keine Zwischenlösungen), also stand die Anzeige
+        // bisher still und es sah aus, als hänge das Programm.
+        //
+        // Dieser Helfer kündigt jeden Schritt VOR dem Solve an und tickt dann
+        // im Sekundentakt weiter: Statusfenster (Phasenzeile) jede Sekunde,
+        // Meldefenster alle 10 s eine Zeile — häufiger würde das Log fluten.
+        // Der Timer läuft auf einem eigenen Thread; alle Meldungen sind in
+        // try/catch gekapselt, damit ein Anzeigefehler die Suche nie stört.
+        // =====================================================
+        private sealed class DiagnoseSchritt : IDisposable
+        {
+            private readonly Action<string> _log;
+            private readonly FortschrittReporter _rep;
+            private readonly string _text;
+            private readonly int _max;
+            private readonly System.Diagnostics.Stopwatch _sw = System.Diagnostics.Stopwatch.StartNew();
+            private readonly System.Threading.Timer _timer;
+            private int _letzteLogSekunde;
+
+            public DiagnoseSchritt(Action<string> log, FortschrittReporter rep, string text, int maxSekunden)
+            {
+                _log = log; _rep = rep; _text = text; _max = maxSekunden;
+
+                try { _log?.Invoke($"  [Diagnose] ▶ {text} … (max. {maxSekunden}s)"); } catch { }
+                Melde(0);
+
+                _timer = new System.Threading.Timer(_ => Tick(), null, 1000, 1000);
+            }
+
+            /// <summary>Laufzeit des Schritts in Sekunden.</summary>
+            public double Sekunden => _sw.Elapsed.TotalSeconds;
+
+            private void Melde(int sek)
+            {
+                try { _rep?.SetzePhase($"Ursachensuche — {_text} … {sek}s von max. {_max}s"); } catch { }
+            }
+
+            private void Tick()
+            {
+                int sek = (int)_sw.Elapsed.TotalSeconds;
+                Melde(sek);
+                if (sek - _letzteLogSekunde >= 10)
+                {
+                    _letzteLogSekunde = sek;
+                    try { _log?.Invoke($"  [Diagnose]    … läuft noch ({sek}s von max. {_max}s)"); } catch { }
+                }
+            }
+
+            public void Dispose()
+            {
+                _timer?.Dispose();
+                _sw.Stop();
+            }
+        }
 
         private static void DiagLog(Action<string> log, string text)
         {
@@ -326,6 +432,13 @@ namespace Stundenplan_V2
             // null/leer = Stufe wird nicht geprueft (siehe AddHarteStdRegeln).
             Dictionary<string, LehrerStammdaten> stdRegelnHart = null)
         {
+            // Abbruch VOR dem Modellbau: die Diagnose-Kaskade ruft diese Methode
+            // reihum mit über einem Dutzend Flag-Kombinationen auf. Ohne diese
+            // Prüfung liefe nach dem Abbruch die komplette Kaskade weiter, jede
+            // Stufe mit eigenem Zeitlimit. "Unknown" ist an allen Aufrufstellen
+            // bereits der Fall "keine Aussage möglich" und damit unschädlich.
+            if (AbbruchAngefordert) return CpSolverStatus.Unknown;
+
             var model = new CpModel();
             var x = new BoolVar[B, S];
             for (int b = 0; b < B; b++)
@@ -675,6 +788,11 @@ namespace Stundenplan_V2
 
             var solver = new CpSolver();
             solver.StringParameters = $"max_time_in_seconds:{timeoutSekunden}";
+
+            // Auch die (oft kurzen, aber zahlreichen) Diagnose-Läufe hängen am
+            // Abbruch-Token — sonst summieren sich die Einzel-Timeouts nach
+            // einem Abbruch zu spürbaren Wartezeiten.
+            using var reg = HängeAbbruchAn(solver, _laufAbbruch);
             return solver.Solve(model);
         }
 
@@ -1383,6 +1501,10 @@ namespace Stundenplan_V2
         // keine ausreichende Anzahl möglicher Doppelstunden-Zeitfenster
         // mehr übrig bleibt. Das greift z. B. bei sehr vielen −3-Sperren,
         // auch wenn gar keine UNr fixiert ist.
+        //
+        // Einzige Stelle, an der FixUNrn hier doch eine Rolle spielt: bei
+        // aktivem 'verbotSpäteDoppel' bleiben späte Paare zählbar, wenn beide
+        // Slots für diese UNr fixiert sind — genau wie im echten Modell.
         // =====================================================
         private static List<string> ErmittleDoppelstundenKapazitätsKonflikte(
             List<UnterrichtsBlock> blocks,
@@ -1424,7 +1546,22 @@ namespace Stundenplan_V2
                         grossePausen.Any(p => p.stundeVor == slots[s].Stunde && p.stundeNach == slots[s + 1].Stunde))
                         continue;
 
-                    if (verbotSpäteDoppel && slots[s].Stunde >= PlanBewertung.ErsteSpaeteStunde) continue;
+                    // Verbot später Doppelstunden — mit derselben Ausnahme wie
+                    // im echten Modell (siehe VERBOT SPÄTE DOPPELSTUNDEN):
+                    // sind BEIDE Slots per FixUNrn für diese UNr vorgegeben,
+                    // gilt das Verbot nicht, der Anwender hat die Doppelstunde
+                    // dort bewusst gesetzt. Ohne diese Ausnahme zählte ein
+                    // Block, dessen Dopp.Std.-Minimum genau durch eine fixierte
+                    // späte Doppelstunde erfüllt ist, hier als "0 mögliche
+                    // Zeitfenster" — ein falsches Positiv. Das Schwesterverfahren
+                    // ErmittleDoppelstundenKonflikte berücksichtigt das bereits.
+                    if (verbotSpäteDoppel && slots[s].Stunde >= PlanBewertung.ErsteSpaeteStunde)
+                    {
+                        bool beideFixiert =
+                            slots[s    ].FixUNrn.Contains(block.UNr) &&
+                            slots[s + 1].FixUNrn.Contains(block.UNr);
+                        if (!beideFixiert) continue;
+                    }
 
                     gültigePaare++;
                 }
@@ -1710,6 +1847,13 @@ namespace Stundenplan_V2
             Action<string> log,
             System.Threading.CancellationToken ct = default)
         {
+            // Eigener Einstiegspunkt in die Engine: Lauf-Token hier setzen,
+            // damit (a) LöseModellMitFlags den Abbruch beachtet — bisher wurde
+            // nur ZWISCHEN den Einzeltests geprüft, jeder mit 8 s Zeitlimit —
+            // und (b) kein altes, längst abgebrochenes Token aus einem
+            // vorherigen Planen()-Lauf hängen bleibt.
+            _laufAbbruch = ct;
+
             var meldungen = new List<string>();
             const int proTestTimeout = 8;
             const int maxKandidaten = 40;
@@ -1868,9 +2012,80 @@ namespace Stundenplan_V2
             HashSet<string> lehrerFreiTageMinus3 = null,
             bool verbotMinus2Lehrer = false,
             HashSet<string> lehrerFreiTageMinus2 = null,
-            Dictionary<string, LehrerStammdaten> lehrerStammdaten = null)
+            Dictionary<string, LehrerStammdaten> lehrerStammdaten = null,
+            int diagTimeoutSekunden = 5,
+            FortschrittReporter reporter = null)
         {
             bool IstOK(CpSolverStatus st) => st == CpSolverStatus.Optimal || st == CpSolverStatus.Feasible;
+
+            // Zeitlimits: die frühen Stufen sind kleine Modelle, die späten
+            // (Doppelstunden + FreeDay + StD-Regeln) sind das schwerste, was
+            // die Diagnose rechnet. Mit dem früheren Festwert von 5 s lief
+            // gerade die letzte Stufe regelmäßig ins Timeout — und wurde durch
+            // IstOK() als "bewiesen unlösbar" gewertet.
+            int tStufe = Math.Max(5, diagTimeoutSekunden);
+            int tVoll = tStufe * 2;   // vollständiges Modell (Auslass-Tests, Stufe 6)
+
+            // Ein Timeout ist KEIN Schuldbeweis. 'Unknown' heißt nur: in der
+            // gegebenen Zeit nicht entschieden. Solche Stufen werden als
+            // "unklar" protokolliert und die Kaskade läuft weiter, statt die
+            // Stufe als Ursache zu melden und abzubrechen.
+            bool IstBewiesenSchuldig(CpSolverStatus st) => st == CpSolverStatus.Infeasible;
+
+            // Merker: lief mindestens eine Stufe ins Zeitlimit? Dann darf am
+            // Ende NICHT "alles feasible" gemeldet werden.
+            bool gabUnentschieden = false;
+
+            // Wie viele Stufen laufen überhaupt? Hängt davon ab, welche
+            // Einstellungen aktiv sind — wird für die Anzeige "Stufe 4 von 8"
+            // gebraucht, damit man den Fortschritt einschätzen kann.
+            // (Zuweisung weiter unten, sobald stdRegelnHart feststeht.)
+            int stufenGesamt = 6;
+            int stufeNr = 0;
+            double letzteDauer = 0;
+
+            // Führt einen Diagnose-Solve mit Lebenszeichen aus.
+            CpSolverStatus Schritt(string anzeige, int maxSek, Func<CpSolverStatus> solve)
+            {
+                using var h = new DiagnoseSchritt(log, reporter, anzeige, maxSek);
+                var st = solve();
+                letzteDauer = h.Sekunden;
+                return st;
+            }
+
+            string StufenName(string name) => $"Stufe {++stufeNr} von {stufenGesamt}: {name}";
+
+            string StatusTxt(CpSolverStatus st) => st switch
+            {
+                CpSolverStatus.Optimal => "Optimal",
+                CpSolverStatus.Feasible => "Feasible",
+                CpSolverStatus.Infeasible => "Infeasible (bewiesen)",
+                CpSolverStatus.Unknown => "Unknown (Zeitlimit)",
+                _ => st.ToString()
+            };
+
+            // Meldet das Ergebnis einer Stufe einheitlich und sagt, ob die
+            // Kaskade hier abbrechen darf (nur bei bewiesener Infeasibilität).
+            //   true  = Stufe ist die (erste) bewiesene Ursache → Details ausgeben
+            //   false = feasible oder unentschieden → weiterlaufen
+            bool StufeIstUrsache(CpSolverStatus st, string name, int timeout = 0)
+            {
+                int t = timeout > 0 ? timeout : tStufe;
+                if (IstOK(st))
+                {
+                    DiagLog(log, $"  [Diagnose] ✓ {name} feasible — nach {letzteDauer:F1}s. [{StatusTxt(st)}]");
+                    return false;
+                }
+                if (!IstBewiesenSchuldig(st))
+                {
+                    gabUnentschieden = true;
+                    DiagLog(log, $"  [Diagnose] ? {name}: unentschieden nach {letzteDauer:F1}s (Limit {t}s) — " +
+                                 $"keine Aussage, Kaskade läuft weiter. [{StatusTxt(st)}]");
+                    return false;
+                }
+                DiagLog(log, $"  [Diagnose] ❌ {name}: hier kippt das Modell — nach {letzteDauer:F1}s. [{StatusTxt(st)}]");
+                return true;
+            }
 
             // Für die Stufe 6 nur Lehrer einbeziehen, deren StD-Regeln im echten
             // Solver auch HART erzwungen werden. Wer dort nur über die Strafe
@@ -1903,16 +2118,189 @@ namespace Stundenplan_V2
                 if (extraFreieTageHart.Count == 0) extraFreieTageHart = null;
             }
 
+            // Jetzt steht fest, welche Stufen überhaupt laufen.
+            stufenGesamt = 6
+                + ((grossePausen != null && grossePausen.Count > 0) ? 1 : 0)
+                + (verbotSpäteDoppel ? 1 : 0)
+                + ((stdRegelnHart != null && stdRegelnHart.Count > 0) ? 1 : 0);
+
+            // ============================================================
+            // AUSLASS-TEST ("leave one out")
+            //
+            // Die Kaskade unten ist KUMULATIV: sie fügt Constraint-Familien der
+            // Reihe nach hinzu und meldet die erste, bei der das Modell kippt.
+            // Das ist irreführend, sobald erst das ZUSAMMENSPIEL zweier
+            // Familien blockiert — dann bekommt immer die zuletzt hinzugefügte
+            // die Schuld, obwohl das Lockern der früheren genauso hilft.
+            // Klassischer Fall: 'Verbot später Doppelstunden' (Stufe 4d) und
+            // harte StD-Regeln (Stufe 6) sind einzeln erfüllbar, zusammen nicht
+            // → gemeldet wurde bisher pauschal "StD ist schuld".
+            //
+            // Deshalb wird nach dem ersten Kippen zusätzlich das VOLLSTÄNDIGE
+            // Modell gerechnet, jeweils mit genau EINER Familie abgeschaltet.
+            // Jede Familie, deren Wegnahme das Modell lösbar macht, ist ein
+            // echter Stellhebel und wird genannt — nicht nur die letzte.
+            // Neuer Modellcode ist dafür nicht nötig: LöseModellMitFlags hat
+            // für jede Familie bereits einen Schalter.
+            // ============================================================
+
+            CpSolverStatus VollesModell(
+                bool mitKlassenSperren = true,
+                bool mitRäume = true,
+                bool mitFachProKlasseProTag = true,
+                bool mitDoppelstunden = true,
+                bool mitZusammenhang = true,
+                bool mitGrossePausen = true,
+                bool mitSpäteDoppelVerbot = true,
+                bool mitFreeDayHart = true,
+                bool mitStdHart = true,
+                bool mitKeine3InFolge = true)
+                => LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                    mitKlassenSperren: mitKlassenSperren,
+                    fachraumLimit: fachraumLimit, mitRäume: mitRäume,
+                    extraFreieTage: mitFreeDayHart ? extraFreieTageHart : null,
+                    mitFreeDay: mitFreeDayHart && extraFreieTageHart != null,
+                    grossePausen: mitGrossePausen ? grossePausen : null,
+                    verbotSpäteDoppel: mitSpäteDoppelVerbot && verbotSpäteDoppel,
+                    mitDoppelstunden: mitDoppelstunden,
+                    mitFachProKlasseProTag: mitFachProKlasseProTag,
+                    mitKeine3InFolge: mitKeine3InFolge,
+                    mitZusammenhangsConstraint: mitZusammenhang,
+                    stdRegelnHart: mitStdHart ? stdRegelnHart : null,
+                    timeoutSekunden: tVoll);
+
+            // Kandidat für den Auslass-Test. 'Rang' sortiert die Ausgabe nach
+            // Aufwand für den Anwender: ein einzelner Schalter in Tabelle PM
+            // steht vor Datenpflege über viele Lehrer oder Unterrichte.
+            var stellhebel = new List<(int Rang, string Name, string Wo, Func<CpSolverStatus> Test)>();
+
+            if (verbotSpäteDoppel)
+                stellhebel.Add((1, "Verbot später Doppelstunden",
+                    "Schalter in Tabelle PM",
+                    () => VollesModell(mitSpäteDoppelVerbot: false)));
+
+            if (grossePausen != null && grossePausen.Count > 0)
+                stellhebel.Add((2, "Große Pausen (keine Doppelstunde über die Pause)",
+                    "Tabelle PM; Ausnahme je Unterricht über Spalte (E)",
+                    () => VollesModell(mitGrossePausen: false)));
+
+            if (extraFreieTageHart != null)
+                stellhebel.Add((3, $"Harte freie Tage ({extraFreieTageHart.Count} Lehrer)",
+                    "Spalte FT (-3, bzw. -2 wenn hart geschaltet)",
+                    () => VollesModell(mitFreeDayHart: false)));
+
+            if (stdRegelnHart != null)
+                stellhebel.Add((4, $"Harte StD-Regeln ({stdRegelnHart.Count} Lehrer)",
+                    "Sheet StD, Spalten 'HohlWoche hart' bis 'DreifachHohl hart'",
+                    () => VollesModell(mitStdHart: false)));
+
+            stellhebel.Add((5, "Zusammenhangs-Regel (max. 1 Einzelstunde/Tag)",
+                "greift nur für Unterrichte mit Dopp.Std.-Maximum > 0",
+                () => VollesModell(mitZusammenhang: false)));
+
+            stellhebel.Add((6, "Doppelstunden-Mechanik insgesamt",
+                "Spalte 'Dopp.Std.' — schaltet Min/Max, Zusammenhang, Pausen- und Spät-Regel gemeinsam ab",
+                () => VollesModell(mitDoppelstunden: false)));
+
+            if (fachraumLimit != null && fachraumLimit.Count > 0)
+                stellhebel.Add((7, "Fachraum-Limits",
+                    "Spalte 'Fachraum' in der U-Verteilung + Limits",
+                    () => VollesModell(mitRäume: false)));
+
+            if (anzahlKlassenSperren > 0)
+                stellhebel.Add((8, $"Klassen-Zeitwunsch-Sperren ({anzahlKlassenSperren})",
+                    "Sheet ZWK, Wert -3",
+                    () => VollesModell(mitKlassenSperren: false)));
+
+            stellhebel.Add((9, "Fach pro Klasse pro Tag (max. 2)",
+                "fest verdrahtete Regel",
+                () => VollesModell(mitFachProKlasseProTag: false)));
+
+            stellhebel.Add((10, "Keine 3 Stunden desselben Unterrichts hintereinander",
+                "fest verdrahtete Regel",
+                () => VollesModell(mitKeine3InFolge: false)));
+
+            // Wird nach der ersten bewiesen infeasiblen Stufe aufgerufen.
+            void MeldeStellhebel(string kippstufe)
+            {
+                if (AbbruchAngefordert)
+                {
+                    DiagLog(log, "  [Diagnose] Auslass-Test übersprungen (Abbruch).");
+                    return;
+                }
+
+                DiagLog(log, "  [Diagnose] ──────────────────────────────────────────────");
+                DiagLog(log, $"  [Diagnose] Auslass-Test: '{kippstufe}' ist die erste Stufe, die kippt — " +
+                             "das heißt aber NICHT, dass sie allein schuld ist.");
+                DiagLog(log, $"  [Diagnose] Rechne das vollständige Modell {stellhebel.Count}× mit je einer " +
+                             $"abgeschalteten Einstellung (je max. {tVoll}s)...");
+
+                var wirksam = new List<(int Rang, string Name, string Wo)>();
+                var unklar = new List<string>();
+
+                int i = 0;
+                foreach (var h in stellhebel.OrderBy(h => h.Rang))
+                {
+                    if (AbbruchAngefordert)
+                    {
+                        DiagLog(log, "  [Diagnose] Auslass-Test abgebrochen.");
+                        return;
+                    }
+
+                    i++;
+                    var st = Schritt($"Auslass-Test {i} von {stellhebel.Count}: ohne {h.Name}", tVoll, h.Test);
+
+                    if (IstOK(st))
+                    {
+                        wirksam.Add((h.Rang, h.Name, h.Wo));
+                        DiagLog(log, $"  [Diagnose]    → ohne '{h.Name}' lösbar (nach {letzteDauer:F1}s) — Stellhebel.");
+                    }
+                    else if (!IstBewiesenSchuldig(st))
+                    {
+                        unklar.Add(h.Name);
+                        DiagLog(log, $"  [Diagnose]    → ohne '{h.Name}': unentschieden nach {letzteDauer:F1}s.");
+                    }
+                    else
+                    {
+                        DiagLog(log, $"  [Diagnose]    → ohne '{h.Name}' weiterhin unlösbar (nach {letzteDauer:F1}s).");
+                    }
+                }
+
+                if (wirksam.Count > 0)
+                {
+                    DiagLog(log, "  [Diagnose] ✔ Der Plan wird lösbar, sobald EINE dieser Einstellungen " +
+                                 "gelockert wird (aufsteigend nach Aufwand):");
+                    foreach (var w in wirksam.OrderBy(w => w.Rang))
+                        DiagLog(log, $"  [Diagnose]      • {w.Name}  —  {w.Wo}");
+
+                    if (wirksam.Count > 1)
+                        DiagLog(log, "  [Diagnose]    Es genügt EINE davon; die oberste ist in der Regel " +
+                                     "die mit dem geringsten Pflegeaufwand.");
+                }
+                else
+                {
+                    DiagLog(log, "  [Diagnose] ✘ Keine einzelne Einstellung genügt — es blockiert das " +
+                                 "Zusammenspiel mehrerer. Mindestens zwei müssen gelockert werden.");
+                }
+
+                if (unklar.Count > 0)
+                    DiagLog(log, $"  [Diagnose]    Unentschieden nach {tVoll}s (könnte zusätzlich helfen): " +
+                                 string.Join(", ", unklar));
+
+                DiagLog(log, "  [Diagnose] ──────────────────────────────────────────────");
+            }
+
             // Stufe 1: Basis
-            var s1 = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+            var s1 = Schritt(StufenName("Basis-Modell"), tStufe, () =>
+                LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                 mitKlassenSperren: true,
                 fachraumLimit: null, mitRäume: false,
                 extraFreieTage: null, mitFreeDay: false,
                 grossePausen: null, verbotSpäteDoppel: false, mitDoppelstunden: false,
-                mitFachProKlasseProTag: false);
-            if (!IstOK(s1))
+                mitFachProKlasseProTag: false,
+                timeoutSekunden: tStufe));
+            if (StufeIstUrsache(s1, "Basis-Modell"))
             {
-                DiagLog(log, "  [Diagnose] ❌ Schon das Basis-Modell ist infeasible.");
                 if (anzahlKlassenSperren > 0)
                     DiagLog(log, $"  [Diagnose]    → {anzahlKlassenSperren} Klassen-Sperren oder Tagesregel/Lehrerregel im Fix-UNr-Setup blockieren.");
                 else
@@ -1925,36 +2313,38 @@ namespace Stundenplan_V2
                     foreach (var m in tagesregelKonflikte)
                         DiagLog(log, $"  [Diagnose]      • {m}");
                 }
+                MeldeStellhebel("Basis-Modell");
                 return;
             }
-            DiagLog(log, "  [Diagnose] ✓ Basis-Modell feasible.");
 
             // Stufe 2: + Räume
-            var s2 = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+            var s2 = Schritt(StufenName("Räume/Fachraum-Limits"), tStufe, () =>
+                LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                 mitKlassenSperren: true,
                 fachraumLimit: fachraumLimit, mitRäume: true,
                 extraFreieTage: null, mitFreeDay: false,
                 grossePausen: null, verbotSpäteDoppel: false, mitDoppelstunden: false,
-                mitFachProKlasseProTag: false);
-            if (!IstOK(s2))
+                mitFachProKlasseProTag: false,
+                timeoutSekunden: tStufe));
+            if (StufeIstUrsache(s2, "Räume-Constraint"))
             {
-                DiagLog(log, "  [Diagnose] ❌ Mit Räume-Constraint infeasible!");
                 DiagLog(log, "  [Diagnose]    → Räume/Fachraum-Limits blockieren die Lösung.");
                 DiagLog(log, "  [Diagnose]    Prüfen: Spalte 'Fachraum' in der U-Verteilung + Fachraum-Limits.");
+                MeldeStellhebel("Räume-Constraint");
                 return;
             }
-            DiagLog(log, "  [Diagnose] ✓ Mit Räume feasible.");
 
             // Stufe 3: + Fach pro Klasse pro Tag max 2
-            var s3 = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+            var s3 = Schritt(StufenName("Fach pro Klasse pro Tag"), tStufe, () =>
+                LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                 mitKlassenSperren: true,
                 fachraumLimit: fachraumLimit, mitRäume: true,
                 extraFreieTage: null, mitFreeDay: false,
                 grossePausen: null, verbotSpäteDoppel: false, mitDoppelstunden: false,
-                mitFachProKlasseProTag: true);
-            if (!IstOK(s3))
+                mitFachProKlasseProTag: true,
+                timeoutSekunden: tStufe));
+            if (StufeIstUrsache(s3, "'Fach pro Klasse pro Tag max 2'"))
             {
-                DiagLog(log, "  [Diagnose] ❌ Mit 'Fach pro Klasse pro Tag max 2' infeasible!");
                 DiagLog(log, "  [Diagnose]    → Eine Klasse hat dasselbe Fach > 2× pro Tag fixiert.");
                 DiagLog(log, "  [Diagnose]    Konkrete Verletzungen aus FixUNrn:");
 
@@ -1992,9 +2382,9 @@ namespace Stundenplan_V2
                     DiagLog(log, "  [Diagnose]      Keine direkten Verletzungen in FixUNrn gefunden.");
                     DiagLog(log, "  [Diagnose]      Der Solver wird vermutlich durch Wst-Verteilung zur Verletzung gezwungen.");
                 }
+                MeldeStellhebel("Fach pro Klasse pro Tag");
                 return;
             }
-            DiagLog(log, "  [Diagnose] ✓ Mit 'Fach pro Klasse pro Tag' feasible.");
 
             // Stufe 4: + Doppelstunden — aufgeteilt in Sub-Stufen, damit bei
             // Infeasibility klar wird, WELCHER Teil-Mechanismus schuld ist:
@@ -2002,16 +2392,17 @@ namespace Stundenplan_V2
             // 4b) + Zusammenhangs-Regel (max. 1 Einzelstunde/Tag ohne Doppelstunde)
             // 4c) + große Pausen
             // 4d) + verbotSpäteDoppel  (= vollständige Stufe 4)
-            var s4a = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+            var s4a = Schritt(StufenName("Dopp.Std.-Grenzen (Min/Max)"), tStufe, () =>
+                LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                 mitKlassenSperren: true,
                 fachraumLimit: fachraumLimit, mitRäume: true,
                 extraFreieTage: null, mitFreeDay: false,
                 grossePausen: null, verbotSpäteDoppel: false, mitDoppelstunden: true,
                 mitFachProKlasseProTag: true,
-                mitZusammenhangsConstraint: false);
-            if (!IstOK(s4a))
+                mitZusammenhangsConstraint: false,
+                timeoutSekunden: tStufe));
+            if (StufeIstUrsache(s4a, "Reine Dopp.Std.-Grenzen (Min/Max je Block)"))
             {
-                DiagLog(log, "  [Diagnose] ❌ Schon die reinen Dopp.Std.-Grenzen (Min/Max je Block) sind infeasible!");
                 DiagLog(log, "  [Diagnose]    → Konflikt zwischen MinDoppel/MaxDoppel und FixUNr-Slots bzw. Zeitwunsch-Sperren.");
                 DiagLog(log, "  [Diagnose]    Prüfen: 'Dopp.Std.'-Spalte vs. tatsächliche Verteilung.");
 
@@ -2043,20 +2434,21 @@ namespace Stundenplan_V2
                     else
                         DiagLog(log, "  [Diagnose]      Auch keine Kombinationsursache gefunden — vermutlich Zusammenspiel mit Räumen/Klassen-Sperren jenseits der Doppelstunden selbst.");
                 }
+                MeldeStellhebel("Dopp.Std.-Grenzen");
                 return;
             }
-            DiagLog(log, "  [Diagnose] ✓ Reine Dopp.Std.-Grenzen (Min/Max) sind für sich feasible.");
 
-            var s4b = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+            var s4b = Schritt(StufenName("Zusammenhangs-Regel"), tStufe, () =>
+                LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                 mitKlassenSperren: true,
                 fachraumLimit: fachraumLimit, mitRäume: true,
                 extraFreieTage: null, mitFreeDay: false,
                 grossePausen: null, verbotSpäteDoppel: false, mitDoppelstunden: true,
                 mitFachProKlasseProTag: true,
-                mitZusammenhangsConstraint: true);
-            if (!IstOK(s4b))
+                mitZusammenhangsConstraint: true,
+                timeoutSekunden: tStufe));
+            if (StufeIstUrsache(s4b, "Zusammenhangs-Regel"))
             {
-                DiagLog(log, "  [Diagnose] ❌ Mit Zusammenhangs-Regel infeasible!");
                 DiagLog(log, "  [Diagnose]    → Blöcke mit Dopp.Std.-Maximum > 0 dürfen an einem Tag nur 1 Einzelstunde OHNE zusammenhängende Doppelstunde haben.");
                 DiagLog(log, "  [Diagnose]    Das kollidiert vermutlich mit Klassen-/Lehrer-Zeitwunsch-Sperren (ZWK/ZWL), die an vielen Tagen nur noch einzelne, nicht benachbarte Slots übrig lassen.");
                 var zusKonflikte = ErmittleZusammenhangsKonflikte(blocks, slots, S, ignoriereLehrerSperren);
@@ -2065,22 +2457,23 @@ namespace Stundenplan_V2
                         DiagLog(log, $"  [Diagnose]      • {m}");
                 else
                     DiagLog(log, "  [Diagnose]      Keine einzelne UNr eindeutig identifizierbar — vermutlich Kombination mehrerer Blöcke, die sich gegenseitig die Doppelstunden-Zeitfenster wegnehmen.");
+                MeldeStellhebel("Zusammenhangs-Regel");
                 return;
             }
-            DiagLog(log, "  [Diagnose] ✓ Mit Zusammenhangs-Regel feasible.");
 
             if (grossePausen != null && grossePausen.Count > 0)
             {
-                var s4c = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                var s4c = Schritt(StufenName("Große Pausen"), tStufe, () =>
+                    LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                     mitKlassenSperren: true,
                     fachraumLimit: fachraumLimit, mitRäume: true,
                     extraFreieTage: null, mitFreeDay: false,
                     grossePausen: grossePausen, verbotSpäteDoppel: false, mitDoppelstunden: true,
                     mitFachProKlasseProTag: true,
-                    mitZusammenhangsConstraint: true);
-                if (!IstOK(s4c))
+                    mitZusammenhangsConstraint: true,
+                    timeoutSekunden: tStufe));
+                if (StufeIstUrsache(s4c, "Große Pausen"))
                 {
-                    DiagLog(log, "  [Diagnose] ❌ Mit großen Pausen infeasible!");
                     DiagLog(log, "  [Diagnose]    → Große Pausen verbieten Doppelstunden über die Pause (außer Spalte (E) gesetzt) und lassen zusammen mit den Zeitwunsch-Sperren zu wenig Zeitfenster übrig.");
                     var pauseKonflikte = ErmittleDoppelstundenKonflikte(blocks, slots, S, grossePausen);
                     if (pauseKonflikte.Count > 0)
@@ -2088,78 +2481,91 @@ namespace Stundenplan_V2
                             DiagLog(log, $"  [Diagnose]      • {m}");
                     else
                         DiagLog(log, "  [Diagnose]      Keine einzelne UNr eindeutig identifizierbar — vermutlich Kombination mehrerer Blöcke.");
+                    MeldeStellhebel("Große Pausen");
                     return;
                 }
-                DiagLog(log, "  [Diagnose] ✓ Mit großen Pausen feasible.");
             }
 
-            var s4 = s4b;
+            // Stufe 4d: + Verbot später Doppelstunden (nur wenn eingeschaltet)
             if (verbotSpäteDoppel)
             {
-                s4 = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                var s4 = Schritt(StufenName("Verbot später Doppelstunden"), tStufe, () =>
+                    LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                     mitKlassenSperren: true,
                     fachraumLimit: fachraumLimit, mitRäume: true,
                     extraFreieTage: null, mitFreeDay: false,
                     grossePausen: grossePausen, verbotSpäteDoppel: true, mitDoppelstunden: true,
                     mitFachProKlasseProTag: true,
-                    mitZusammenhangsConstraint: true);
-                if (!IstOK(s4))
+                    mitZusammenhangsConstraint: true,
+                    timeoutSekunden: tStufe));
+                if (StufeIstUrsache(s4, "Verbot später Doppelstunden"))
                 {
-                    DiagLog(log, "  [Diagnose] ❌ Mit 'verbotSpäteDoppel' infeasible!");
                     DiagLog(log, "  [Diagnose]    → Das Verbot später Doppelstunden (ab Stunde 6) lässt zusammen mit den übrigen Sperren zu wenig Zeitfenster übrig (vollständig fixierte Doppelstunden sind davon ausgenommen).");
+                    DiagLog(log, "  [Diagnose]    Prüfen: Schalter 'Verbot späte Doppelstunden' in Tabelle PM.");
+                    MeldeStellhebel("Verbot später Doppelstunden");
                     return;
                 }
             }
-            DiagLog(log, "  [Diagnose] ✓ Mit Doppelstunden feasible.");
 
             // Stufe 5: + FreeDay (nur mit HART konfigurierten freien Tagen)
-            var s5 = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+            var s5 = Schritt(StufenName("Harte freie Tage (FreeDay)"), tStufe, () =>
+                LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                 mitKlassenSperren: true,
                 fachraumLimit: fachraumLimit, mitRäume: true,
                 extraFreieTage: extraFreieTageHart, mitFreeDay: extraFreieTageHart != null,
                 grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel, mitDoppelstunden: true,
-                mitFachProKlasseProTag: true);
-            if (!IstOK(s5))
+                mitFachProKlasseProTag: true,
+                timeoutSekunden: tStufe));
+            if (StufeIstUrsache(s5, "FreeDay-Constraint (harte freie Tage)"))
             {
-                DiagLog(log, "  [Diagnose] ❌ Mit FreeDay-Constraint infeasible!");
                 DiagLog(log, "  [Diagnose]    → 'extraFreieTage' (-3) für mind. einen Lehrer ist nicht erfüllbar.");
                 DiagLog(log, "  [Diagnose]    Prüfen: Spalte FT in der Exceldatei (Wert -3 = harte Sperre).");
                 if (extraFreieTage != null && extraFreieTageHart != null &&
                     extraFreieTage.Count > extraFreieTageHart.Count)
                     DiagLog(log, $"  [Diagnose]    Hinweis: {extraFreieTage.Count - extraFreieTageHart.Count} Lehrer " +
                                   "mit -2 (Strafe) wurden bewusst aus dem Test ausgelassen.");
+                MeldeStellhebel("FreeDay-Constraint");
                 return;
             }
 
             // Stufe 6: + harte StD-Regeln (nur Lehrer mit "hart"-Flag)
             if (stdRegelnHart != null && stdRegelnHart.Count > 0)
             {
-                var s6 = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                var s6 = Schritt(StufenName("Harte StD-Regeln"), tVoll, () =>
+                    LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                     mitKlassenSperren: true,
                     fachraumLimit: fachraumLimit, mitRäume: true,
                     extraFreieTage: extraFreieTageHart, mitFreeDay: extraFreieTageHart != null,
                     grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel, mitDoppelstunden: true,
                     mitFachProKlasseProTag: true,
-                    stdRegelnHart: stdRegelnHart);
-                if (!IstOK(s6))
+                    stdRegelnHart: stdRegelnHart,
+                    timeoutSekunden: tVoll));
+                if (StufeIstUrsache(s6, "Harte StD-Regeln", tVoll))
                 {
-                    DiagLog(log, "  [Diagnose] ❌ Mit den harten StD-Regeln infeasible!");
                     DiagLog(log, $"  [Diagnose]    → {stdRegelnHart.Count} Lehrer haben im Sheet StD mindestens " +
                                   "ein 'hart'-Flag (HohlWoche/Folge/Einzel/DoppelHohl/DreifachHohl).");
+                    DiagLog(log, "  [Diagnose]    ACHTUNG: StD ist die LETZTE Stufe der Kaskade. Dass es hier kippt, " +
+                                 "heißt nur, dass StD den Ausschlag gibt — nicht, dass StD allein schuld ist. " +
+                                 "Der Auslass-Test unten sagt, welche Einstellungen genauso wirken.");
 
                     // Schuldigen suchen: jeden betroffenen Lehrer EINZELN testen.
                     // Nur Lehrer mit Flag kommen in Frage, das sind wenige Solves.
                     var schuldige = new List<string>();
+                    int lehrerNr = 0;
                     foreach (var kv in stdRegelnHart)
                     {
+                        if (AbbruchAngefordert) break;
+                        lehrerNr++;
                         var einzeln = new Dictionary<string, LehrerStammdaten> { [kv.Key] = kv.Value };
-                        var sx = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                        var sx = Schritt($"StD einzeln {lehrerNr} von {stdRegelnHart.Count}: {kv.Key}", tVoll, () =>
+                            LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                             mitKlassenSperren: true,
                             fachraumLimit: fachraumLimit, mitRäume: true,
                             extraFreieTage: extraFreieTageHart, mitFreeDay: extraFreieTageHart != null,
                             grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel, mitDoppelstunden: true,
                             mitFachProKlasseProTag: true,
-                            stdRegelnHart: einzeln);
+                            stdRegelnHart: einzeln,
+                            timeoutSekunden: tVoll));
                         // Timeout liefert 'Unknown' -> konservativ NICHT als Ursache melden.
                         if (sx == CpSolverStatus.Infeasible)
                             schuldige.Add(BeschreibeHarteRegeln(kv.Value));
@@ -2177,15 +2583,26 @@ namespace Stundenplan_V2
                                       "Kombination mehrerer harter Regeln blockiert.");
                     }
                     DiagLog(log, "  [Diagnose]    Prüfen: Spalten 'HohlWoche hart' bis 'DreifachHohl hart' im Sheet StD.");
+                    MeldeStellhebel("Harte StD-Regeln");
                     return;
                 }
             }
 
-            DiagLog(log, "  [Diagnose] ✓ Mit allen geprüften Constraints feasible.");
-            DiagLog(log, "  [Diagnose] ⚠ Das vollständige Diagnose-Modell ist feasible, der echte Solver aber nicht.");
-            DiagLog(log, "  [Diagnose]    → Möglicherweise eine Constraint, die hier nicht abgebildet ist");
-            DiagLog(log, "  [Diagnose]      (z.B. 'Späte Pädagogische Einheiten' als harte Constraint),");
-            DiagLog(log, "  [Diagnose]      ein Solver-Timeout oder ein subtiler Tausch-/LTKZ-Effekt.");
+            if (gabUnentschieden)
+            {
+                DiagLog(log, "  [Diagnose] ⚠ Keine Stufe konnte als bewiesen unlösbar nachgewiesen werden, " +
+                             "aber mindestens eine lief ins Zeitlimit.");
+                DiagLog(log, $"  [Diagnose]    → Die Diagnose ist unvollständig. Zeitlimit in Tabelle PM erhöhen " +
+                             $"(die Diagnose rechnet mit {tStufe}s je Stufe, {tVoll}s im vollen Modell) und erneut laufen lassen.");
+            }
+            else
+            {
+                DiagLog(log, "  [Diagnose] ✓ Mit allen geprüften Constraints feasible.");
+                DiagLog(log, "  [Diagnose] ⚠ Das vollständige Diagnose-Modell ist feasible, der echte Solver aber nicht.");
+                DiagLog(log, "  [Diagnose]    → Möglicherweise eine Constraint, die hier nicht abgebildet ist");
+                DiagLog(log, "  [Diagnose]      (z.B. 'Späte Pädagogische Einheiten' als harte Constraint),");
+                DiagLog(log, "  [Diagnose]      ein Solver-Timeout oder ein subtiler Tausch-/LTKZ-Effekt.");
+            }
         }
 
         // =====================================================
@@ -2270,6 +2687,13 @@ namespace Stundenplan_V2
         {
             // Diagnose-Buffer für aktuellen Lauf zurücksetzen
             _infeasibleDetails.Clear();
+
+            // Abbruch-Token für diesen Lauf hinterlegen, damit auch die
+            // Diagnose-Hilfsmethoden (LöseModellMitFlags & Co.) darauf
+            // reagieren können. Wird am Ende von Planen() wieder geleert;
+            // bleibt es nach einer Ausnahme stehen, ist das folgenlos, weil
+            // der nächste Lauf es hier ohnehin überschreibt.
+            _laufAbbruch = abbruch;
 
             // Ein "Block-Umzug" ändert i.d.R. 2 Zellen (alter Slot 0, neuer Slot 1),
             // daher Umrechnung Blöcke -> Bits für die Hamming-Abstands-Constraints.
@@ -2390,7 +2814,11 @@ namespace Stundenplan_V2
                 // Dieselbe Rückfrage wie in PlanenIntern. Hat der Nutzer die
                 // Ursachensuche dort bereits verneint, liefert das Gate (memoisiert)
                 // ohne erneuten Dialog false und diese Diagnose entfällt ebenfalls.
-                if (diagnoseGate != null && !diagnoseGate())
+                if (abbruch.IsCancellationRequested)
+                {
+                    log("Diagnose: Einzel-Infeasibilitätsprüfung übersprungen (Abbruch).");
+                }
+                else if (diagnoseGate != null && !diagnoseGate())
                 {
                     log("Diagnose: Einzel-Infeasibilitätsprüfung übersprungen (Nutzerwunsch).");
                 }
@@ -2420,7 +2848,12 @@ namespace Stundenplan_V2
             var mitTauschLösungen = new List<(int quality, int badUnits, int[,] belegung, string tauschLabel, List<UnterrichtsBlock> blocks)>();
             var mitTauschDiagnose = new List<string>(); // für Export
 
-            if (alleEinzelPaare.Count > 0 && anzahlLösungenMit > 0 && !einzelInfeasible)
+            if (abbruch.IsCancellationRequested)
+            {
+                log("Abbruch angefordert – Phase 2 (Tauschvarianten) entfällt.");
+                mitTauschDiagnose.Add("Phase 2 wegen Abbruch nicht durchgeführt.");
+            }
+            else if (alleEinzelPaare.Count > 0 && anzahlLösungenMit > 0 && !einzelInfeasible)
             {
                 log("Bestimme aussichtsreichste Tausch-Kombinationen...");
 
@@ -2466,6 +2899,15 @@ namespace Stundenplan_V2
                     int[] seeds = { 1, 42, 123, 7, 999 };
                     foreach (int seed in seeds)
                     {
+                        // Bis zu 5 volle Solve-Läufe hintereinander: der Abbruch
+                        // muss auch INNERHALB eines Tauschversuchs greifen, nicht
+                        // erst beim nächsten Schleifendurchlauf oben.
+                        if (abbruch.IsCancellationRequested)
+                        {
+                            log("  Abbruch angefordert – keine weiteren Seeds.");
+                            break;
+                        }
+
                         lösungen = PlanenIntern(
                             excelPfad, getauschteBlöcke, getauschteSlots, fachraumLimit, getauschteFreieTage,
                             log, maxLösungen: 1, tauschKey: tauschKey,
@@ -2649,6 +3091,12 @@ namespace Stundenplan_V2
             {
                 debug = $"{ohneLösungen.Count} Lösungen ohne Tausch, {topNMitTausch.Count} beste mit Tausch.";
             }
+
+            // Lauf-Token wieder freigeben, damit ein späterer Aufruf einer
+            // Diagnose-Hilfsmethode außerhalb eines Laufs nicht auf ein altes,
+            // bereits abgebrochenes Token trifft und sofort aussteigt.
+            _laufAbbruch = System.Threading.CancellationToken.None;
+
             return ergebnis;
         }
 
@@ -3611,6 +4059,15 @@ namespace Stundenplan_V2
             solver.StringParameters =
                 $"max_time_in_seconds:{zeitlimitSekunden} num_search_workers:8 random_seed:{randomSeed} log_search_progress:true";
 
+            // Harter Abbruch-Hebel: StopSearch() wird direkt beim Cancel
+            // ausgelöst und nicht erst, wenn CP-SAT die nächste Zwischenlösung
+            // meldet. Ohne das wirkte ein Abbruch in der Beweisphase (keine
+            // neuen Lösungen mehr) oder bei einem Infeasible-Lauf erst nach
+            // Ablauf von max_time_in_seconds — bei Zeitlimit 200 also bis zu
+            // 200 s später. Der Callback-Hebel in FortschrittCallback bleibt
+            // als zweite Sicherung bestehen.
+            using var abbruchReg = HängeAbbruchAn(solver, abbruch);
+
             var lösungen = new List<(int quality, int badUnits, int[,] belegung, string label)>();
 
             string labelPrefix = tauschKey == null
@@ -3627,6 +4084,15 @@ namespace Stundenplan_V2
                     labelPrefix: labelPrefix, log: log)
                 : null;
 
+            // Nach einem Abbruch gar nicht erst starten: StopSearch() greift nur
+            // in einen LAUFENDEN Solve; ein danach gestarteter Lauf würde sein
+            // volles Zeitlimit ausschöpfen.
+            if (abbruch.IsCancellationRequested)
+            {
+                log?.Invoke($"  {labelPrefix}: Abbruch angefordert – Solve wird nicht mehr gestartet.");
+                return lösungen;
+            }
+
             // Phase 1: Beste Lösung
             var status = progressCb != null ? solver.Solve(model, progressCb) : solver.Solve(model);
             LogSolveErgebnis(log, labelPrefix + "_1", solver, status, zeitlimitSekunden);
@@ -3634,6 +4100,17 @@ namespace Stundenplan_V2
             if (status != CpSolverStatus.Optimal && status != CpSolverStatus.Feasible)
             {
                 string laufKontext = tauschKey == null ? "OhneTausch" : $"Tausch [{tauschKey}]";
+
+                // Abgebrochener Lauf: CP-SAT meldet nach StopSearch() ohne
+                // gefundene Lösung ebenfalls "Unknown". Das ist hier aber kein
+                // abgelaufenes Zeitlimit, und vor allem darf jetzt NICHT die
+                // Diagnose-Kaskade anlaufen — die ist genau das, was den
+                // Abbruch bisher zusätzlich in die Länge gezogen hat.
+                if (abbruch.IsCancellationRequested)
+                {
+                    log?.Invoke($"  {labelPrefix}: Abbruch – keine Lösung, Ursachensuche wird übersprungen ({laufKontext}).");
+                    return lösungen;
+                }
 
                 if (status == CpSolverStatus.Unknown)
                 {
@@ -3909,6 +4386,20 @@ namespace Stundenplan_V2
 
                     DiagLog(log, $"  [Diagnose] Existierende -3 Sperren: {anzahlLehrerSperren} Lehrer, {anzahlKlassenSperren} Klassen");
 
+                    // Zeitlimit der Diagnose-Solves. Früher fest 5 s — für ein
+                    // reales Schuljahr reicht das bei den späten Stufen oft
+                    // nicht, und ein Timeout wurde dort als "bewiesen unlösbar"
+                    // gewertet. Jetzt an das PM-Zeitlimit gekoppelt, aber nach
+                    // oben gedeckelt, damit die Diagnose nicht selbst zur
+                    // Hängepartie wird.
+                    int diagTimeout = Math.Clamp(zeitlimitSekunden / 4, 5, 60);
+                    DiagLog(log, $"  [Diagnose] Zeitlimit je Diagnose-Stufe: {diagTimeout}s " +
+                                 $"(volles Modell {diagTimeout * 2}s), abgeleitet aus PM-Zeitlimit {zeitlimitSekunden}s.");
+                    DiagLog(log, "  [Diagnose] Die Ursachensuche besteht aus vielen einzelnen Solver-Läufen und " +
+                                 "kann mehrere Minuten dauern. Fortschritt siehe Statusfenster; " +
+                                 "Abbrechen ist jederzeit möglich.");
+                    reporter?.SetzePhase("Ursachensuche startet …");
+
                     try
                     {
                         if (anzahlLehrerSperren == 0)
@@ -3922,7 +4413,9 @@ namespace Stundenplan_V2
                                 fachraumLimit, extraFreieTage, grossePausen, verbotSpäteDoppel,
                                 log,
                                 lehrerFreiTageMinus3, verbotMinus2Lehrer, lehrerFreiTageMinus2,
-                                lehrerStammdaten);
+                                lehrerStammdaten,
+                                diagTimeoutSekunden: diagTimeout,
+                                reporter: reporter);
                         }
                         else
                         {
@@ -3936,7 +4429,13 @@ namespace Stundenplan_V2
                             // StD-Regeln die einzige Ursache sind — und die
                             // Diagnose meldet dann die Sperren als Schuldige
                             // und kommt nie bis zur Stufe 6.
-                            CpSolverStatus LöseVoll(HashSet<string> ignorierte)
+                            // Zeitlimit auch hier aus dem PM-Zeitlimit ableiten
+                            // statt der früheren 5s-Voreinstellung. In den
+                            // Greedy-/Schrumpf-Schleifen weiter unten wird
+                            // bewusst knapper gerechnet, weil dort viele Solves
+                            // hintereinander laufen.
+                            int tLoop = Math.Min(diagTimeout, 15);
+                            CpSolverStatus LöseVoll(HashSet<string> ignorierte, int timeout = 0)
                                 => LöseModellMitFlags(blocks, slots, B, S, ignorierte,
                                     mitKlassenSperren: true,
                                     fachraumLimit: fachraumLimit, mitRäume: true,
@@ -3944,7 +4443,8 @@ namespace Stundenplan_V2
                                     grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel,
                                     mitDoppelstunden: true,
                                     mitFachProKlasseProTag: true,
-                                    stdRegelnHart: stdRegelnHartDiag);
+                                    stdRegelnHart: stdRegelnHartDiag,
+                                    timeoutSekunden: timeout > 0 ? timeout : diagTimeout);
 
                             // Alle Lehrer mit Sperren sammeln
                             var alleLehrerMitSperren = new HashSet<string>();
@@ -3953,7 +4453,15 @@ namespace Stundenplan_V2
                                     if (lw.Value == -3) alleLehrerMitSperren.Add(lw.Key);
 
                             // Test: alle Lehrer-Sperren deaktiviert
-                            var diagStatus = LöseVoll(alleLehrerMitSperren);
+                            CpSolverStatus LöseVollAnzeige(string was, HashSet<string> ign, int timeout)
+                            {
+                                using var h = new DiagnoseSchritt(log, reporter, was, timeout);
+                                return LöseVoll(ign, timeout);
+                            }
+
+                            var diagStatus = LöseVollAnzeige(
+                                "Test: alle Lehrer-Zeitwünsche deaktiviert",
+                                alleLehrerMitSperren, diagTimeout * 2);
 
                             if (diagStatus == CpSolverStatus.Optimal || diagStatus == CpSolverStatus.Feasible)
                             {
@@ -3984,10 +4492,15 @@ namespace Stundenplan_V2
                                 var deaktivierte = new HashSet<string>();
                                 bool gefunden = false;
 
+                                int greedyNr = 0;
                                 foreach (var l in lehrerEng)
                                 {
+                                    if (AbbruchAngefordert) break;
+                                    greedyNr++;
                                     deaktivierte.Add(l.lehrer);
-                                    var testStatus = LöseVoll(deaktivierte);
+                                    var testStatus = LöseVollAnzeige(
+                                        $"Sperren aufbauen {greedyNr} von {lehrerEng.Count}: + {l.lehrer}",
+                                        deaktivierte, tLoop);
 
                                     if (testStatus == CpSolverStatus.Optimal || testStatus == CpSolverStatus.Feasible)
                                     {
@@ -4001,10 +4514,15 @@ namespace Stundenplan_V2
                                     // Phase 2: Schrumpfen — versuche jeden Lehrer einzeln zu entfernen,
                                     // ob die Gruppe ohne ihn auch noch reicht. So filtert man "unnötige" raus.
                                     var minimal = new HashSet<string>(deaktivierte);
+                                    int schrumpfNr = 0;
                                     foreach (var name in deaktivierte.ToList())
                                     {
+                                        if (AbbruchAngefordert) break;
+                                        schrumpfNr++;
                                         minimal.Remove(name);
-                                        var testStatus = LöseVoll(minimal);
+                                        var testStatus = LöseVollAnzeige(
+                                            $"Menge verkleinern {schrumpfNr} von {deaktivierte.Count}: ohne {name}",
+                                            minimal, tLoop);
                                         if (!(testStatus == CpSolverStatus.Optimal || testStatus == CpSolverStatus.Feasible))
                                             minimal.Add(name); // doch nötig
                                     }
@@ -4021,8 +4539,18 @@ namespace Stundenplan_V2
                             }
                             else
                             {
-                                DiagLog(log, "  [Diagnose] ❌ Auch OHNE Lehrer-Zeitwünsche keine Lösung im vollen Modell.");
-                                DiagLog(log, "  [Diagnose]    → Der Konflikt liegt NICHT (nur) an Lehrer-Sperren.");
+                                if (diagStatus == CpSolverStatus.Infeasible)
+                                {
+                                    DiagLog(log, "  [Diagnose] ❌ Auch OHNE Lehrer-Zeitwünsche keine Lösung im vollen Modell (bewiesen).");
+                                    DiagLog(log, "  [Diagnose]    → Der Konflikt liegt NICHT (nur) an Lehrer-Sperren.");
+                                }
+                                else
+                                {
+                                    DiagLog(log, $"  [Diagnose] ? Ohne Lehrer-Zeitwünsche in {diagTimeout * 2}s nicht entschieden — " +
+                                                 "es ist offen, ob die Sperren die Ursache sind.");
+                                    DiagLog(log, "  [Diagnose]    → Die folgende Kaskade läuft trotzdem, ihre Aussagen sind aber " +
+                                                 "unter diesem Vorbehalt zu lesen. Ggf. Zeitlimit in Tabelle PM erhöhen.");
+                                }
                                 DiagLog(log, "  [Diagnose] === Sequenzieller Constraint-Test (mit deaktivierten Lehrer-Sperren) ===");
 
                                 MacheSequenzielleDiagnose(blocks, slots, B, S,
@@ -4031,13 +4559,24 @@ namespace Stundenplan_V2
                                     fachraumLimit, extraFreieTage, grossePausen, verbotSpäteDoppel,
                                     log,
                                     lehrerFreiTageMinus3, verbotMinus2Lehrer, lehrerFreiTageMinus2,
-                                    lehrerStammdaten);
+                                    lehrerStammdaten,
+                                    diagTimeoutSekunden: diagTimeout,
+                                    reporter: reporter);
                             }
                         }
                     }
                     catch (Exception ex)
                     {
                         DiagLog(log, $"  [Diagnose] Diagnose-Solver Fehler: {ex.Message}");
+                    }
+                    finally
+                    {
+                        // Phasenzeile nicht auf dem letzten Diagnose-Schritt
+                        // stehen lassen — sonst sieht es aus, als liefe die
+                        // Ursachensuche noch.
+                        reporter?.SetzePhase(AbbruchAngefordert
+                            ? "Ursachensuche abgebrochen."
+                            : "Ursachensuche beendet — Ergebnis im Meldefenster.");
                     }
                 }
 
@@ -4061,6 +4600,16 @@ namespace Stundenplan_V2
             // mind. "mindestAbstandBloecke" Blöcke müssen sich anders platzieren.
             for (int k = 1; k < maxLösungen; k++)
             {
+                // Jede Runde ist ein eigener Solve mit vollem Zeitlimit — ohne
+                // diese Prüfung startet nach dem gestoppten Lauf sofort der
+                // nächste, und der Abbruch bliebe wirkungslos.
+                if (abbruch.IsCancellationRequested)
+                {
+                    log?.Invoke($"  {labelPrefix}: Abbruch – keine weiteren Lösungen mehr gesucht " +
+                                $"({lösungen.Count} bereits gefunden, bleiben erhalten).");
+                    break;
+                }
+
                 model.Add(qualityExpr <= bestQuality);
 
                 var belegteVars = new List<BoolVar>(); // Zellen, die in der Vorlösung =1 waren
@@ -4719,6 +5268,11 @@ namespace Stundenplan_V2
         {
             debug = "";
             _infeasibleDetails.Clear();
+
+            // Dieser Einstiegspunkt kennt kein Abbruch-Token. Das Lauf-Token
+            // trotzdem zurücksetzen, damit ein zuvor abgebrochener Planen()-Lauf
+            // die Diagnose-Hilfsmethoden hier nicht sofort aussteigen lässt.
+            _laufAbbruch = System.Threading.CancellationToken.None;
 
             int B = blocks.Count;
             int S = slots.Count;
