@@ -19,11 +19,12 @@ Die Unterrichts- und Lehrerstammdaten können z. B. aus einer Untis-Datei per Co
 - frei definierbare Qualitaätsoptimierung von späten Unterrichten
 - Iterative Verbesserung bestehender Pläne
 - Export von Lehrer- und Klassenplänen als Excel-Sheets
+- Import des erzeugten Stundenplans in eine Untisdatei ist mit ein paar Klicks möglich, auch ohne offiziell vorgesehene Importfunktion
 - Constraint-Prüfung mit farbcodiertem Verletzungs-Report
 - Automatische Sequenzdiagnose bei Infeasibility (identifiziert den schuldigen Constraint-Block)
-- Manueller Plan-Editor mit Drag & Drop, Tauschvorschlägen und Verschiebung-mit-Ausweich
+- Manueller Plan-Editor mit Drag & Drop, Tauschvorschlägen auch über zwei Klassen hinweg
 
-Eine ausführliche Bedienungsanleitung befindet sich in `Anleitung V103.docx`.
+Eine ausführliche Bedienungsanleitung befindet sich in `Anleitung V111.docx`.
 
 ## Technologie-Stack
 
