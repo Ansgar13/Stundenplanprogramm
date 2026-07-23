@@ -2747,8 +2747,10 @@ namespace Stundenplan_V2
             if (GueltigerBlock(_letzterTauschBlock) && GueltigerSlot(_letzterTauschSlot))
                 ZeigeTauschvorschlaege(_letzterTauschBlock, _letzterTauschSlot);
 
+            // (_letzteVerschiebungAlt ist beim Drag aus dem Parkbereich null.)
             if (GueltigerBlock(_letzteVerschiebungBlock) &&
-                _letzteVerschiebungAlt != null && _letzteVerschiebungZiel != null)
+                _letzteVerschiebungZiel != null &&
+                (_letzteVerschiebungAlt != null || _letzteVerschiebungAusPark))
                 ZeigeVerschiebungen(_letzteVerschiebungBlock, _letzteVerschiebungAlt, _letzteVerschiebungZiel);
         }
 
@@ -2861,6 +2863,58 @@ namespace Stundenplan_V2
                     break;
                 }
             }
+        }
+
+        // Diagnose der Park-Einplanung. Schreibt in das Visual-Studio-Fenster
+        // "Ausgabe" (Debug-Ausgabe). Kostet im Release-Build nichts, weil
+        // Debug.WriteLine dort wegkompiliert wird.
+        private static void DbgPark(string text)
+        {
+            System.Diagnostics.Debug.WriteLine("[PARK] " + text);
+        }
+
+        // Kurzform fuer Slotlisten in der Diagnose, z.B. "Mo2" oder "Mo3/Mo4".
+        private string DbgSlots(List<int> slots)
+        {
+            if (slots == null || slots.Count == 0) return "-";
+            return string.Join("/", slots.Select(s => _slots[s].WTag + _slots[s].Stunde));
+        }
+
+        // Diagnose: welcher Block gewinnt oder verliert durch diesen Vorschlag
+        // Stunden? Zeigt unmittelbar, wer unbeabsichtigt im Parkbereich landet.
+        private void DbgBelegungsdiff(string anlass, int[,] alt, int[,] neu)
+        {
+            DbgPark(anlass + " - Belegungsdifferenz:");
+            bool etwas = false;
+            for (int b = 0; b < _blocks.Count; b++)
+            {
+                var vonSlots = new List<int>();
+                var nachSlots = new List<int>();
+                for (int s = 0; s < _slots.Count; s++)
+                {
+                    if (alt[b, s] == 1) vonSlots.Add(s);
+                    if (neu[b, s] == 1) nachSlots.Add(s);
+                }
+                if (vonSlots.SequenceEqual(nachSlots)) continue;
+                etwas = true;
+                DbgPark("    Block " + b + " (UNr " + _blocks[b].UNr + ", Wst " + _blocks[b].Wst + "): "
+                        + vonSlots.Count + " Std " + DbgSlots(vonSlots) + "  ->  "
+                        + nachSlots.Count + " Std " + DbgSlots(nachSlots)
+                        + (nachSlots.Count < _blocks[b].Wst
+                           ? "   *** UNVOLLSTAENDIG -> erscheint im Parkbereich ***" : ""));
+            }
+            if (!etwas) DbgPark("    (keine Aenderung)");
+        }
+
+        // Findet die Zeile eines Verschiebungs-Vorschlags in PnlVerschieb
+        // (ZeichneVerschiebungsliste setzt dort bereits bd.Tag = v).
+        private Border FindeVerschiebungsZeile(VerschiebungMitAusweich v)
+        {
+            if (PnlVerschieb == null || v == null) return null;
+            foreach (var child in PnlVerschieb.Children)
+                if (child is Border b && ReferenceEquals(b.Tag, v))
+                    return b;
+            return null;
         }
 
         // Visuelles Hervorheben der fixierten Vorschlags-Zeile
@@ -3041,6 +3095,8 @@ namespace Stundenplan_V2
             }
 
             // Fixierte Blöcke der Kette behandeln (Sammelrückfrage + mitziehen).
+            DbgBelegungsdiff("AUSFUEHRUNG Tauschkette", _belegung, kette.ProbeBelegung);
+
             if (!BehandleFixierungenBeiKette(_belegung, kette.ProbeBelegung)) return;
 
             _belegung = (int[,])kette.ProbeBelegung.Clone();
@@ -3986,8 +4042,16 @@ namespace Stundenplan_V2
                 if (hSlotsAmTag.Count == altSlots.Count)
                 {
                     var bereitsBewegt = new HashSet<int> { hauptBlock, h };
+
+                    // A landet auf zielSlots - diese Slots sind fuer die gesamte
+                    // Kette tabu. Ohne das sucht die Rekursion gegen den
+                    // UNVERAENDERTEN Plan, sieht Y als frei an und schickt bei
+                    // tieferen Ketten gern ein spaetes Glied ausgerechnet dorthin.
+                    var reserviert = new HashSet<int>(zielSlots);
+
                     var freimachKetten = SucheFreimachKetten(
-                        h, hSlotsAmTag, altSlots, bereitsBewegt, tiefe: 1,
+                        h, hSlotsAmTag, altSlots, bereitsBewegt, reserviert,
+                        geraeumt: new HashSet<int>(), tiefe: 1,
                         maxErgebnisse: FREIMACHEN_MAX_ERGEBNISSE);
 
                     foreach (var schritte in freimachKetten)
@@ -4039,6 +4103,219 @@ namespace Stundenplan_V2
                 ergebnis = FiltereVerletzungsverschiebungen(ergebnis);
 
             return ergebnis;
+        }
+
+        // =====================================================
+        // NEU: Einplanen aus dem Parkbereich auf einen BELEGTEN Slot.
+        //
+        // Unterschied zur normalen Verschiebung-mit-Ausweich: A kommt aus dem
+        // Parkbereich und hat KEINE alten Slots. Der klassische Gegen-Tausch
+        // "Hindernis wandert auf A's Platz" existiert hier nicht - das Hindernis
+        // braucht einen eigenstaendigen Platz. Zwei Wege:
+        //   a) ein komplett FREIER Platz  -> sonst bewegt sich nichts (Idealfall)
+        //   b) eine Kette ueber SucheFreimachKetten, an deren Ende ein freier
+        //      Platz steht (identische Mechanik wie beim normalen Freimachen,
+        //      nur mit anderem Startziel)
+        //
+        // Garantie "es wird nicht in den Parkbereich hineingetauscht":
+        // SammleKandidaten und SammleFreieSlotGruppen liefern ausschliesslich
+        // Slotgruppen mit gleicher Stundenzahl, und BaueProbeFuerFreimachKette
+        // lehnt jeden Schritt mit von.Count != zu.Count ab. Kein beteiligter
+        // Block kann dadurch Stunden verlieren.
+        // =====================================================
+        private List<VerschiebungMitAusweich> SucheEinplanungMitAusweich(
+            int hauptBlock, List<int> zielSlots)
+        {
+            var ergebnis = new List<VerschiebungMitAusweich>();
+            if (zielSlots == null || zielSlots.Count == 0) return ergebnis;
+
+            // 1) Hindernisse am Zielslot: nur Bloecke, die mit A wirklich
+            //    kollidieren (gleicher Lehrer ODER gleiche Klasse). NICHT
+            //    FindeBelegerInSlots verwenden - das liefert saemtliche Bloecke
+            //    der ganzen Schule in diesem Slot (mehrere Dutzend) und laesst
+            //    die Suche sofort an der Hindernisgrenze abbrechen.
+            //    Der Fall "derselbe Block liegt schon dort" wird nicht hier,
+            //    sondern in Zelle_DragOver/Zelle_Drop abgefangen.
+            var hindernisse = FindeKonfligierendeBeleger(hauptBlock, zielSlots)
+                .Select(x => x.b).Distinct().ToList();
+
+            DbgPark("Ziel " + DbgSlots(zielSlots) + ", A=Block " + hauptBlock
+                    + " (UNr " + _blocks[hauptBlock].UNr + "), Hindernisse: "
+                    + (hindernisse.Count == 0 ? "keine"
+                       : string.Join(", ", hindernisse.Select(b => "Block " + b + " (UNr " + _blocks[b].UNr + ")"))));
+
+            if (hindernisse.Count == 0)
+            {
+                DbgPark("  -> Abbruch: kein Beleger am Ziel, Feld gilt als frei.");
+                return ergebnis;
+            }
+            if (hindernisse.Count > 1)
+            {
+                DbgPark("  -> Abbruch: " + hindernisse.Count + " Hindernisse, nur eines wird abgedeckt.");
+                return ergebnis;
+            }
+
+            int h = hindernisse[0];
+            var hVon = ErmittleBlockSlotsAmTag(h, zielSlots[0]);
+            DbgPark("  Hindernis Block " + h + " (UNr " + _blocks[h].UNr + ") raeumt " + DbgSlots(hVon));
+            if (hVon.Count == 0)
+            {
+                DbgPark("  -> Abbruch: Hindernis hat am Zieltag keine Slots.");
+                return ergebnis;
+            }
+
+            // A landet auf zielSlots -> fuer die ganze Kette tabu. A's BEREITS
+            // verplante uebrige Stunden werden bewusst NICHT reserviert: ob ein
+            // Kettenglied dort stoert, entscheidet exakt FindeHartenKonflikt am
+            // Ende - pauschales Sperren wuerde brauchbare Vorschlaege kosten.
+            // hauptBlock steht in bereitsBewegt, damit die Kette A nicht selbst
+            // verschiebt.
+            var reserviert = new HashSet<int>(zielSlots);
+            var bereitsBewegt = new HashSet<int> { hauptBlock, h };
+
+            // 2a) Idealfall: h findet einen echten Freiplatz.
+            int freiKandidaten = 0, freiOk = 0;
+            foreach (var frei in SammleFreieSlotGruppen(h, hVon, reserviert))
+            {
+                freiKandidaten++;
+                if (ergebnis.Count >= FREIMACHEN_MAX_ERGEBNISSE) break;
+                var schritte = new List<(int, List<int>, List<int>)> { (h, hVon, frei) };
+                var v = BaueProbeFuerFreimachKette(hauptBlock, new List<int>(), zielSlots, schritte);
+                if (v != null) { ergebnis.Add(v); freiOk++; }
+                else DbgPark("  Freiplatz " + DbgSlots(frei) + " von Probepruefung verworfen.");
+            }
+            DbgPark("  Freiplaetze: " + freiKandidaten + " Kandidat(en), " + freiOk + " bestanden.");
+
+            // 2b) Sonst: h drueckt einen gleich langen Unterricht SEINER Klasse
+            //     weg, der seinerseits rekursiv weiter ausweicht.
+            int kettenKandidaten = 0, kettenOk = 0;
+            foreach (string klasseVonH in _blocks[h].Teile.SelectMany(t => t.Klassen).Distinct())
+            {
+                if (ergebnis.Count >= FREIMACHEN_MAX_ERGEBNISSE) break;
+
+                var kandidaten = SammleKandidaten(klasseVonH, hVon.Count, h)
+                    .Where(k => !bereitsBewegt.Contains(k.blockIdx))
+                    .Where(k => !k.slots.Any(s => reserviert.Contains(s)));
+
+                foreach (var kandidat in kandidaten)
+                {
+                    if (ergebnis.Count >= FREIMACHEN_MAX_ERGEBNISSE) break;
+
+                    var ketten = SucheFreimachKetten(
+                        h, hVon, kandidat.slots, bereitsBewegt, reserviert,
+                        geraeumt: new HashSet<int>(),
+                        tiefe: 1, maxErgebnisse: FREIMACHEN_MAX_ERGEBNISSE - ergebnis.Count);
+
+                    kettenKandidaten += ketten.Count;
+                    foreach (var schritte in ketten)
+                    {
+                        var v = BaueProbeFuerFreimachKette(hauptBlock, new List<int>(), zielSlots, schritte);
+                        if (v != null) { ergebnis.Add(v); kettenOk++; }
+                    }
+                }
+            }
+
+            // Duplikate entfernen. Der Abgleich gegen die linke Liste entfaellt:
+            // ein geparkter Unterricht erzeugt dort keine Tauschketten.
+            var gesehene = new HashSet<string>();
+            ergebnis = ergebnis.Where(v => gesehene.Add(BildeSignaturAusVerschiebung(v))).ToList();
+
+            // Wenige Bewegungen zuerst - der Freiplatz-Fall steht damit oben.
+            // Zelle_Drop verlaesst sich auf diese Reihenfolge.
+            ergebnis = ergebnis.OrderBy(v => v.Ausweiche.Count).ToList();
+
+            DbgPark("  Ketten: " + kettenKandidaten + " Kandidat(en), " + kettenOk + " bestanden.");
+            DbgPark("  Nach Duplikatfilter: " + ergebnis.Count);
+
+            if (ChkFilterVerletzungen?.IsChecked == true)
+            {
+                int vorher = ergebnis.Count;
+                ergebnis = FiltereVerletzungsverschiebungen(ergebnis);
+                DbgPark("  Verletzungsfilter: " + vorher + " -> " + ergebnis.Count);
+            }
+
+            DbgPark("  ERGEBNIS: " + ergebnis.Count + " Vorschlag(e).");
+            return ergebnis;
+        }
+
+        // Slotgruppen in der Form von "vorlage", die vollstaendig aus Slots
+        // bestehen, welche FRUEHERE Glieder derselben Kette geraeumt haben.
+        // Diese Plaetze sind ab dann frei, tauchen in SammleKandidaten aber
+        // nicht auf - dort stehen nur Bloecke, die noch an ihrem Platz liegen.
+        // Genau dieser Fall schliesst eine Kette als echter Tausch: D wandert
+        // auf den alten Platz von C.
+        private List<List<int>> SammleGeraeumteSlotGruppen(
+            List<int> vorlage, HashSet<int> geraeumt, HashSet<int> reserviert)
+        {
+            var treffer = new List<List<int>>();
+            if (vorlage == null || vorlage.Count == 0 || geraeumt.Count == 0) return treffer;
+
+            var vorlageSet = new HashSet<int>(vorlage);
+            foreach (int start in geraeumt)
+            {
+                var gruppe = BerechneZielSlots(vorlage, start);
+                if (gruppe == null) continue;                                  // passt nicht ins Raster
+                if (!gruppe.All(s => geraeumt.Contains(s))) continue;          // nur teilweise geraeumt
+                if (gruppe.Any(s => reserviert.Contains(s))) continue;         // schon vergeben
+                if (new HashSet<int>(gruppe).SetEquals(vorlageSet)) continue;  // Nullbewegung
+                treffer.Add(gruppe);
+                if (treffer.Count >= FREIMACHEN_MAX_ERGEBNISSE) break;
+            }
+            return treffer;
+        }
+
+        // Liefert Slotgruppen mit derselben Form wie "vorlage" (gleicher Tag,
+        // gleiche Stundenabstaende), auf denen der Block voellig konfliktfrei
+        // liegen koennte. Nur fuer die Park-Einplanung noetig: dort gibt es
+        // keinen Gegen-Tausch, das Hindernis braucht also einen echten
+        // Freiplatz. reserviert-Slots (A's Ziel) bleiben ausgespart.
+        private List<List<int>> SammleFreieSlotGruppen(
+            int blockIdx, List<int> vorlage, HashSet<int> reserviert)
+        {
+            var treffer = new List<List<int>>();
+            if (vorlage == null || vorlage.Count == 0) return treffer;
+
+            var vorlageSet = new HashSet<int>(vorlage);
+
+            // Slots, auf denen der Block an ANDEREN Tagen bereits liegt. Eine
+            // Kandidatengruppe darf die nicht treffen: der Vorschlag hiesse
+            // sonst "verschiebe h dorthin, wo h schon ist" - h verlaere die
+            // Stunde aus vorlage und landete im Parkbereich. Ausserdem wuerde
+            // das Zuruecksetzen weiter unten die echte Belegung in probe loeschen.
+            var eigeneUebrige = new HashSet<int>();
+            for (int s = 0; s < _slots.Count; s++)
+                if (_belegung[blockIdx, s] == 1 && !vorlageSet.Contains(s))
+                    eigeneUebrige.Add(s);
+
+            // EINMAL klonen und den Block herausnehmen; die Kandidatengruppen
+            // werden darin nur kurz gesetzt und wieder entfernt. Ein Klon je
+            // Gruppe waere bei jeder ueberfahrenen Zelle deutlich zu teuer.
+            var probe = (int[,])_belegung.Clone();
+            foreach (int s in vorlage) probe[blockIdx, s] = 0;
+
+            for (int start = 0; start < _slots.Count; start++)
+            {
+                var gruppe = BerechneZielSlots(vorlage, start);
+                if (gruppe == null) continue;                                  // passt nicht ins Raster
+                if (gruppe.Any(s => reserviert.Contains(s))) continue;         // dorthin will A
+                if (gruppe.Any(s => eigeneUebrige.Contains(s))) continue;      // dort liegt der Block schon
+                if (new HashSet<int>(gruppe).SetEquals(vorlageSet)) continue;  // Nullbewegung
+
+                foreach (int s in gruppe) probe[blockIdx, s] = 1;
+                string grund = FindeHartenKonflikt(probe, blockIdx, gruppe);
+                foreach (int s in gruppe) probe[blockIdx, s] = 0;
+
+                if (grund != null)
+                {
+                    DbgPark("    Freiplatz " + DbgSlots(gruppe) + " verworfen: " + grund);
+                    continue;
+                }
+
+                treffer.Add(gruppe);
+                if (treffer.Count >= FREIMACHEN_MAX_ERGEBNISSE) break;
+            }
+
+            return treffer;
         }
 
         // ===== Ausweich-Ketten fuer EIN Hindernis: 2er-Partner sowie 3er-/4er-Ring =====
@@ -4156,6 +4433,25 @@ namespace Stundenplan_V2
 
             // A auf Zielslots setzen
             foreach (int s in zielSlots) probe[hauptBlock, s] = 1;
+
+            // Invariante (bisher nur im Freimach-Zweig vorhanden): kein Ring-
+            // Glied darf auf A's Zielslots landen. Der Ring schliesst sich
+            // strukturell auf die alten Slots des Hindernisses - und das sind
+            // bei einer Verschiebung auf ein belegtes Einzelfeld genau A's
+            // Zielslots. Bisher hing es allein an FindeHartenKonflikt, ob das
+            // auffiel; dessen Ausnahmen fuer gleiche UNr, gleiches KKK und
+            // A/B-Wochen lassen solche Doppelbelegungen durch.
+            var zielSetR = new HashSet<int>(zielSlots);
+            for (int i = 0; i < n; i++)
+            {
+                int zielR = (i + 1) % n;
+                if (kette[zielR].slots.Any(s => zielSetR.Contains(s)))
+                {
+                    DbgPark("    Ring verworfen: Block " + kette[i].blockIdx
+                            + " wuerde auf A's Zielslot " + DbgSlots(zielSlots) + " landen.");
+                    return null;
+                }
+            }
 
             // Hart pruefen: A an Ziel
             if (FindeHartenKonflikt(probe, hauptBlock, zielSlots) != null) return null;
@@ -4320,14 +4616,26 @@ namespace Stundenplan_V2
         // aufgeloest wird. Gibt alle gefundenen alternativen Schrittfolgen
         // zurueck (jede Schrittfolge enthaelt z's eigenen Schritt als erstes
         // Element).
+        //
+        // reserviert: Slots, auf denen A oder ein FRUEHERER Schritt dieser Kette
+        // bereits landet. bereitsBewegt merkt sich nur BLOECKE - ohne dieses
+        // zweite Set kennt die Rekursion die schon vergebenen ZIELE nicht und
+        // vergibt sie ein zweites Mal.
+        // geraeumt: Slots, die frueher bewegte Glieder VERLASSEN haben. Sie sind
+        // ab dann frei und stehen als Ziel zur Verfuegung - erst dadurch kann
+        // sich eine Kette als echter Tausch schliessen (D auf C's alten Platz).
         private List<List<(int blockIdx, List<int> von, List<int> zu)>> SucheFreimachKetten(
             int z, List<int> vonZ, List<int> zielSlotsZ,
-            HashSet<int> bereitsBewegt, int tiefe, int maxErgebnisse)
+            HashSet<int> bereitsBewegt, HashSet<int> reserviert, HashSet<int> geraeumt,
+            int tiefe, int maxErgebnisse)
         {
             var alleErgebnisse = new List<List<(int, List<int>, List<int>)>>();
             var eigenerSchritt = (z, vonZ, zielSlotsZ);
 
             if (maxErgebnisse <= 0) return alleErgebnisse;
+
+            // z darf nicht dorthin, wo A oder ein frueherer Schritt hin will.
+            if (zielSlotsZ.Any(s => reserviert.Contains(s))) return alleErgebnisse;
 
             int c = FindeKollidierendenBlock(z, zielSlotsZ, bereitsBewegt);
             if (c == -1)
@@ -4344,29 +4652,59 @@ namespace Stundenplan_V2
 
             var bewegtMitC = new HashSet<int>(bereitsBewegt) { z, c };
 
+            // z's eigene Landung ist ab hier fuer alle tieferen Schritte tabu.
+            // Die von z GERAEUMTEN Slots (vonZ) bleiben bewusst frei verfuegbar -
+            // genau davon lebt die Kette.
+            var reserviertMitZ = new HashSet<int>(reserviert);
+            foreach (int s in zielSlotsZ) reserviertMitZ.Add(s);
+
+            // z verlaesst vonZ - ab hier steht das fuer tiefere Glieder bereit.
+            var geraeumtMitZ = new HashSet<int>(geraeumt);
+            foreach (int s in vonZ) geraeumtMitZ.Add(s);
+
+            // Zielplaetze fuer c, in aufsteigender Reihenfolge des Aufwands:
+            //   1. echte Freiplaetze                  -> Kette endet sofort
+            //   2. von der Kette geraeumte Slots      -> schliesst den Tausch
+            //   3. belegte Plaetze der eigenen Klasse -> Kette laeuft weiter
             // Ueber ALLE Klassen von c suchen (nicht nur die erste) - dadurch
             // fliessen automatisch auch Klassen ein, die mit der urspruenglich
             // gegriffenen Klasse nichts zu tun haben.
+            var zielGruppen = new List<List<int>>();
+            zielGruppen.AddRange(SammleFreieSlotGruppen(c, cVon, reserviertMitZ));
+            zielGruppen.AddRange(SammleGeraeumteSlotGruppen(cVon, geraeumtMitZ, reserviertMitZ));
+
             foreach (string klasseVonC in _blocks[c].Teile.SelectMany(t => t.Klassen).Distinct())
+                zielGruppen.AddRange(SammleKandidaten(klasseVonC, cVon.Count, c)
+                    .Where(k => !bewegtMitC.Contains(k.blockIdx))
+                    // Frueher Ausstieg: spart den rekursiven Aufruf, der oben
+                    // ohnehin sofort an der reserviert-Pruefung scheitern wuerde.
+                    .Where(k => !k.slots.Any(s => reserviertMitZ.Contains(s)))
+                    .Select(k => k.slots));
+
+            // Aufwandsbremse: die Freiplatzsuche klont je Aufruf die Belegung,
+            // und die Rekursion multipliziert das ueber die Tiefe. Ohne Deckel
+            // wird das Ziehen spuerbar traege.
+            const int MAX_ZIELE_PRO_STUFE = 6;
+
+            var gesehen = new HashSet<string>();
+            int benutzt = 0;
+            foreach (var ziel in zielGruppen)
             {
-                var kandidaten = SammleKandidaten(klasseVonC, cVon.Count, c)
-                    .Where(k => !bewegtMitC.Contains(k.blockIdx));
+                if (alleErgebnisse.Count >= maxErgebnisse) return alleErgebnisse;
+                if (benutzt >= MAX_ZIELE_PRO_STUFE) break;
+                if (!gesehen.Add(string.Join(",", ziel.OrderBy(s => s)))) continue;
+                benutzt++;
 
-                foreach (var kandidat in kandidaten)
+                var weitereOptionen = SucheFreimachKetten(
+                    c, cVon, ziel, bewegtMitC, reserviertMitZ, geraeumtMitZ, tiefe + 1,
+                    maxErgebnisse - alleErgebnisse.Count);
+
+                foreach (var weitere in weitereOptionen)
                 {
+                    var gesamt = new List<(int, List<int>, List<int>)> { eigenerSchritt };
+                    gesamt.AddRange(weitere);
+                    alleErgebnisse.Add(gesamt);
                     if (alleErgebnisse.Count >= maxErgebnisse) return alleErgebnisse;
-
-                    var weitereOptionen = SucheFreimachKetten(
-                        c, cVon, kandidat.slots, bewegtMitC, tiefe + 1,
-                        maxErgebnisse - alleErgebnisse.Count);
-
-                    foreach (var weitere in weitereOptionen)
-                    {
-                        var gesamt = new List<(int, List<int>, List<int>)> { eigenerSchritt };
-                        gesamt.AddRange(weitere);
-                        alleErgebnisse.Add(gesamt);
-                        if (alleErgebnisse.Count >= maxErgebnisse) return alleErgebnisse;
-                    }
                 }
             }
 
@@ -4381,6 +4719,46 @@ namespace Stundenplan_V2
             int hauptBlock, List<int> altSlots, List<int> zielSlots,
             List<(int blockIdx, List<int> von, List<int> zu)> schritte)
         {
+            // Harte Invariante 1: kein Kettenglied darf auf A's Zielslots landen.
+            // Der ganze Zweck der Kette ist es, Y fuer A zu RAEUMEN; ein Glied,
+            // das dort landet, macht den Vorschlag sinnlos. Bewusst zusaetzlich
+            // zur Suche: FindeHartenKonflikt laesst gleiche UNr, gleiches KKK und
+            // A/B-Wochengruppen zu, und PruefeUeberlagerung ueberspringt alle
+            // Beteiligten - eine Doppelbelegung A <-> Kettenglied faellt sonst
+            // durch beide Netze. Ausnahme: Parallelteile derselben UNr wie A.
+            // KEINE Ausnahme fuer gleiche UNr mehr: das sind die weiteren
+            // Wochenstunden desselben Unterrichts, die genauso wenig zeitgleich
+            // liegen duerfen. Ein BEWEGTER Block auf A's Zielslot ist immer
+            // falsch - ein Parallelteil, das dort hingehoert, liegt ohnehin
+            // schon da und wird gar nicht bewegt.
+            var zielSet = new HashSet<int>(zielSlots);
+            foreach (var schritt in schritte)
+            {
+                if (schritt.zu.Any(s => zielSet.Contains(s)))
+                {
+                    DbgPark("    Probe verworfen: Block " + schritt.blockIdx
+                            + " wuerde auf A's Zielslot landen.");
+                    return null;
+                }
+            }
+
+            // Harte Invariante 2: kein Beteiligter darf Stunden VERLIEREN - sonst
+            // landet er im Parkbereich. Jeder Schritt muss genau so viele Slots
+            // bekommen wie er abgibt. Greift vor allem beim Einplanen AUS dem
+            // Parkbereich, wo altSlots leer ist und ein "Gegen-Tausch" ins Leere
+            // fuehren wuerde.
+            foreach (var schritt in schritte)
+                if (schritt.zu == null || schritt.von == null ||
+                    schritt.zu.Count == 0 || schritt.von.Count != schritt.zu.Count)
+                {
+                    DbgPark("    Probe verworfen: Block " + schritt.blockIdx
+                            + " wuerde Stunden verlieren.");
+                    return null;
+                }
+
+            // altSlots darf LEER sein (Einplanen aus dem Parkbereich): die
+            // folgende Schleife ist dann wirkungslos, A behaelt seine uebrigen
+            // Stunden und bekommt die Zielslots dazu.
             var probe = (int[,])_belegung.Clone();
 
             foreach (int s in altSlots) probe[hauptBlock, s] = 0;
@@ -4393,9 +4771,22 @@ namespace Stundenplan_V2
                 foreach (int s in schritt.zu)
                     probe[schritt.blockIdx, s] = 1;
 
-            if (FindeHartenKonflikt(probe, hauptBlock, zielSlots) != null) return null;
+            string kA = FindeHartenKonflikt(probe, hauptBlock, zielSlots);
+            if (kA != null)
+            {
+                DbgPark("    Probe verworfen: A am Ziel - " + kA);
+                return null;
+            }
             foreach (var schritt in schritte)
-                if (FindeHartenKonflikt(probe, schritt.blockIdx, schritt.zu) != null) return null;
+            {
+                string kS = FindeHartenKonflikt(probe, schritt.blockIdx, schritt.zu);
+                if (kS != null)
+                {
+                    DbgPark("    Probe verworfen: Block " + schritt.blockIdx + " auf "
+                            + DbgSlots(schritt.zu) + " - " + kS);
+                    return null;
+                }
+            }
 
             // Ueberlagerungspruefung: kein beteiligter Block darf an seinem
             // neuen Slot einen NICHT beteiligten Block derselben Klasse/
@@ -4421,9 +4812,18 @@ namespace Stundenplan_V2
                 return true;
             }
 
-            if (!PrüfeUeberlagerung(hauptBlock, zielSlots)) return null;
+            if (!PrüfeUeberlagerung(hauptBlock, zielSlots))
+            {
+                DbgPark("    Probe verworfen: A ueberlagert am Ziel einen Unbeteiligten.");
+                return null;
+            }
             foreach (var schritt in schritte)
-                if (!PrüfeUeberlagerung(schritt.blockIdx, schritt.zu)) return null;
+                if (!PrüfeUeberlagerung(schritt.blockIdx, schritt.zu))
+                {
+                    DbgPark("    Probe verworfen: Block " + schritt.blockIdx
+                            + " ueberlagert auf " + DbgSlots(schritt.zu) + " einen Unbeteiligten.");
+                    return null;
+                }
 
             var v = new VerschiebungMitAusweich
             {
@@ -4478,17 +4878,24 @@ namespace Stundenplan_V2
         private List<int> _letzteVerschiebungAlt;
         private List<int> _letzteVerschiebungZiel;
 
+        // true, wenn die zuletzt gezeigte Liste zu einem Drag aus dem
+        // Parkbereich gehoert (dann ist _letzteVerschiebungAlt bewusst null).
+        private bool _letzteVerschiebungAusPark;
+
         private void LeereVerschiebungen()
         {
             _aktuelleVerschiebungen = new();
             _letzteVerschiebungBlock = -1;
             _letzteVerschiebungAlt = null;
             _letzteVerschiebungZiel = null;
+            _letzteVerschiebungAusPark = false;
             _fixierteVerschiebung = null;
             _fixierteVerschiebungZeile = null;
             if (PnlVerschieb != null) PnlVerschieb.Children.Clear();
         }
 
+        // altSlots == null  ->  der Unterricht kommt aus dem Parkbereich und hat
+        // keine alten Slots, die er im Gegenzug anbieten koennte.
         private void ZeigeVerschiebungen(int hauptBlock, List<int> altSlots, List<int> zielSlots)
         {
             LeereVerschiebungen();
@@ -4501,6 +4908,7 @@ namespace Stundenplan_V2
             _letzteVerschiebungBlock = hauptBlock;
             _letzteVerschiebungAlt = altSlots;
             _letzteVerschiebungZiel = zielSlots;
+            _letzteVerschiebungAusPark = (altSlots == null);
 
             // Abgeschaltet: hier ist Schluss. Das ist der teuerste Teil des
             // ganzen Drag&Drop — SucheVerschiebungMitAusweich klont fuer JEDEN
@@ -4511,6 +4919,7 @@ namespace Stundenplan_V2
             // Tooltip) laeuft in Zelle_DragOver unabhaengig davon weiter.
             if (ChkAusweichSuche?.IsChecked != true)
             {
+                DbgPark("ZeigeVerschiebungen: Ausweichsuche ist ABGESCHALTET - keine Suche.");
                 PnlVerschieb.Children.Add(new TextBlock
                 {
                     Text = "Ausweichsuche ist abgeschaltet.",
@@ -4521,7 +4930,9 @@ namespace Stundenplan_V2
                 return;
             }
 
-            _aktuelleVerschiebungen = SucheVerschiebungMitAusweich(hauptBlock, altSlots, zielSlots);
+            _aktuelleVerschiebungen = _letzteVerschiebungAusPark
+                ? SucheEinplanungMitAusweich(hauptBlock, zielSlots)
+                : SucheVerschiebungMitAusweich(hauptBlock, altSlots, zielSlots);
             ZeichneVerschiebungsliste();
         }
 
@@ -4532,8 +4943,10 @@ namespace Stundenplan_V2
             // Nach dem Einschalten die Liste fuer die zuletzt gezogene
             // Konstellation nachreichen, statt erneutes Ziehen zu verlangen.
             // Nach einem Loesungswechsel zeigen die gemerkten Indizes ins Leere.
+            // (_letzteVerschiebungAlt ist beim Drag aus dem Parkbereich null.)
             if (GueltigerBlock(_letzteVerschiebungBlock) &&
-                _letzteVerschiebungAlt != null && _letzteVerschiebungZiel != null)
+                _letzteVerschiebungZiel != null &&
+                (_letzteVerschiebungAlt != null || _letzteVerschiebungAusPark))
                 ZeigeVerschiebungen(_letzteVerschiebungBlock, _letzteVerschiebungAlt, _letzteVerschiebungZiel);
             else
                 LeereVerschiebungen();
@@ -4607,10 +5020,13 @@ namespace Stundenplan_V2
                 return fach + "/" + klassen;
             }
 
-            // Hauptverschiebung
-            tb.Inlines.Add(new System.Windows.Documents.Run("Verschiebe ") { FontWeight = FontWeights.Bold });
+            // Hauptverschiebung (bzw. Einplanung aus dem Parkbereich)
+            bool ausPark = v.AltSlots == null || v.AltSlots.Count == 0;
+            tb.Inlines.Add(new System.Windows.Documents.Run(ausPark ? "Einplanen " : "Verschiebe ")
+                { FontWeight = FontWeights.Bold });
             tb.Inlines.Add(new System.Windows.Documents.Run(Bez(v.HauptBlock) + " "));
-            tb.Inlines.Add(new System.Windows.Documents.Run(SlotsText(v.AltSlots)) { FontWeight = FontWeights.Bold });
+            tb.Inlines.Add(new System.Windows.Documents.Run(ausPark ? "Parkbereich" : SlotsText(v.AltSlots))
+                { FontWeight = FontWeights.Bold });
             tb.Inlines.Add(new System.Windows.Documents.Run(" nach "));
             tb.Inlines.Add(new System.Windows.Documents.Run(SlotsText(v.ZielSlots)) { FontWeight = FontWeights.Bold });
 
@@ -4629,8 +5045,15 @@ namespace Stundenplan_V2
         private void FuehreVerschiebungAus(VerschiebungMitAusweich v)
         {
             if (v.ProbeBelegung == null) return;
+
+            DbgBelegungsdiff("AUSFUEHRUNG Verschiebung mit Ausweich", _belegung, v.ProbeBelegung);
+
             // Fixierte Blöcke der Ausweich-Verschiebung behandeln.
-            if (!BehandleFixierungenBeiKette(_belegung, v.ProbeBelegung)) return;
+            if (!BehandleFixierungenBeiKette(_belegung, v.ProbeBelegung))
+            {
+                DbgPark("  -> abgebrochen: Fixierungen nicht bestaetigt, Plan unveraendert.");
+                return;
+            }
             _belegung = (int[,])v.ProbeBelegung.Clone();
             LeereTauschvorschlaege();   // raeumt auch Lehrervergleich + Pfeile auf
             LeereVerschiebungen();
@@ -5443,21 +5866,66 @@ namespace Stundenplan_V2
             {
                 if (zielSlot < 0)
                 {
+                    // Kein echter Slot (z.B. Kopfzeile). Die Liste NICHT leeren -
+                    // sonst verschwinden die Vorschlaege, sobald der Zeiger auf dem
+                    // Weg zum Loslassen kurz ueber eine Kopfzeile geraet.
+                    DbgPark("DragOver ueber Nicht-Slot - Liste bleibt stehen.");
                     e.Effects = DragDropEffects.None;
                     EntferneKonfliktMarkierung();
                     return;
                 }
 
                 int blockIdxP = _dragQuelle.BlockIndex;
+
+                // Der Block liegt auf diesem Slot bereits selbst. FindeHartenKonflikt
+                // ueberspringt b2 == blockIdx, meldet also nichts, und das Setzen
+                // waere eine Nulloperation - ohne diesen Riegel "passiert" beim
+                // Fallenlassen einfach nichts (beobachtet an UNr 340 auf Fr1).
+                if (_belegung[blockIdxP, zielSlot] == 1)
+                {
+                    e.Effects = DragDropEffects.None;
+                    LeereVerschiebungen();
+                    MarkiereKonfliktZelle(bd, "Dieser Unterricht liegt hier bereits.", hart: true);
+                    SetStatus("Dieser Unterricht liegt auf diesem Slot bereits.", true);
+                    return;
+                }
+
+                var zielSlotsP = new List<int> { zielSlot };
                 var probeP = (int[,])_belegung.Clone();
                 probeP[blockIdxP, zielSlot] = 1;
-                string konfliktP = FindeHartenKonflikt(probeP, blockIdxP, new List<int> { zielSlot });
+                string konfliktP = FindeHartenKonflikt(probeP, blockIdxP, zielSlotsP);
+
+                // Belegtes Feld: genau wie beim normalen Ziehen Ausweich-
+                // Vorschlaege suchen. Nur bei Feldwechsel neu rechnen - die
+                // Suche ist auch hier der teure Teil.
+                if (zielSlot != _letzterDragOverSlot)
+                {
+                    _letzterDragOverSlot = zielSlot;
+                    if (konfliktP != null)
+                        ZeigeVerschiebungen(blockIdxP, null, zielSlotsP); // null = aus Parkbereich
+                    else
+                        LeereVerschiebungen();
+                }
 
                 if (konfliktP != null)
                 {
-                    e.Effects = DragDropEffects.None;
-                    MarkiereKonfliktZelle(bd, konfliktP, hart: true);
-                    SetStatus("Einplanen gesperrt: " + konfliktP, true);
+                    int anzP = _aktuelleVerschiebungen?.Count ?? 0;
+
+                    // WICHTIG: Bei Effects = None loest WPF gar kein Drop-Ereignis
+                    // aus - Zelle_Drop wird nie erreicht und das Fallenlassen
+                    // bleibt wirkungslos. Sobald es Ausweich-Vorschlaege gibt,
+                    // muss der Drop also erlaubt sein, obwohl das Feld belegt ist.
+                    e.Effects = anzP > 0 ? DragDropEffects.Move : DragDropEffects.None;
+                    MarkiereKonfliktZelle(bd, konfliktP, hart: anzP == 0);
+
+                    if (anzP == 1)
+                        SetStatus("Feld belegt - Loslassen fuehrt den einzigen "
+                                  + "Ausweich-Vorschlag aus.", false);
+                    else if (anzP > 1)
+                        SetStatus("Feld belegt - " + anzP + " Moeglichkeiten; Loslassen "
+                                  + "fixiert die einfachste.", false);
+                    else
+                        SetStatus("Einplanen gesperrt: " + konfliktP, true);
                 }
                 else
                 {
@@ -5623,19 +6091,72 @@ namespace Stundenplan_V2
             // Sonderfall: aus Parkbereich -> eine einzelne Stunde in den Zielslot einplanen
             if (_dragQuelle.AusParkbereich)
             {
-                var probe = (int[,])_belegung.Clone();
-                probe[blockIdx, zielSlot] = 1;
-                string konflikt = FindeHartenKonflikt(probe, blockIdx, new List<int> { zielSlot });
-                if (konflikt != null)
+                if (_belegung[blockIdx, zielSlot] == 1)
                 {
-                    SetStatus("Einplanen gesperrt: " + konflikt, true);
+                    SetStatus("Dieser Unterricht liegt auf diesem Slot bereits.", true);
                     _dragQuelle = null;
                     return;
                 }
+
+                var zielSlotsP = new List<int> { zielSlot };
+                var probe = (int[,])_belegung.Clone();
+                probe[blockIdx, zielSlot] = 1;
+                string konflikt = FindeHartenKonflikt(probe, blockIdx, zielSlotsP);
+
+                if (konflikt != null)
+                {
+                    // Feld belegt -> nicht einfach sperren, sondern wie beim
+                    // normalen Ziehen den einfachsten Ausweich-Vorschlag
+                    // FIXIEREN (Vorher/Nachher + Diagnose). Ausgefuehrt wird er
+                    // erst per Doppelklick in der Liste.
+                    _dragQuelle = null;
+                    _letzterDragOverSlot = -2;
+
+                    if (_aktuelleVerschiebungen == null || _aktuelleVerschiebungen.Count == 0)
+                    {
+                        // Bewusst direkt statt ueber ZeigeVerschiebungen: beim
+                        // Fallenlassen ist die Suche gewollt, auch wenn die
+                        // Live-Ausweichsuche (Checkbox) abgeschaltet ist.
+                        LeereVerschiebungen();
+                        _letzteVerschiebungBlock = blockIdx;
+                        _letzteVerschiebungAlt = null;
+                        _letzteVerschiebungZiel = zielSlotsP;
+                        _letzteVerschiebungAusPark = true;
+                        _aktuelleVerschiebungen = SucheEinplanungMitAusweich(blockIdx, zielSlotsP);
+                        ZeichneVerschiebungsliste();
+                    }
+
+                    DbgPark("Drop auf belegtes Feld: " + _aktuelleVerschiebungen.Count
+                            + " Vorschlag(e) vorhanden.");
+
+                    if (_aktuelleVerschiebungen.Count == 1)
+                    {
+                        // Genau eine Moeglichkeit -> direkt ausfuehren. Ein Drop,
+                        // der sichtbar nichts tut, ist irrefuehrend, und zu waehlen
+                        // gibt es hier ohnehin nichts.
+                        FuehreVerschiebungAus(_aktuelleVerschiebungen[0]);
+                    }
+                    else if (_aktuelleVerschiebungen.Count > 1)
+                    {
+                        // Liste ist nach Anzahl der Bewegungen sortiert.
+                        var einfachster = _aktuelleVerschiebungen[0];
+                        FixiereVerschiebung(einfachster, FindeVerschiebungsZeile(einfachster));
+                        SetStatus(_aktuelleVerschiebungen.Count + " Moeglichkeiten - einfachste "
+                                  + "fixiert. Doppelklick in der Liste fuehrt sie aus.", false);
+                    }
+                    else
+                    {
+                        SetStatus("Einplanen gesperrt: " + konflikt, true);
+                    }
+                    return;
+                }
+
+                DbgBelegungsdiff("AUSFUEHRUNG Park-Einplanung (freies Feld)", _belegung, probe);
                 _belegung = probe;
                 SetStatus("UNr " + _blocks[blockIdx].UNr + " eingeplant in "
                           + _slots[zielSlot].WTag + " Std" + _slots[zielSlot].Stunde + ".", false);
                 _dragQuelle = null;
+                _letzterDragOverSlot = -2;
                 ZeichneBeideGrids();
                 ZeichneParkbereich();
                 PruefeUndZeigeWarnungen();
@@ -6130,6 +6651,16 @@ namespace Stundenplan_V2
                         SlotIndizes = new List<int>(), // wird beim Drop auf 1 Slot gesetzt
                         AusParkbereich = true
                     };
+                    // Neuer Drag -> Zellen-Cache zuruecksetzen, sonst haelt der
+                    // Wert vom letzten Drag die Ausweichsuche beim ersten
+                    // ueberfahrenen Feld zurueck.
+                    _letzterDragOverSlot = -2;
+                    // Die linke Liste gehoert zum zuletzt ANGEKLICKTEN Feld und
+                    // ist fuer einen geparkten Unterricht gegenstandslos - sonst
+                    // stehen ihre Ketten scheinbar doppelt in der rechten Liste.
+                    LeereTauschvorschlaege();
+                    DbgPark("=== Drag-Start aus Parkbereich: Block " + blockIdxLokal
+                            + " (UNr " + _blocks[blockIdxLokal].UNr + ") ===");
                     DragDrop.DoDragDrop(bd, "park", DragDropEffects.Move);
                     EntferneKonfliktMarkierung();
                 };
