@@ -18,6 +18,7 @@ Die Unterrichts- und Lehrerstammdaten können z. B. aus einer Untis-Datei per Co
 - Doppelstunden-Vorgaben, Fachraum-Limits, **Tauschgruppen (LTKZ) – besonders wertvoll für Sek-II-Pläne**, A-/B-Wochen
 - frei definierbare Qualitaätsoptimierung bspw. zur Vermeidung von nur späten Unterrichten, Dreifach-, Doppel und Einfachhohlstunden -alles auch als hard constraints definierbar
 - Iterative Verbesserung bestehender Pläne
+- unmittelbares Vergleichen zweier Stundenpläne nach bestimmten Diagnosekriterien in der Lehrer und Klassenansicht möglich
 - Export von Lehrer- und Klassenplänen als Excel-Sheets
 - Import des erzeugten Stundenplans in eine Untisdatei ist mit ein paar Klicks möglich, auch ohne offiziell vorgesehene Importfunktion
 - Constraint-Prüfung mit farbcodiertem Verletzungs-Report
