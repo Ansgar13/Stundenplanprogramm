@@ -55,6 +55,27 @@ namespace Stundenplan_V2
         private int[,] _vglBelegung2;              // Belegung der 2. Lösung (unverändert)
         private List<UnterrichtsBlock> _vglBlocks2;// Blocks der 2. Lösung
 
+        // Rotation der Klick-Synchronisation im Vergleichsmodus: wiederholter
+        // Klick auf denselben Unterricht geht zum nächsten Lehrer bzw. zur
+        // nächsten Klasse dieses Blocks. Ohne das blieb man bei Bändern
+        // (ein Block, mehrere Lehrer/Klassen — Reli/Ethik, Kursbänder) immer
+        // beim erstgenannten hängen; zeigte der andere Plan den ohnehin schon,
+        // passierte beim Klick sichtbar gar nichts.
+        // Schlüssel ist die UNr, NICHT der Block-Index: die beiden
+        // Lösungsspalten haben eigene Blocklisten, in denen derselbe Index
+        // einen anderen Unterricht meinen kann. Die Richtung gehört mit in den
+        // Schlüssel, damit ein Klick im Klassenplan nicht die Rotation des
+        // Lehrerplans weiterdreht.
+        private int _vmRotUnr = -1;
+        private bool _vmRotAusLehrer;
+        private int _vmRotIndex;
+
+        // Laeuft gerade eine Uebernahme? Verhindert, dass ein zweiter Klick
+        // waehrend des (synchronen) Excel-Schreibens eine weitere Loesung
+        // anlegt. Der Button ist zwar deaktiviert, aber ein bereits
+        // eingereihter Klick koennte sonst noch durchkommen.
+        private bool _uebernahmeLaeuft;
+
         private class DragNutzlast
         {
             public int BlockIndex;       // Index in _blocks
@@ -136,6 +157,12 @@ namespace Stundenplan_V2
         private Dictionary<string, Color> _farbenKlassen = new(StringComparer.OrdinalIgnoreCase);
         private Dictionary<string, Color> _farbenFaecher = new(StringComparer.OrdinalIgnoreCase);
 
+        // Frei waehlbare Sonderfarben aus dem Sheet "Farben" (Typ "Sonder"),
+        // derzeit die beiden Toene der spaeten paed. Einheiten. Fehlt ein
+        // Eintrag, greift der Standardton aus Farbcode — der Editor sieht dann
+        // exakt so aus wie vor der Erweiterung.
+        private Dictionary<string, Color> _farbenSonder = new(StringComparer.OrdinalIgnoreCase);
+
         // Ein SolidColorBrush je Farbe statt einer Neuanlage pro Zelle:
         // BaueTeilbereich laeuft bei jedem Neuzeichnen ueber alle Zellen.
         private readonly Dictionary<Color, SolidColorBrush> _farbBrushCache = new();
@@ -186,9 +213,10 @@ namespace Stundenplan_V2
             {
                 try
                 {
-                    var (k, f) = Farbcode.Lade(_excelPfad);
+                    var (k, f, s) = Farbcode.Lade(_excelPfad);
                     _farbenKlassen = k;
                     _farbenFaecher = f;
+                    _farbenSonder = s;
                 }
                 catch { /* bewusst geschluckt: Farben sind nur Kosmetik */ }
             }
@@ -499,6 +527,7 @@ namespace Stundenplan_V2
 
             // Hervorhebung/Rotation zurücksetzen (neue Lösung)
             _highlightBloecke = new();
+            _highlightUnrn = new();
             _rotBlockIdx = -1;
             _rotIndex = 0;
 
@@ -571,7 +600,10 @@ namespace Stundenplan_V2
         {
             if (!_initialisiert || _belegung == null) return;
             AktualisiereSpaetePaedEinheiten();
-            ZeichneBeideGrids();
+            // Im Vergleichsmodus zeigen alle vier Grids die Rotmarkierung,
+            // ZeichneBeideGrids wäre dort wirkungslos.
+            if (_vergleichsModus) ZeichneVergleichsModus();
+            else ZeichneBeideGrids();
         }
 
         // Checkbox "auch fixierte (heller)" — markiert zusätzlich die voll
@@ -581,7 +613,10 @@ namespace Stundenplan_V2
         {
             if (!_initialisiert || _belegung == null) return;
             AktualisiereSpaetePaedEinheiten();
-            ZeichneBeideGrids();
+            // Im Vergleichsmodus zeigen alle vier Grids die Rotmarkierung,
+            // ZeichneBeideGrids wäre dort wirkungslos.
+            if (_vergleichsModus) ZeichneVergleichsModus();
+            else ZeichneBeideGrids();
         }
 
         // Checkbox "Ignorierte anzeigen" — nur den Parkbereich neu zeichnen.
@@ -622,7 +657,8 @@ namespace Stundenplan_V2
                                  .Distinct(StringComparer.OrdinalIgnoreCase)
                                  .ToList();
 
-            var dlg = new FarbcodeDialog(_excelPfad, klassen, faecher, _farbenKlassen, _farbenFaecher)
+            var dlg = new FarbcodeDialog(_excelPfad, klassen, faecher,
+                                         _farbenKlassen, _farbenFaecher, _farbenSonder)
             {
                 Owner = this
             };
@@ -630,6 +666,7 @@ namespace Stundenplan_V2
 
             _farbenKlassen = dlg.Klassenfarben;
             _farbenFaecher = dlg.Fachfarben;
+            _farbenSonder = dlg.Sonderfarben;
             _farbBrushCache.Clear();
 
             ZeichneNachFarbwechsel();
@@ -718,6 +755,18 @@ namespace Stundenplan_V2
         // Standard-Hintergrund einer belegten Zelle ohne Farbcode und ohne Warnung.
         private static SolidColorBrush Hellblau()
             => new SolidColorBrush(Color.FromRgb(0xE8, 0xF0, 0xFE));
+
+        // Hintergrund einer spaeten paed. Einheit — frei waehlbar ueber den
+        // Farbcode-Dialog (Sheet "Farben", Typ "Sonder"), sonst der bisherige
+        // Standardton. Bewusst ueber HoleFarbBrush, damit die Brushes wie alle
+        // anderen gecacht und eingefroren sind.
+        private SolidColorBrush SpaetPaedBrush()
+            => HoleFarbBrush(Farbcode.Sonderfarbe(
+                   _farbenSonder, Farbcode.KeySpaetPaed, Farbcode.StandardSpaetPaed));
+
+        private SolidColorBrush SpaetPaedFixBrush()
+            => HoleFarbBrush(Farbcode.Sonderfarbe(
+                   _farbenSonder, Farbcode.KeySpaetPaedFix, Farbcode.StandardSpaetPaedFix));
 
         private SolidColorBrush HoleFarbBrush(Color farbe)
         {
@@ -1011,6 +1060,9 @@ namespace Stundenplan_V2
                 SetzeUnterbereicheSichtbar(false);
 
                 // Vergleichsmodus-Dropdowns mit aktueller Lehrer-/Klassenauswahl füllen
+                // Der Filter bezieht ab jetzt die 2. Loesung mit ein.
+                AktualisiereDiagFilterListe();
+
                 SpiegeleAuswahlInVm(CboLehrer, CboVmLehrer);
                 SpiegeleAuswahlInVm(CboKlasse, CboVmKlasse);
 
@@ -1022,6 +1074,8 @@ namespace Stundenplan_V2
                 ScrollEditAnsicht.Visibility = Visibility.Visible;
                 ScrollVergleichsModus.Visibility = Visibility.Collapsed;
                 SetzeUnterbereicheSichtbar(true);
+                // Zurueck zum Filter allein auf der Hauptloesung.
+                AktualisiereDiagFilterListe();
                 ZeichneBeideGrids();
             }
             AktualisiereDiagFenster();
@@ -1050,6 +1104,9 @@ namespace Stundenplan_V2
         {
             if (!_initialisiert) return;
             LadeVglLoesung2(CboVglLoesung2.SelectedItem as string);
+            // Der Diag-Filter beruecksichtigt im Vergleichsmodus auch diese
+            // Loesung — die Lehrerliste muss daher mitwandern.
+            if (_vergleichsModus) AktualisiereDiagFilterListe();
             if (_vergleichsModus) ZeichneVergleichsModus();
             AktualisiereDiagFenster();
         }
@@ -1098,19 +1155,31 @@ namespace Stundenplan_V2
             LblVmKlasseA.Text = $"KLASSE {klasse} – {_aktLabel}";
             LblVmKlasseB.Text = $"KLASSE {klasse} – {(_vglLabel2 ?? "—")}";
 
-            // Lösung A (aktuelle Belegung) — Vergleich gegen Lösung B
-            ZeichneVergleichsGrid(VmLehrerGridA, lehrer, lehrerAnsicht: true,  belegung: _belegung, blocks: _blocks,
-                                  andereBelegung: _vglBelegung2, andereBlocks: _vglBlocks2);
-            ZeichneVergleichsGrid(VmKlasseGridA, klasse, lehrerAnsicht: false, belegung: _belegung, blocks: _blocks,
-                                  andereBelegung: _vglBelegung2, andereBlocks: _vglBlocks2);
+            // Späte, NICHT voll fixierte päd. Einheiten je Lösung GETRENNT
+            // bestimmen — Block-Indizes gelten nur innerhalb ihrer eigenen
+            // Blockliste. Das hellere Rot der voll fixierten Einheiten bleibt
+            // im Vergleichsmodus bewusst aus (zeigeFixiert: false), hier geht
+            // es allein um die noch bewegbaren Einheiten.
+            bool zeigeRot = ChkSpaetePaed != null && ChkSpaetePaed.IsChecked == true;
+            BerechneSpaetePaed(_belegung, _blocks, zeigeRot, false, out var spaetA, out _);
 
-            // Lösung B (Vergleichsbelegung) — Vergleich gegen Lösung A
+            var spaetB = new HashSet<int>();
+            if (_vglBelegung2 != null && _vglBlocks2 != null)
+                BerechneSpaetePaed(_vglBelegung2, _vglBlocks2, zeigeRot, false, out spaetB, out _);
+
+            // Lösung A (aktuelle Belegung)
+            ZeichneVergleichsGrid(VmLehrerGridA, lehrer, lehrerAnsicht: true,  belegung: _belegung, blocks: _blocks,
+                                  spaetRot: spaetA);
+            ZeichneVergleichsGrid(VmKlasseGridA, klasse, lehrerAnsicht: false, belegung: _belegung, blocks: _blocks,
+                                  spaetRot: spaetA);
+
+            // Lösung B (Vergleichsbelegung)
             if (_vglBelegung2 != null && _vglBlocks2 != null)
             {
                 ZeichneVergleichsGrid(VmLehrerGridB, lehrer, lehrerAnsicht: true,  belegung: _vglBelegung2, blocks: _vglBlocks2,
-                                      andereBelegung: _belegung, andereBlocks: _blocks);
+                                      spaetRot: spaetB);
                 ZeichneVergleichsGrid(VmKlasseGridB, klasse, lehrerAnsicht: false, belegung: _vglBelegung2, blocks: _vglBlocks2,
-                                      andereBelegung: _belegung, andereBlocks: _blocks);
+                                      spaetRot: spaetB);
             }
             else
             {
@@ -1121,11 +1190,13 @@ namespace Stundenplan_V2
 
         // Wie ZeichneEinGrid, aber mit explizit übergebenen Blocks (nötig, weil
         // die 2. Lösung andere Blocks haben kann als die aktuelle) und immer
-        // nicht-interaktiv. Klick auf eine Zelle wechselt synchron Lehrer/Klasse
-        // in beiden Lösungsspalten.
+        // nicht-interaktiv. Ein Klick hebt die päd. Einheit hervor und stellt
+        // zugleich den jeweils anderen Plan in beiden Spalten um.
+        // spaetRot: Block-Indizes DIESER Blockliste, die zu einer späten,
+        // nicht voll fixierten päd. Einheit gehören.
         private void ZeichneVergleichsGrid(Grid grid, string auswahl, bool lehrerAnsicht,
                                            int[,] belegung, List<UnterrichtsBlock> blocks,
-                                           int[,] andereBelegung = null, List<UnterrichtsBlock> andereBlocks = null)
+                                           HashSet<int> spaetRot = null)
         {
             grid.Children.Clear();
             grid.ColumnDefinitions.Clear();
@@ -1157,21 +1228,22 @@ namespace Stundenplan_V2
                 {
                     int slotIdx = FindeSlot(_tage[ti], _stunden[hi]);
                     var zelle = BaueVergleichsZelle(slotIdx, auswahl, lehrerAnsicht, belegung, blocks,
-                                                    andereBelegung, andereBlocks);
+                                                    spaetRot);
                     Grid.SetRow(zelle, hi + 1); Grid.SetColumn(zelle, ti + 1);
                     grid.Children.Add(zelle);
                 }
         }
 
-        // Baut eine reine Anzeige-Zelle für den Vergleichsmodus. Klick auf eine
-        // belegte Zelle wechselt synchron Lehrer/Klasse: im Lehrerteil → zur
-        // zugehörigen Klasse, im Klassenteil → zum zugehörigen Lehrer.
-        // Ist andereBelegung/andereBlocks gesetzt, wird die Zelle gelb gefärbt,
-        // wenn sich die für die aktuelle Auswahl relevante Belegung (Menge der
-        // UNrn) dieses Slots zwischen beiden Lösungen unterscheidet.
+        // Baut eine reine Anzeige-Zelle für den Vergleichsmodus.
+        // Ein Klick auf einen Unterricht hebt dessen päd. Einheit in BEIDEN
+        // Lösungen hervor (UNr-basiert, siehe SetzeHervorhebung) und stellt
+        // zugleich den jeweils anderen Plan um: im Lehrerteil → auf die
+        // zugehörige Klasse, im Klassenteil → auf den zugehörigen Lehrer.
+        // spaetRot: Block-Indizes dieser Blockliste, die zu einer späten,
+        // nicht voll fixierten päd. Einheit gehören → rote Fläche.
         private Border BaueVergleichsZelle(int slotIdx, string auswahl, bool lehrerAnsicht,
                                            int[,] belegung, List<UnterrichtsBlock> blocks,
-                                           int[,] andereBelegung = null, List<UnterrichtsBlock> andereBlocks = null)
+                                           HashSet<int> spaetRot = null)
         {
             var border = new Border
             {
@@ -1200,18 +1272,6 @@ namespace Stundenplan_V2
                 if (betrifft) betroffene.Add(b);
             }
 
-            // Unterschiedlich belegt? Vergleiche die Menge der relevanten UNrn
-            // (UNr ist über beide Lösungen hinweg stabil, Block-Indizes nicht).
-            bool unterschiedlich = false;
-            if (andereBelegung != null && andereBlocks != null)
-            {
-                var unrHier = UnrnImSlot(slotIdx, auswahl, lehrerAnsicht, belegung, blocks);
-                var unrDort = UnrnImSlot(slotIdx, auswahl, lehrerAnsicht, andereBelegung, andereBlocks);
-                unterschiedlich = !unrHier.SetEquals(unrDort);
-            }
-            if (unterschiedlich)
-                border.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xF1, 0x99)); // gelb
-
             if (betroffene.Count == 0)
             {
                 if (wunsch.HasValue) border.Child = BaueWunschLabel(wunsch.Value);
@@ -1228,20 +1288,28 @@ namespace Stundenplan_V2
                 string lehrerTxt = string.Join(",", teile.Select(t => t.Lehrer).Distinct());
                 string ersteZeile = lehrerAnsicht ? klassen : (block.Zeilentext ?? "");
 
+                // Späte, nicht voll fixierte päd. Einheit -> rote Fläche
+                // (dasselbe Rot wie im Editor). Hervorhebung -> kräftig roter,
+                // dicker Rahmen, ebenfalls wie im Editor.
+                bool spaetPaed   = spaetRot != null && spaetRot.Contains(b);
+                bool hervorheben = _highlightUnrn.Contains(block.UNr);
+
                 var (randFarbe, flaecheFarbe) = FarbcodeZonen(block);
-                // Gelb (unterschiedliche Belegung) hat Vorrang wie die Warnfarben
-                // im normalen Editor -> dann kein Farbrand.
-                bool zweizonig = !unterschiedlich && randFarbe != null;
+                // Wie im Editor: bei roter Warnfläche bleibt die Zelle
+                // einfarbig, ein Farbrand würde sie optisch zerschneiden.
+                bool zweizonig = !spaetPaed && randFarbe != null;
 
                 var inner = new Border
                 {
-                    // Bei Unterschied transparent lassen, damit das gelbe
-                    // Zellen-Background durchscheint; sonst Farbcode (zweizonig:
-                    // Rand = Klasse), ersatzweise das normale Hellblau.
-                    Background = unterschiedlich
-                        ? Brushes.Transparent
+                    // Priorität: späte päd. Einheit (rot) > Farbcode
+                    // (zweizonig: Rand = Klasse) > normales Hellblau.
+                    Background = spaetPaed
+                        ? SpaetPaedBrush()
                         : (zweizonig ? randFarbe : (flaecheFarbe ?? Hellblau())),
-                    BorderBrush = Brushes.Gray, BorderThickness = new Thickness(0.5),
+                    BorderBrush = hervorheben
+                        ? new SolidColorBrush(Color.FromRgb(0xE3, 0x1A, 0x1A))
+                        : Brushes.Gray,
+                    BorderThickness = hervorheben ? new Thickness(2.5) : new Thickness(0.5),
                     Padding = new Thickness(zweizonig ? FarbRandBreite : 2), Cursor = System.Windows.Input.Cursors.Hand,
                     HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch
                 };
@@ -1254,12 +1322,22 @@ namespace Stundenplan_V2
                     ? new Border { Background = flaecheFarbe ?? Hellblau(), Child = tb }
                     : (UIElement)tb;
 
-                // Klick-Synchronisation (reine Navigation, kein Drag)
+                // Ein einziger Klick tut beides: er hebt die päd. Einheit in
+                // allen vier Grids hervor UND stellt den jeweils anderen Plan
+                // um — im Lehrerteil geklickt springen die Klassenpläne beider
+                // Lösungen auf die Klasse des Unterrichts, im Klassenteil die
+                // Lehrerpläne auf dessen Lehrer.
+                // Reihenfolge: erst die Hervorhebung setzen, dann umschalten —
+                // VergleichsKlickSync zeichnet in jedem Fall neu und zeigt so
+                // gleich die neue Markierung mit.
                 int blockKopie = b;
                 bool ausLehrer = lehrerAnsicht;
                 var blocksKopie = blocks;
                 inner.MouseLeftButtonUp += (s2, e2) =>
+                {
+                    SetzeHervorhebung(blockKopie, blocksKopie);
                     VergleichsKlickSync(blocksKopie[blockKopie], ausLehrer);
+                };
 
                 hStack.Children.Add(inner);
             }
@@ -1283,52 +1361,78 @@ namespace Stundenplan_V2
             return border;
         }
 
-        // Menge der UNrn, die in diesem Slot die gewählte Auswahl (Lehrer bzw.
-        // Klasse) betreffen — Basis für den Belegungsvergleich zwischen zwei Lösungen.
-        private HashSet<int> UnrnImSlot(int slotIdx, string auswahl, bool lehrerAnsicht,
-                                        int[,] belegung, List<UnterrichtsBlock> blocks)
-        {
-            var menge = new HashSet<int>();
-            if (slotIdx < 0 || auswahl == null) return menge;
-            for (int b = 0; b < blocks.Count; b++)
-            {
-                if (belegung[b, slotIdx] != 1) continue;
-                bool betrifft = lehrerAnsicht
-                    ? blocks[b].Teile.Any(t => t.Lehrer == auswahl)
-                    : blocks[b].Teile.Any(t => t.Klassen.Contains(auswahl));
-                if (betrifft) menge.Add(blocks[b].UNr);
-            }
-            return menge;
-        }
-
-        // Klick auf Unterricht im Vergleichsmodus: wechselt Lehrer bzw. Klasse
-        // (löst über die Dropdown-SelectionChanged das Neuzeichnen beider Spalten aus).
+        // Klick auf Unterricht im Vergleichsmodus: stellt den jeweils ANDEREN
+        // Plan um — im Lehrerteil geklickt auf die zugehörige Klasse, im
+        // Klassenteil auf den zugehörigen Lehrer. Weil ZeichneVergleichsModus
+        // immer alle vier Grids zeichnet, springen dabei beide Lösungsspalten
+        // (A und B) gemeinsam um.
+        //
+        // Ein Block kann mehrere Lehrer bzw. Klassen tragen (Reli-/Ethik- und
+        // Kursbänder). Deshalb wird — wie im normalen Editor, siehe
+        // SynchronisiereAnderenPlan — rotiert: der erste Klick springt auf den
+        // ersten erreichbaren Eintrag, jeder weitere auf den nächsten. Nur den
+        // erstgenannten zu nehmen machte die übrigen Lehrer eines Bandes
+        // unerreichbar und wirkte, als täte der Klick gar nichts.
+        //
+        // "Erreichbar" heisst: der Eintrag steht auch in der Auswahlliste.
+        // Ein aktiver Diag-Filter kürzt die LEHRERliste (die Klassenliste nicht)
+        // — ohne diese Prüfung lief der Sprung aus dem Klassenplan dann ins
+        // Leere, ohne dass der Grund erkennbar war.
+        //
+        // Ein tatsächliches Umschalten des Dropdowns löst das Neuzeichnen über
+        // SelectionChanged aus; in allen anderen Fällen wird hier selbst
+        // gezeichnet — sonst bliebe die frisch gesetzte Hervorhebung unsichtbar.
         private void VergleichsKlickSync(UnterrichtsBlock block, bool ausLehrerPlan)
         {
-            if (ausLehrerPlan)
+            var ziel = ausLehrerPlan ? CboKlasse : CboLehrer;
+
+            var kandidaten = (ausLehrerPlan
+                    ? block.Teile.SelectMany(t => t.Klassen)
+                    : block.Teile.Select(t => t.Lehrer))
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Select(s => s.Trim())
+                .Distinct()
+                .ToList();
+
+            // Rotationszähler: gleicher Unterricht UND gleiche Richtung wie beim
+            // letzten Klick -> weiterdrehen, sonst von vorn beginnen.
+            if (_vmRotUnr != block.UNr || _vmRotAusLehrer != ausLehrerPlan)
             {
-                // Im Lehrerteil geklickt → zur zugehörigen Klasse wechseln
-                var klasse = block.Teile.SelectMany(t => t.Klassen)
-                                  .Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().FirstOrDefault();
-                if (klasse != null)
-                {
-                    int idx = CboKlasse.Items.IndexOf(klasse);
-                    if (idx >= 0 && idx != CboKlasse.SelectedIndex) CboKlasse.SelectedIndex = idx;
-                    else ZeichneVergleichsModus();
-                }
+                _vmRotUnr = block.UNr;
+                _vmRotAusLehrer = ausLehrerPlan;
+                _vmRotIndex = 0;
             }
             else
             {
-                // Im Klassenteil geklickt → zum zugehörigen Lehrer wechseln
-                var lehrer = block.Teile.Select(t => t.Lehrer)
-                                  .Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().FirstOrDefault();
-                if (lehrer != null)
-                {
-                    int idx = CboLehrer.Items.IndexOf(lehrer);
-                    if (idx >= 0 && idx != CboLehrer.SelectedIndex) CboLehrer.SelectedIndex = idx;
-                    else ZeichneVergleichsModus();
-                }
+                _vmRotIndex++;
             }
+
+            var erreichbar = kandidaten.Where(w => ziel.Items.IndexOf(w) >= 0).ToList();
+            if (erreichbar.Count == 0)
+            {
+                if (kandidaten.Count > 0 && !ausLehrerPlan)
+                    SetStatus("Lehrer " + string.Join(", ", kandidaten) +
+                              " steht nicht in der Auswahlliste — vermutlich blendet " +
+                              "der aktive Diag-Filter ihn aus.", true);
+                ZeichneVergleichsModus();
+                return;
+            }
+
+            string wert = erreichbar[_vmRotIndex % erreichbar.Count];
+
+            // Zeigt der andere Plan diesen Eintrag ohnehin schon, einmal
+            // weiterdrehen — sonst bliebe der erste Klick auf ein Band wirkungslos.
+            if (erreichbar.Count > 1 && wert == (ziel.SelectedItem as string))
+            {
+                _vmRotIndex++;
+                wert = erreichbar[_vmRotIndex % erreichbar.Count];
+            }
+
+            int idx = ziel.Items.IndexOf(wert);
+            if (idx >= 0 && idx != ziel.SelectedIndex)
+                ziel.SelectedIndex = idx;
+            else
+                ZeichneVergleichsModus();
         }
 
         // Füllt beide Dropdowns (Lehrer + Klassen) aus der aktuellen Lösung.
@@ -1358,25 +1462,36 @@ namespace Stundenplan_V2
                                      .Distinct().OrderBy(s => s).ToList();
 
             // Diag-Filter anwenden, falls aktiv: nur Lehrer behalten, die (je nach
-            // Verknüpfung) mindestens eines bzw. alle gewählten Diag-Kriterien der
-            // AKTUELL angezeigten Lösung verletzen. Gleiche Berechnungsgrundlage
-            // wie das "Diag-Werte"-Fenster / der Diagnose-Diff (LehrerDiagnose.Berechne).
+            // Verknüpfung) mindestens eines bzw. alle gewählten Diag-Kriterien
+            // verletzen. Gleiche Berechnungsgrundlage wie das "Diag-Werte"-Fenster
+            // und der Diagnose-Diff (LehrerDiagnose.Berechne).
+            //
+            // Im Vergleichsmodus zaehlen BEIDE angezeigten Loesungen, mit ODER
+            // verknuepft: ein Lehrer bleibt in der Liste, sobald er in mindestens
+            // einer der beiden auffaellig ist. Nur auf die Hauptloesung zu filtern
+            // liess genau die interessanten Faelle verschwinden — Lehrer, die die
+            // 2. Loesung repariert (oder erst kaputt gemacht) hat, waren dann im
+            // Vergleich gar nicht mehr anwaehlbar.
+            // Diese ODER-Verknuepfung ueber die Loesungen ist unabhaengig von der
+            // UND/ODER-Verknuepfung der Kriterien (_diagFilterUnd), die innerhalb
+            // jeder Loesung weiterhin so gilt wie eingestellt.
             if (_diagFilterKriterien != null && _diagFilterKriterien.Count > 0)
             {
-                var p = _bewParam;
-                var diagListe = LehrerDiagnose.Berechne(_belegung, _blocks, _slots,
-                    p.LehrerStammdaten, p.StrafeHohl, p.StrafeDoppelHohl, p.StrafeDreifachHohl,
-                    p.StrafeStdFolge, true, p.ExtraFreieTage, p.LehrerFreiTageMinus2)
-                    .ToDictionary(d => d.Lehrer, d => d);
+                var diagA = BaueDiagListe(_belegung, _blocks);
+                var diagB = (_vergleichsModus && _vglBelegung2 != null && _vglBlocks2 != null)
+                    ? BaueDiagListe(_vglBelegung2, _vglBlocks2)
+                    : null;
 
-                bool ErfülltFilter(string lehrer)
+                bool ErfülltFilter(Dictionary<string, LehrerDiagnoseErgebnis> liste, string lehrer)
                 {
-                    if (!diagListe.TryGetValue(lehrer, out var diag)) return false;
+                    if (liste == null || !liste.TryGetValue(lehrer, out var diag)) return false;
                     var treffer = _diagFilterKriterien.Select(i => DiagFilterDialog.Kriterien[i].Trifft(diag));
                     return _diagFilterUnd ? treffer.All(x => x) : treffer.Any(x => x);
                 }
 
-                lehrerKandidaten = lehrerKandidaten.Where(ErfülltFilter).ToList();
+                lehrerKandidaten = lehrerKandidaten
+                    .Where(l => ErfülltFilter(diagA, l) || ErfülltFilter(diagB, l))
+                    .ToList();
             }
 
             foreach (var l in lehrerKandidaten)
@@ -1403,6 +1518,32 @@ namespace Stundenplan_V2
             // genauso neu aufgebaut werden; die bisherige Auswahl bleibt, wenn
             // es die Gruppe in der neuen Loesung noch gibt.
             FuelleFachgruppenDropdown(CboFachgruppe?.SelectedItem as string);
+        }
+
+        // Lehrer-Diagnose einer Belegung als Nachschlagetabelle (Lehrer -> Werte).
+        // Ausgelagert, weil der Diag-Filter im Vergleichsmodus zwei Loesungen
+        // gegeneinander prueft und beide exakt gleich berechnet werden muessen.
+        private Dictionary<string, LehrerDiagnoseErgebnis> BaueDiagListe(
+            int[,] belegung, List<UnterrichtsBlock> blocks)
+        {
+            var p = _bewParam;
+            return LehrerDiagnose.Berechne(belegung, blocks, _slots,
+                       p.LehrerStammdaten, p.StrafeHohl, p.StrafeDoppelHohl, p.StrafeDreifachHohl,
+                       p.StrafeStdFolge, true, p.ExtraFreieTage, p.LehrerFreiTageMinus2)
+                   .ToDictionary(d => d.Lehrer, d => d);
+        }
+
+        // Baut die Lehrer-Auswahlliste bei aktivem Diag-Filter neu auf und haelt
+        // dabei die bisherige Lehrer-/Klassenauswahl fest. Noetig ueberall dort,
+        // wo sich die Datengrundlage des Filters aendert, ohne dass die
+        // Hauptloesung wechselt: Wechsel der 2. Loesung und Ein-/Ausschalten des
+        // Vergleichsmodus. Ohne aktiven Filter passiert bewusst nichts — ein
+        // Neuaufbau waere dann reine Arbeit ohne Wirkung.
+        private void AktualisiereDiagFilterListe()
+        {
+            if (_diagFilterKriterien == null || _diagFilterKriterien.Count == 0) return;
+            FuelleLehrerKlasseDropdowns(CboLehrer.SelectedItem as string,
+                                        CboKlasse.SelectedItem as string);
         }
 
         // =====================================================
@@ -1442,7 +1583,10 @@ namespace Stundenplan_V2
                 FuelleLehrerKlasseDropdowns(behaltenLehrer, behaltenKlasse);
             }
 
-            ZeichneLehrerGrid();
+            // Im Vergleichsmodus ist der Editier-Lehrerplan ausgeblendet —
+            // dort muessen die vier Vergleichsraster neu gezeichnet werden.
+            if (_vergleichsModus) ZeichneVergleichsModus();
+            else ZeichneLehrerGrid();
         }
 
         // =====================================================
@@ -1981,7 +2125,7 @@ namespace Stundenplan_V2
             if (_rotBlockIdx != blockIdx) { _rotBlockIdx = blockIdx; _rotIndex = 0; }
             else _rotIndex++;
 
-            _highlightBloecke = BerechnePaedEinheit(blockIdx);
+            SetzeHervorhebung(blockIdx, _blocks);
 
             var teile = block.Teile.Where(t => !string.IsNullOrWhiteSpace(t.Lehrer)).ToList();
             if (teile.Count == 0) teile = block.Teile;
@@ -2420,9 +2564,9 @@ namespace Stundenplan_V2
             // Warnung uebermalen, sondern nur das sonst neutrale Hellblau ersetzen.
             Brush hintergrund;
             if (spaetPaed)
-                hintergrund = new SolidColorBrush(Color.FromRgb(0xFF, 0xC1, 0xC1)); // rot
+                hintergrund = SpaetPaedBrush();      // Standard: rot (#FFC1C1)
             else if (spaetPaedFix)
-                hintergrund = new SolidColorBrush(Color.FromRgb(0xFF, 0xDC, 0xDC)); // helleres Rot (spät + voll fixiert)
+                hintergrund = SpaetPaedFixBrush();   // Standard: helleres Rot (#FFDCDC)
             else if (warnung)
                 hintergrund = new SolidColorBrush(Color.FromRgb(0xFF, 0xF3, 0x99)); // gelb
             else if (zweizonig)
@@ -2656,6 +2800,13 @@ namespace Stundenplan_V2
         // Hervorhebung: Blöcke der pädagogischen Einheit (gleiche Klasse + gleiches Fach),
         // die im jeweils anderen Plan markiert werden sollen.
         private HashSet<int> _highlightBloecke = new();
+
+        // Dieselbe Hervorhebung, aber als Menge von UNrn. Die UNr ist über
+        // ALLE Lösungen hinweg stabil, der Block-Index nicht — im
+        // Vergleichsmodus hat die zweite Lösung ihre eigene Blockliste
+        // (_vglBlocks2). Führend ist deshalb diese Menge; _highlightBloecke
+        // wird daraus gegen _blocks abgeleitet (siehe SetzeHervorhebung).
+        private HashSet<int> _highlightUnrn = new();
 
         // Blöcke, die zu einer späten, NICHT voll fixierten päd. Einheit gehören (rot).
         private HashSet<int> _spaetePaedBloecke = new();
@@ -3712,7 +3863,7 @@ namespace Stundenplan_V2
 
             // Hervorhebung: alle Blöcke der pädagogischen Einheit des angeklickten Blocks.
             // Päd. Einheit = gleiche Klasse UND gleiches Fach (irgendein Teil-Match).
-            _highlightBloecke = BerechnePaedEinheit(blockIdx);
+            SetzeHervorhebung(blockIdx, _blocks);
 
             // Angeheftete Kacheln zeigen dieselbe Hervorhebung wie die Hauptpläne –
             // unabhängig davon, ob ihr Lehrer/ihre Klasse Teil der päd. Einheit ist
@@ -3840,9 +3991,16 @@ namespace Stundenplan_V2
         // Päd. Einheit = Blöcke, die mindestens EIN gemeinsames (Klasse, Fach)-Paar teilen.
         // Der angeklickte Block selbst ist immer enthalten.
         private HashSet<int> BerechnePaedEinheit(int blockIdx)
+            => BerechnePaedEinheit(blockIdx, _blocks);
+
+        // Wie oben, aber auf einer BELIEBIGEN Blockliste. Der Vergleichsmodus
+        // zeichnet die zweite Lösung aus _vglBlocks2; deren Indizes passen
+        // nicht zu _blocks, ein Klick dort muss also gegen die eigene Liste
+        // gerechnet werden.
+        private HashSet<int> BerechnePaedEinheit(int blockIdx, List<UnterrichtsBlock> blocks)
         {
             var ergebnis = new HashSet<int> { blockIdx };
-            var basis = _blocks[blockIdx];
+            var basis = blocks[blockIdx];
 
             // Alle (Klasse, Fach)-Paare des angeklickten Blocks.
             // Zeilen mit leerem/fehlendem Fach werden bewusst ausgeschlossen:
@@ -3858,10 +4016,10 @@ namespace Stundenplan_V2
             }
             if (basisPaare.Count == 0) return ergebnis;
 
-            for (int b = 0; b < _blocks.Count; b++)
+            for (int b = 0; b < blocks.Count; b++)
             {
                 if (b == blockIdx) continue;
-                foreach (var t in _blocks[b].Teile)
+                foreach (var t in blocks[b].Teile)
                 {
                     if (string.IsNullOrWhiteSpace(t.Fach)) continue;
                     bool match = t.Klassen.Any(k => basisPaare.Contains((k, t.Fach)));
@@ -3870,6 +4028,42 @@ namespace Stundenplan_V2
             }
 
             return ergebnis;
+        }
+
+        // Päd. Einheit als Menge von UNrn — der über Lösungsgrenzen hinweg
+        // stabile Schlüssel.
+        private HashSet<int> BerechnePaedEinheitUnrn(int blockIdx, List<UnterrichtsBlock> blocks)
+        {
+            var unrn = new HashSet<int>();
+            if (blocks == null || blockIdx < 0 || blockIdx >= blocks.Count) return unrn;
+            foreach (int b in BerechnePaedEinheit(blockIdx, blocks))
+                unrn.Add(blocks[b].UNr);
+            return unrn;
+        }
+
+        // Rückweg: alle Blöcke einer Liste, deren UNr in der Menge steht.
+        // Mehrere Blöcke können dieselbe UNr tragen (parallele Gruppen
+        // desselben Unterrichts) — die gehören zusammen und werden bewusst
+        // alle mitmarkiert. In der Praxis teilen sie ohnehin Klasse und Fach
+        // und waren damit schon vorher Teil derselben päd. Einheit.
+        private static HashSet<int> BloeckeZuUnrn(HashSet<int> unrn, List<UnterrichtsBlock> blocks)
+        {
+            var menge = new HashSet<int>();
+            if (unrn == null || unrn.Count == 0 || blocks == null) return menge;
+            for (int b = 0; b < blocks.Count; b++)
+                if (unrn.Contains(blocks[b].UNr)) menge.Add(b);
+            return menge;
+        }
+
+        // Hervorhebung auf die päd. Einheit dieses Blocks setzen. Führend ist
+        // die UNr-Menge; der Index-Satz für die Editieransicht wird daraus
+        // gegen _blocks abgeleitet. Dadurch überlebt die Markierung das
+        // Umschalten zwischen Editieransicht und Vergleichsmodus in beide
+        // Richtungen — auch wenn der Klick in der zweiten Lösung erfolgte.
+        private void SetzeHervorhebung(int blockIdx, List<UnterrichtsBlock> blocks)
+        {
+            _highlightUnrn = BerechnePaedEinheitUnrn(blockIdx, blocks);
+            _highlightBloecke = BloeckeZuUnrn(_highlightUnrn, _blocks);
         }
 
         // =====================================================
@@ -5662,16 +5856,29 @@ namespace Stundenplan_V2
         // "nicht voll fixiert" (mindestens ein Slot der Einheit ist NICHT in FixUNrn).
         private void AktualisiereSpaetePaedEinheiten()
         {
-            _spaetePaedBloecke = new HashSet<int>();
-            _spaetePaedFixBloecke = new HashSet<int>();
+            BerechneSpaetePaed(_belegung, _blocks,
+                               ChkSpaetePaed.IsChecked == true,
+                               ChkSpaetePaedFix != null && ChkSpaetePaedFix.IsChecked == true,
+                               out _spaetePaedBloecke, out _spaetePaedFixBloecke);
+        }
 
-            bool zeigeRot    = ChkSpaetePaed.IsChecked == true;
-            bool zeigeFixiert = ChkSpaetePaedFix != null && ChkSpaetePaedFix.IsChecked == true;
-            if ((!zeigeRot && !zeigeFixiert) || _belegung == null) return;
+        // Derselbe Kern, aber auf einer frei übergebenen Belegung/Blockliste:
+        // der Vergleichsmodus braucht die Rotmarkierung auch für die ZWEITE
+        // Lösung, deren Block-Indizes eine andere Bedeutung haben. Die
+        // gelieferten Mengen gelten daher immer nur für die Blockliste, mit
+        // der sie berechnet wurden. FixUNrn steckt in _slots und gilt für
+        // beide Lösungen gleichermaßen.
+        private void BerechneSpaetePaed(int[,] belegung, List<UnterrichtsBlock> blocks,
+                                        bool zeigeRot, bool zeigeFixiert,
+                                        out HashSet<int> rot, out HashSet<int> rotFixiert)
+        {
+            rot = new HashSet<int>();
+            rotFixiert = new HashSet<int>();
+            if ((!zeigeRot && !zeigeFixiert) || belegung == null || blocks == null) return;
 
             int S = _slots.Count;
 
-            foreach (var einheit in PlanBewertung.BauePaedEinheiten(_blocks))
+            foreach (var einheit in PlanBewertung.BauePaedEinheiten(blocks))
             {
                 if (PlanBewertung.IstAusgenommen(einheit)) continue;
 
@@ -5681,7 +5888,7 @@ namespace Stundenplan_V2
                 var alleBS     = new List<(int b, int s)>();
                 foreach (int b in einheit.BlockIds)
                     for (int s = 0; s < S; s++)
-                        if (_belegung[b, s] == 1)
+                        if (belegung[b, s] == 1)
                         {
                             alleBS.Add((b, s));
                             if (_slots[s].Stunde >= PlanBewertung.ErsteSpaeteStunde)
@@ -5690,25 +5897,25 @@ namespace Stundenplan_V2
 
                 // spät: Zahl später Slots >= Wst-abhängige Schwelle
                 if (späteSlots.Count < PlanBewertung.SchwelleFuerWst(
-                        PlanBewertung.EinheitWstGedeckelt(einheit, _belegung, _slots))) continue;
+                        PlanBewertung.EinheitWstGedeckelt(einheit, belegung, _slots))) continue;
 
                 // voll fixiert? -> alle belegten Slots der Einheit in FixUNrn
                 bool alleFixiert = alleBS.All(bs =>
-                    _slots[bs.s].FixUNrn.Contains(_blocks[bs.b].UNr));
+                    _slots[bs.s].FixUNrn.Contains(blocks[bs.b].UNr));
 
                 if (alleFixiert)
                 {
                     // spät + voll fixiert -> orange (nur wenn gewünscht)
                     if (zeigeFixiert)
                         foreach (var bs in alleBS)
-                            _spaetePaedFixBloecke.Add(bs.b);
+                            rotFixiert.Add(bs.b);
                 }
                 else
                 {
                     // spät + (noch) bewegbar -> rot (wie bisher)
                     if (zeigeRot)
                         foreach (var bs in alleBS)
-                            _spaetePaedBloecke.Add(bs.b);
+                            rot.Add(bs.b);
                 }
             }
         }
@@ -6836,6 +7043,7 @@ namespace Stundenplan_V2
             LeereVerschiebungen();
             _aktuelleVerletzungen = new();
             _highlightBloecke = new();
+            _highlightUnrn = new();
             _rotBlockIdx = -1;
             _rotIndex = 0;
             SetStatus("Zuruckgesetzt auf Original-Loesung.", false);
@@ -6844,15 +7052,46 @@ namespace Stundenplan_V2
         private void BtnUebernehmen_Click(object sender, RoutedEventArgs e)
         {
             if (_belegung == null) return;
+            if (_uebernahmeLaeuft) return;
 
-            string neuLabel = _aktLabel + "_man";
-            // eindeutig machen falls schon vorhanden
-            int n = 1;
+            // Name: Basis + "_man" + laufende Nummer, immer ab 1 — also
+            // OT1_man1, OT1_man2, … (frueher blieb der erste ohne Nummer).
+            //
+            // Aus der Basis fallen vorher zwei Dinge heraus:
+            //  - ein Anzeige-Praefix wie "[Gesichert] " (siehe
+            //    LadeLoesungenAusSheet im MainWindow). Ohne das hiesse ein
+            //    frisch von Hand geaenderter Plan weiter "gesichert",
+            //    obwohl er es nicht ist.
+            //  - ein bereits vorhandenes "_man<n>" am Ende. Sonst stapelten
+            //    sich die Suffixe bei jeder weiteren Bearbeitung
+            //    ("OT1_man1_man"); so wird die zweite Bearbeitung von
+            //    "OT1_man1" sauber zu "OT1_man2".
+            string basis = (_aktLabel ?? "").Trim();
+            int klammerEnde = basis.IndexOf("] ", StringComparison.Ordinal);
+            if (basis.StartsWith("[") && klammerEnde > 0)
+                basis = basis.Substring(klammerEnde + 2);
+            basis = System.Text.RegularExpressions.Regex.Replace(basis, @"_man\d*$", "");
+
             var vorhandene = _loesungen.Select(l => l.label).ToHashSet();
-            string kandidat = neuLabel;
-            while (vorhandene.Contains(kandidat))
-                kandidat = neuLabel + n++;
-            neuLabel = kandidat;
+            int n = 1;
+            while (vorhandene.Contains(basis + "_man" + n)) n++;
+            string neuLabel = basis + "_man" + n;
+
+            // Das Uebernehmen schreibt die Excel-Datei und laedt anschliessend
+            // die neue Loesung — beides synchron auf dem UI-Thread und je nach
+            // Dateigroesse spuerbar lang. Ohne Rueckmeldung sieht das Fenster
+            // dabei aus, als sei der Klick ins Leere gegangen; entsprechend oft
+            // wird ein zweites Mal geklickt. Daher: Button einfaerben und
+            // sperren, Wartecursor setzen — und das Ganze VOR der Arbeit
+            // tatsaechlich zeichnen lassen (siehe ErzwingeNeuzeichnen).
+            _uebernahmeLaeuft = true;
+            object altInhalt = BtnUebernehmen.Content;
+            BtnUebernehmen.IsEnabled = false;
+            BtnUebernehmen.Content = "Uebernehme … bitte warten";
+            BtnUebernehmen.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xC1, 0x07)); // Amber
+            Mouse.OverrideCursor = Cursors.Wait;
+            SetStatus("Uebernehme als '" + neuLabel + "' — die Excel-Datei wird geschrieben …", false);
+            ErzwingeNeuzeichnen();
 
             try
             {
@@ -6868,7 +7107,27 @@ namespace Stundenplan_V2
             {
                 SetStatus("Fehler beim Uebernehmen: " + ex.Message, true);
             }
+            finally
+            {
+                // Immer zuruecksetzen — auch im Fehlerfall, sonst bliebe der
+                // Button dauerhaft gelb und gesperrt.
+                Mouse.OverrideCursor = null;
+                BtnUebernehmen.ClearValue(Button.BackgroundProperty);
+                BtnUebernehmen.Content = altInhalt;
+                BtnUebernehmen.IsEnabled = true;
+                _uebernahmeLaeuft = false;
+            }
         }
+
+        // Zwingt WPF, die anstehenden Layout- und Zeichenschritte JETZT
+        // auszufuehren. Ein leerer Aufruf mit niedriger Prioritaet laesst alles
+        // Hoeherpriore (Render, Loaded) zuerst laufen — das klassische
+        // "DoEvents" fuer WPF. Ohne das wuerde eine Statusanzeige, die kurz vor
+        // einer langen synchronen Operation gesetzt wird, erst NACH deren Ende
+        // sichtbar, also genau dann, wenn sie niemand mehr braucht.
+        private void ErzwingeNeuzeichnen()
+            => Dispatcher.Invoke(new Action(() => { }),
+                                 System.Windows.Threading.DispatcherPriority.Background);
 
         private void BtnSchliessen_Click(object sender, RoutedEventArgs e)
         {

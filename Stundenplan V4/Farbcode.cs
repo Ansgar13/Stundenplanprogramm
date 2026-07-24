@@ -8,12 +8,21 @@ using ClosedXML.Excel;
 namespace Stundenplan_V2
 {
     /// <summary>
-    /// Persistenz des Farbcodes (Hintergrundfarben je Klasse und je Fach) im
-    /// Sheet "Farben" der Excel-Datei. Aufbau:
+    /// Persistenz des Farbcodes (Hintergrundfarben je Klasse und je Fach) sowie
+    /// der frei waehlbaren Sonderfarben im Sheet "Farben" der Excel-Datei.
+    /// Aufbau:
     ///
-    ///     Typ    | Name | Hex
-    ///     Klasse | 5a   | #BBDEFB
-    ///     Fach   | M    | #C8E6C9
+    ///     Typ    | Name                 | Hex
+    ///     Klasse | 5a                   | #BBDEFB
+    ///     Fach   | M                    | #C8E6C9
+    ///     Sonder | SpaetePaedEinheit    | #FFC1C1
+    ///     Sonder | SpaetePaedEinheitFix | #FFDCDC
+    ///
+    /// "Sonder" haelt die Farben, die nicht an einem Namen aus den Daten
+    /// haengen, sondern an einer Bedeutung — derzeit die beiden Toene fuer
+    /// spaete paedagogische Einheiten im Plan-Editor. Fehlt eine Sonderfarbe
+    /// (Sheet, Zeile oder Hex ungueltig), gilt der jeweilige Standardton unten;
+    /// der Editor sieht dann exakt so aus wie vor dieser Erweiterung.
     ///
     /// Die Farben sind rein optisch (Anzeige im Plan-Editor) und werden weder
     /// vom Solver noch von den Excel-Exporten ausgewertet. Deshalb liest sie
@@ -29,19 +38,46 @@ namespace Stundenplan_V2
         public const string SheetName = "Farben";
 
         // =====================================================
+        // SONDERFARBEN
+        // Schluessel im Sheet (Spalte "Name" bei Typ "Sonder").
+        // Bewusst technische, sprachneutrale Schluessel — die lesbaren
+        // Beschriftungen stehen im FarbcodeDialog, damit eine Umbenennung
+        // im Dialog nicht die gespeicherten Dateien entwertet.
+        // =====================================================
+        public const string KeySpaetPaed    = "SpaetePaedEinheit";
+        public const string KeySpaetPaedFix = "SpaetePaedEinheitFix";
+
+        /// <summary>Spaete paed. Einheit, noch bewegbar (bisher fest verdrahtet).</summary>
+        public static readonly Color StandardSpaetPaed = Color.FromRgb(0xFF, 0xC1, 0xC1);
+
+        /// <summary>Spaete paed. Einheit, voll fixiert (bisher fest verdrahtet).</summary>
+        public static readonly Color StandardSpaetPaedFix = Color.FromRgb(0xFF, 0xDC, 0xDC);
+
+        /// <summary>
+        /// Sonderfarbe zu einem Schluessel — oder der Standardton, wenn dafuer
+        /// nichts gespeichert ist. Einziger Zugriffsweg fuer die Anzeige, damit
+        /// der Fallback an genau einer Stelle steht.
+        /// </summary>
+        public static Color Sonderfarbe(IDictionary<string, Color> sonder, string key, Color standard)
+            => sonder != null && sonder.TryGetValue(key, out var farbe) ? farbe : standard;
+
+        // =====================================================
         // LESEN
         // =====================================================
-        public static (Dictionary<string, Color> klassen, Dictionary<string, Color> faecher) Lade(string excelPfad)
+        public static (Dictionary<string, Color> klassen,
+                       Dictionary<string, Color> faecher,
+                       Dictionary<string, Color> sonder) Lade(string excelPfad)
         {
             var klassen = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
             var faecher = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
+            var sonder  = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
 
             if (string.IsNullOrWhiteSpace(excelPfad) || !System.IO.File.Exists(excelPfad))
-                return (klassen, faecher);
+                return (klassen, faecher, sonder);
 
             using var wb = new XLWorkbook(excelPfad);
             if (!wb.Worksheets.TryGetWorksheet(SheetName, out var sheet))
-                return (klassen, faecher);
+                return (klassen, faecher, sonder);
 
             // Bewusst ueber feste Spaltennummern statt RangeUsed(): die Zeilen
             // eines RangeUsed sind relativ zum Bereichsanfang nummeriert, was
@@ -60,20 +96,24 @@ namespace Stundenplan_V2
                     klassen[name] = farbe;
                 else if (typ.StartsWith("Fach", StringComparison.OrdinalIgnoreCase))
                     faecher[name] = farbe;
+                else if (typ.StartsWith("Sonder", StringComparison.OrdinalIgnoreCase))
+                    sonder[name] = farbe;
             }
 
-            return (klassen, faecher);
+            return (klassen, faecher, sonder);
         }
 
         // =====================================================
         // SCHREIBEN
         // Das Sheet wird komplett neu geschrieben (wie ExportiereFixNachPlan):
         // Eintraege ohne Farbe stehen gar nicht erst in den Dictionaries und
-        // verschwinden damit automatisch aus der Datei.
+        // verschwinden damit automatisch aus der Datei. Fuer die Sonderfarben
+        // heisst das: eine geloeschte Zeile bedeutet "Standardton benutzen".
         // =====================================================
         public static void Speichere(string excelPfad,
                                      IDictionary<string, Color> klassen,
-                                     IDictionary<string, Color> faecher)
+                                     IDictionary<string, Color> faecher,
+                                     IDictionary<string, Color> sonder)
         {
             using var wb = new XLWorkbook(excelPfad);
             if (!wb.Worksheets.TryGetWorksheet(SheetName, out var sheet))
@@ -91,6 +131,9 @@ namespace Stundenplan_V2
                 SchreibeZeile(sheet, zeile++, "Klasse", kv.Key, kv.Value);
             foreach (var kv in faecher.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
                 SchreibeZeile(sheet, zeile++, "Fach", kv.Key, kv.Value);
+            if (sonder != null)
+                foreach (var kv in sonder.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
+                    SchreibeZeile(sheet, zeile++, "Sonder", kv.Key, kv.Value);
 
             sheet.Columns(1, 3).AdjustToContents();
             wb.Save();
