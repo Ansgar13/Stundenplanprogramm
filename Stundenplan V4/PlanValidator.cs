@@ -28,7 +28,11 @@ namespace Stundenplan_V2
             HashSet<string> lehrerFreiTageMinus2 = null,
             HashSet<string> lehrerFreiTageMinus3 = null,
             Dictionary<string, int> fachraumLimit = null,
-            bool verbotMinus2Lehrer = false)
+            bool verbotMinus2Lehrer = false,
+            Dictionary<string, int> extraFreieStunden = null,
+            Dictionary<string, (int von, int bis)> freieStundenBereich = null,
+            HashSet<string> lehrerFreieStundenMinus2 = null,
+            HashSet<string> lehrerFreieStundenMinus3 = null)
         {
             int B = blocks.Count;
             int S = slots.Count;
@@ -533,6 +537,50 @@ namespace Stundenplan_V2
                             "Hinweis: freie Tage -2 (weich)",
                             "", 0, 0, lehrer, "",
                             $"Wunsch: {gewünscht} freie Tage, vorhanden {freieTage} (−{fehlend}). Im Solver nur weiche Strafe."));
+                }
+            }
+
+            // =====================================================
+            // 9b. FREIE STUNDEN (Teilband): harte Prüfung für -3 (und -2 mit
+            //     Verbot), -2 ohne Verbot als Hinweis. Zaehlweise identisch zum
+            //     Solver (FreieStunden.ZaehleFreieBandTage).
+            // =====================================================
+            if (extraFreieStunden != null && extraFreieStunden.Count > 0 &&
+                freieStundenBereich != null)
+            {
+                var alleLehrerFs = blocks
+                    .SelectMany(b => b.Teile.Select(t => t.Lehrer))
+                    .Distinct().ToList();
+                var alleTageFs = slots.Select(s => s.WTag).Distinct().ToList();
+
+                foreach (var lehrer in alleLehrerFs)
+                {
+                    bool istMinus3 = lehrerFreieStundenMinus3 != null && lehrerFreieStundenMinus3.Contains(lehrer);
+                    bool istMinus2 = lehrerFreieStundenMinus2 != null && lehrerFreieStundenMinus2.Contains(lehrer);
+                    if (!istMinus2 && !istMinus3) continue;
+                    if (!extraFreieStunden.TryGetValue(lehrer, out int gewünscht) || gewünscht <= 0) continue;
+                    if (!freieStundenBereich.TryGetValue(lehrer, out var bereich)) continue;
+
+                    bool hart = istMinus3 || (istMinus2 && verbotMinus2Lehrer);
+                    if (!hart && !meldeLeherMinus2) continue;
+
+                    int freieBandTage = FreieStunden.ZaehleFreieBandTage(
+                        lehrer, belegung, blocks, slots, alleTageFs, bereich.von, bereich.bis);
+
+                    int fehlend = gewünscht - freieBandTage;
+                    if (fehlend <= 0) continue;
+
+                    string bandTxt = FreieStunden.FormatBereich(bereich.von, bereich.bis);
+                    if (hart)
+                        verletzungen.Add(new Verletzung(
+                            istMinus3 ? "Freie Stunden -3" : "Freie Stunden -2 (Verbot)",
+                            "", 0, 0, lehrer, "",
+                            $"Freie Stunden (Band {bandTxt}): gefordert {gewünscht} Tag(e), vorhanden {freieBandTage} (−{fehlend}); komplett ZWL-gesperrte Bänder zählen nicht."));
+                    else
+                        verletzungen.Add(new Verletzung(
+                            "Hinweis: freie Stunden -2 (weich)",
+                            "", 0, 0, lehrer, "",
+                            $"Wunsch: Band {bandTxt} an {gewünscht} Tag(en) frei, vorhanden {freieBandTage} (−{fehlend}). Im Solver nur weiche Strafe."));
                 }
             }
 

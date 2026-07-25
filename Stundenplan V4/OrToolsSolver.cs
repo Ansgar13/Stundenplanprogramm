@@ -56,7 +56,11 @@ public class OrToolsSolver : ISolver
             fortschritt,
             abbruch,
             input.MindestAbstandLösungenBloecke,
-            darfDiagnose
+            darfDiagnose,
+            extraFreieStunden: input.ExtraFreieStunden,
+            freieStundenBereich: input.FreieStundenBereich,
+            lehrerFreieStundenMinus2: input.LehrerFreieStundenMinus2,
+            lehrerFreieStundenMinus3: input.LehrerFreieStundenMinus3
         );
     }
 }

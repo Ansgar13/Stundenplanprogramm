@@ -102,6 +102,11 @@ namespace Stundenplan_V2
             public Dictionary<string, int> ExtraFreieTage = new();
             public HashSet<string> LehrerFreiTageMinus2 = new();
             public HashSet<string> LehrerFreiTageMinus3 = new();
+            // Freie Stunden (Teilband) — parallel zu den freien Tagen.
+            public Dictionary<string, int> ExtraFreieStunden = new();
+            public Dictionary<string, (int von, int bis)> FreieStundenBereich = new();
+            public HashSet<string> LehrerFreieStundenMinus2 = new();
+            public HashSet<string> LehrerFreieStundenMinus3 = new();
             public bool VerbotMinus2 = false;
             public bool MeldeMinus2 = false;
         }
@@ -1529,7 +1534,7 @@ namespace Stundenplan_V2
             var p = _bewParam;
             return LehrerDiagnose.Berechne(belegung, blocks, _slots,
                        p.LehrerStammdaten, p.StrafeHohl, p.StrafeDoppelHohl, p.StrafeDreifachHohl,
-                       p.StrafeStdFolge, true, p.ExtraFreieTage, p.LehrerFreiTageMinus2)
+                       p.StrafeStdFolge, true, p.ExtraFreieTage, p.LehrerFreiTageMinus2, p.ExtraFreieStunden, p.FreieStundenBereich, p.LehrerFreieStundenMinus2)
                    .ToDictionary(d => d.Lehrer, d => d);
         }
 
@@ -5529,26 +5534,54 @@ namespace Stundenplan_V2
 
             // --- Freie Tage: nur die Lehrer der beteiligten Bloecke koennen
             //     betroffen sein, denn nur deren Stunden wandern ueberhaupt. ---
-            if (_bewParam?.ExtraFreieTage == null || _bewParam.ExtraFreieTage.Count == 0)
-                return false;
-
-            foreach (var lehrer in beteiligteBloecke
+            var betroffeneLehrer = beteiligteBloecke
                          .Where(b => b >= 0 && b < _blocks.Count)
                          .SelectMany(b => _blocks[b].Teile.Select(t => t.Lehrer))
                          .Where(l => !string.IsNullOrWhiteSpace(l))
-                         .Distinct())
+                         .Distinct()
+                         .ToList();
+
+            if (_bewParam?.ExtraFreieTage != null && _bewParam.ExtraFreieTage.Count > 0)
             {
-                if (!_bewParam.ExtraFreieTage.TryGetValue(lehrer, out int gefordert) || gefordert <= 0)
-                    continue;
-
-                if (!freiVorCache.TryGetValue(lehrer, out int vor))
+                foreach (var lehrer in betroffeneLehrer)
                 {
-                    vor = ZaehleFreieTage(lehrer, _belegung);
-                    freiVorCache[lehrer] = vor;
-                }
+                    if (!_bewParam.ExtraFreieTage.TryGetValue(lehrer, out int gefordert) || gefordert <= 0)
+                        continue;
 
-                int nach = ZaehleFreieTage(lehrer, probe);
-                if (nach < gefordert && nach < vor) return true;
+                    if (!freiVorCache.TryGetValue(lehrer, out int vor))
+                    {
+                        vor = ZaehleFreieTage(lehrer, _belegung);
+                        freiVorCache[lehrer] = vor;
+                    }
+
+                    int nach = ZaehleFreieTage(lehrer, probe);
+                    if (nach < gefordert && nach < vor) return true;
+                }
+            }
+
+            // --- Freie Stunden (Teilband): analog. Der "vorher"-Wert wird im
+            //     selben Cache unter einem eigenen Schluessel-Praefix "FS::"
+            //     gehalten, damit keine zweite Cache-Struktur noetig ist. ---
+            if (_bewParam?.ExtraFreieStunden != null && _bewParam.ExtraFreieStunden.Count > 0 &&
+                _bewParam.FreieStundenBereich != null)
+            {
+                foreach (var lehrer in betroffeneLehrer)
+                {
+                    if (!_bewParam.ExtraFreieStunden.TryGetValue(lehrer, out int gefordert) || gefordert <= 0)
+                        continue;
+                    if (!_bewParam.FreieStundenBereich.TryGetValue(lehrer, out var bereich))
+                        continue;
+
+                    string cacheKey = "FS::" + lehrer;
+                    if (!freiVorCache.TryGetValue(cacheKey, out int vor))
+                    {
+                        vor = FreieStunden.ZaehleFreieBandTage(lehrer, _belegung, _blocks, _slots, _tage, bereich.von, bereich.bis);
+                        freiVorCache[cacheKey] = vor;
+                    }
+
+                    int nach = FreieStunden.ZaehleFreieBandTage(lehrer, probe, _blocks, _slots, _tage, bereich.von, bereich.bis);
+                    if (nach < gefordert && nach < vor) return true;
+                }
             }
 
             return false;
@@ -5670,11 +5703,11 @@ namespace Stundenplan_V2
             // --- Lehrer-Diagnose vorher/nachher (meldeMinus2 fuer Editor erzwungen) ---
             var diagVor = LehrerDiagnose.Berechne(_belegung, _blocks, _slots,
                 p.LehrerStammdaten, p.StrafeHohl, p.StrafeDoppelHohl, p.StrafeDreifachHohl,
-                p.StrafeStdFolge, true, p.ExtraFreieTage, p.LehrerFreiTageMinus2)
+                p.StrafeStdFolge, true, p.ExtraFreieTage, p.LehrerFreiTageMinus2, p.ExtraFreieStunden, p.FreieStundenBereich, p.LehrerFreieStundenMinus2)
                 .ToDictionary(d => d.Lehrer, d => d);
             var diagNach = LehrerDiagnose.Berechne(probeBelegung, _blocks, _slots,
                 p.LehrerStammdaten, p.StrafeHohl, p.StrafeDoppelHohl, p.StrafeDreifachHohl,
-                p.StrafeStdFolge, true, p.ExtraFreieTage, p.LehrerFreiTageMinus2)
+                p.StrafeStdFolge, true, p.ExtraFreieTage, p.LehrerFreiTageMinus2, p.ExtraFreieStunden, p.FreieStundenBereich, p.LehrerFreieStundenMinus2)
                 .ToDictionary(d => d.Lehrer, d => d);
 
             Zeile("Lehrer:");
@@ -5764,6 +5797,17 @@ namespace Stundenplan_V2
                 // Einzug
                 TxtDetails.Inlines.Add(new System.Windows.Documents.Run(new string(' ', 8)) { FontWeight = FontWeights.Bold });
                 Feld("FT " + freiVor + "->" + freiNach, rot: freiNach < freiVor, ersterImBlock: true);
+                // Freie Stunden (Band) nur ausgeben, wenn dieser Lehrer ein Band hat.
+                if (_bewParam?.ExtraFreieStunden != null &&
+                    _bewParam.ExtraFreieStunden.ContainsKey(l) &&
+                    _bewParam.FreieStundenBereich != null &&
+                    _bewParam.FreieStundenBereich.TryGetValue(l, out var fsBereich))
+                {
+                    int fsVor = FreieStunden.ZaehleFreieBandTage(l, _belegung, _blocks, _slots, _tage, fsBereich.von, fsBereich.bis);
+                    int fsNach = FreieStunden.ZaehleFreieBandTage(l, probeBelegung, _blocks, _slots, _tage, fsBereich.von, fsBereich.bis);
+                    Feld("FS[" + FreieStunden.FormatBereich(fsBereich.von, fsBereich.bis) + "] " + fsVor + "->" + fsNach,
+                         rot: fsNach < fsVor);
+                }
                 Feld("-2 V " + m2Vor + "->" + m2Nach, rot: false);
                 if (v.Minus2FreiTageVerletzungen != n.Minus2FreiTageVerletzungen)
                     Feld("davon -2-freie-Tage " + v.Minus2FreiTageVerletzungen + "->" + n.Minus2FreiTageVerletzungen, rot: false);
@@ -6703,6 +6747,36 @@ namespace Stundenplan_V2
                     if (freiNach < gefordert)
                         return "Lehrer " + lehrer + " haette nur " + freiNach
                                + " statt " + gefordert + " zwingende(r) freie(r) Tag(e)";
+                }
+            }
+
+            // --- Harte Freie-Stunden-Sperre (Teilband) ---
+            // Analog zu den freien Tagen: nur fuer Lehrer, deren freies Band
+            // ZWINGEND ist (-3, oder -2 mit aktivem Verbot-2).
+            if (_bewParam != null && _bewParam.ExtraFreieStunden != null &&
+                _bewParam.FreieStundenBereich != null)
+            {
+                foreach (var lehrer in block.Teile.Select(t => t.Lehrer).Distinct())
+                {
+                    if (string.IsNullOrWhiteSpace(lehrer)) continue;
+                    if (!_bewParam.ExtraFreieStunden.TryGetValue(lehrer, out int gefordert) || gefordert <= 0)
+                        continue;
+                    if (!_bewParam.FreieStundenBereich.TryGetValue(lehrer, out var bereich))
+                        continue;
+
+                    bool minus3 = _bewParam.LehrerFreieStundenMinus3 != null
+                                  && _bewParam.LehrerFreieStundenMinus3.Contains(lehrer);
+                    bool minus2 = _bewParam.LehrerFreieStundenMinus2 != null
+                                  && _bewParam.LehrerFreieStundenMinus2.Contains(lehrer);
+                    bool zwingend = minus3 || (minus2 && _bewParam.VerbotMinus2);
+                    if (!zwingend) continue;
+
+                    int bandNach = FreieStunden.ZaehleFreieBandTage(
+                        lehrer, probe, _blocks, _slots, _tage, bereich.von, bereich.bis);
+                    if (bandNach < gefordert)
+                        return "Lehrer " + lehrer + " haette nur " + bandNach
+                               + " statt " + gefordert + " zwingende(r) freie(s) Band-Tag(e) ["
+                               + FreieStunden.FormatBereich(bereich.von, bereich.bis) + "]";
                 }
             }
 

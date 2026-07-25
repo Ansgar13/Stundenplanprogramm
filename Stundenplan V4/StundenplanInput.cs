@@ -51,6 +51,23 @@ public class StundenplanInput
     // Lehrer, die neben ihrem Freie-Tage-Wunsch eine -2 eingetragen haben
     public HashSet<string> LehrerFreiTageMinus2 { get; set; } = new();
     public HashSet<string> LehrerFreiTageMinus3 { get; set; } = new();
+
+    // ---- FREIE STUNDEN (Teilband) ------------------------------------
+    // Neues Kriterium analog zu den freien Tagen, aber nur fuer ein
+    // Stundenband (z.B. "5-11" = 5.-11. Stunde). Ein Tag zaehlt als
+    // "freies Band", wenn der Lehrer an diesem Tag in KEINER Stunde des
+    // Bandes Unterricht hat. Gefordert werden >= N solcher Tage pro Woche.
+    //   ExtraFreieStunden        : Lehrer -> Anzahl Tage (N)
+    //   FreieStundenBereich      : Lehrer -> (vonStunde, bisStunde) inklusive
+    //   LehrerFreieStundenMinus3 : Gewicht -3 (zwingend/hart)
+    //   LehrerFreieStundenMinus2 : Gewicht -2 (Wunsch; hart nur bei Verbot -2)
+    // Die -2/-3-Mechanik nutzt bewusst dieselben Schalter/Strafen wie die
+    // freien Tage (VerbotMinus2Verletzungen / StrafeMinus2Verletzungen);
+    // ein eigener PM-Schalter ist nicht vorgesehen.
+    public Dictionary<string, int> ExtraFreieStunden { get; set; } = new();
+    public Dictionary<string, (int von, int bis)> FreieStundenBereich { get; set; } = new();
+    public HashSet<string> LehrerFreieStundenMinus2 { get; set; } = new();
+    public HashSet<string> LehrerFreieStundenMinus3 { get; set; } = new();
     // Diagnosezeilen zum Einlesen der FT-Tabelle (welche Einträge registriert/verworfen wurden)
     public List<string> FtDiagnose { get; set; } = new();
     // Diagnosezeilen zum Einlesen der StD-Tabelle: welche "hart"-Flags gesetzt

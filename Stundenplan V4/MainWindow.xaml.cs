@@ -820,7 +820,7 @@ namespace Stundenplan_V2
                             input.StrafeStdFolge,
                             meldeMinus2,
                             input.ExtraFreieTage,
-                            input.LehrerFreiTageMinus2)))
+                            input.LehrerFreiTageMinus2, input.ExtraFreieStunden, input.FreieStundenBereich, input.LehrerFreieStundenMinus2)))
                     .ToList();
 
                 var zusatzDaten = letzteSolutions
@@ -1120,7 +1120,7 @@ namespace Stundenplan_V2
                                 input.StrafeStdFolge,
                                 meldeMinus2,
                                 input.ExtraFreieTage,
-                                input.LehrerFreiTageMinus2)))
+                                input.LehrerFreiTageMinus2, input.ExtraFreieStunden, input.FreieStundenBereich, input.LehrerFreieStundenMinus2)))
                         .ToList();
 
                     var zusatzDaten6 = letzteSolutions
@@ -1217,7 +1217,11 @@ namespace Stundenplan_V2
                     lehrerFreiTageMinus2: input.LehrerFreiTageMinus2,
                     lehrerFreiTageMinus3: input.LehrerFreiTageMinus3,
                     fachraumLimit: input.Fachraeume,
-                    verbotMinus2Lehrer: input.VerbotMinus2Verletzungen);
+                    verbotMinus2Lehrer: input.VerbotMinus2Verletzungen,
+                    extraFreieStunden: input.ExtraFreieStunden,
+                    freieStundenBereich: input.FreieStundenBereich,
+                    lehrerFreieStundenMinus2: input.LehrerFreieStundenMinus2,
+                    lehrerFreieStundenMinus3: input.LehrerFreieStundenMinus3);
 
                 PlanValidator.SchreibeTabelle(excelPfad, verletzungen);
 
@@ -1335,7 +1339,7 @@ namespace Stundenplan_V2
                                 input.StrafeStdFolge,
                                 meldeMinus2,
                                 input.ExtraFreieTage,
-                                input.LehrerFreiTageMinus2)))
+                                input.LehrerFreiTageMinus2, input.ExtraFreieStunden, input.FreieStundenBereich, input.LehrerFreieStundenMinus2)))
                         .ToList();
 
                     var zusatzDaten9 = letzteSolutions
@@ -2458,7 +2462,7 @@ namespace Stundenplan_V2
                             input.StrafeStdFolge,
                             meldeMinus2,
                             input.ExtraFreieTage,
-                            input.LehrerFreiTageMinus2))
+                            input.LehrerFreiTageMinus2, input.ExtraFreieStunden, input.FreieStundenBereich, input.LehrerFreieStundenMinus2))
                     };
 
                     var zusatzDatenEditor = new List<(string, int, int)>
@@ -2502,6 +2506,10 @@ namespace Stundenplan_V2
                 ExtraFreieTage = input.ExtraFreieTage,
                 LehrerFreiTageMinus2 = input.LehrerFreiTageMinus2,
                 LehrerFreiTageMinus3 = input.LehrerFreiTageMinus3,
+                ExtraFreieStunden = input.ExtraFreieStunden,
+                FreieStundenBereich = input.FreieStundenBereich,
+                LehrerFreieStundenMinus2 = input.LehrerFreieStundenMinus2,
+                LehrerFreieStundenMinus3 = input.LehrerFreieStundenMinus3,
                 VerbotMinus2 = input.VerbotMinus2Verletzungen,
                 MeldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0
             };
@@ -2983,7 +2991,7 @@ namespace Stundenplan_V2
                             input.StrafeStdFolge,
                             meldeMinus2,
                             input.ExtraFreieTage,
-                            input.LehrerFreiTageMinus2)))
+                            input.LehrerFreiTageMinus2, input.ExtraFreieStunden, input.FreieStundenBereich, input.LehrerFreieStundenMinus2)))
                     .ToList();
 
                 var zusatzDaten = gesicherte
@@ -3104,7 +3112,7 @@ namespace Stundenplan_V2
         // Einzige Möglichkeit, eine im Sheet "Gesichert" abgelegte Lösung
         // wieder zu entfernen — geschieht NIE automatisch.
         // =====================================================
-        private void BtnGesicherteLoesungLoeschen_Click(object sender, RoutedEventArgs e)
+        private void BtnLoesungenLoeschen_Click(object sender, RoutedEventArgs e)
         {
             if (input == null)
             {
@@ -3112,58 +3120,88 @@ namespace Stundenplan_V2
                 return;
             }
 
-            List<string> namen;
+            // Namen aus beiden Quellen einsammeln: dauerhaft gesicherte Lösungen
+            // (Sheet "Gesichert") UND die zuletzt geschriebenen Lösungen (Sheet
+            // "Lös"). Jede Auswahlzeile merkt sich Quelle + Rohnamen.
+            var eintraege = new List<(string display, string quelle, string name)>();
             try
             {
-                namen = LeseGesicherteNamen();
+                foreach (var n in LeseGesicherteNamen())
+                    eintraege.Add(($"[Gesichert] {n}", "Gesichert", n));
+                foreach (var n in LeseLösNamen())
+                    eintraege.Add(($"[Lös] {n}", "Lös", n));
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Fehler beim Lesen des Sheets 'Gesichert':\n" + ex.Message);
+                MessageBox.Show("Fehler beim Lesen der Lösungs-Sheets:\n" + ex.Message);
                 return;
             }
 
-            if (namen.Count == 0)
+            if (eintraege.Count == 0)
             {
-                MessageBox.Show("Es sind keine gesicherten Lösungen vorhanden.");
+                MessageBox.Show("Es sind keine Lösungen zum Löschen vorhanden " +
+                                "(weder im Sheet 'Lös' noch im Sheet 'Gesichert').");
                 return;
             }
 
-            string gewählterName = ZeigeAuswahlDialog(
-                "Gesicherte Lösung löschen",
-                "Welche gesicherte Lösung soll endgültig gelöscht werden?\n" +
+            var gewählt = ZeigeMehrfachAuswahlDialog(
+                "Lösungen löschen",
+                "Welche Lösungen sollen gelöscht werden? (Mehrfachauswahl möglich)\n" +
                 "Dieser Vorgang kann nicht rückgängig gemacht werden.\n\n" +
-                "Hinweis: Fehlt die gesuchte Sicherung in der Liste, evtl. zuerst die " +
-                "Excel-Datei neu laden (Button 1) — z.B. nach einer manuell im Plan-Editor " +
-                "übernommenen und dann gesicherten Lösung steht sie hier erst nach einem " +
-                "Neuladen sicher zur Auswahl.",
-                namen);
-            if (gewählterName == null) return;
+                "'[Gesichert]' = dauerhaft gesicherte Lösung (Sheet 'Gesichert').\n" +
+                "'[Lös]' = zuletzt berechnete/geschriebene Lösung (Sheet 'Lös').\n\n" +
+                "Hinweis: Fehlt eine gerade gesicherte Lösung, evtl. zuerst die " +
+                "Excel-Datei neu laden (Button 1).",
+                eintraege.Select(x => x.display).ToList());
+            if (gewählt == null || gewählt.Count == 0) return;
+
+            var ausgewählt = eintraege.Where(x => gewählt.Contains(x.display)).ToList();
 
             var confirm = MessageBox.Show(
-                $"Gesicherte Lösung '{gewählterName}' wirklich endgültig löschen?",
+                $"{ausgewählt.Count} Lösung(en) wirklich endgültig löschen?\n\n" +
+                string.Join("\n", ausgewählt.Select(x => "• " + x.display)),
                 "Bestätigung", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (confirm != MessageBoxResult.Yes) return;
 
-            try
+            int erfolg = 0;
+            var fehler = new List<string>();
+            foreach (var eintrag in ausgewählt)
             {
-                LöscheGesicherteLösung(gewählterName);
-                EntferneLehrerAbweichungFürGesichert(gewählterName);
-
-                // Zugehörigen Diagnose-Block ebenfalls entfernen, damit im Sheet
-                // "Diag" keine Karteikarte für eine nicht mehr existierende
-                // gesicherte Lösung zurückbleibt.
-                EntferneDiagnoseFuerLabel("[Gesichert] " + gewählterName);
-
-                MessageBox.Show($"Gesicherte Lösung '{gewählterName}' wurde gelöscht.");
-                Log($"Gesicherte Lösung '{gewählterName}' gelöscht.");
-                LadeExcelDatenNeu(zeigeWarnungen: false);
+                try
+                {
+                    if (eintrag.quelle == "Gesichert")
+                    {
+                        LöscheGesicherteLösung(eintrag.name);
+                        EntferneLehrerAbweichungFürGesichert(eintrag.name);
+                        EntferneDiagnoseFuerLabel("[Gesichert] " + eintrag.name);
+                    }
+                    else // "Lös"
+                    {
+                        LöscheSpalteAusSheet("Lös", eintrag.name);
+                        LöscheSpalteAusSheet("LösLehrer", eintrag.name);
+                        // Diagnose-Karte der Lös-Lösung (Label = Rohname) entfernen.
+                        EntferneDiagnoseFuerLabel(eintrag.name);
+                    }
+                    erfolg++;
+                    Log($"Lösung gelöscht: {eintrag.display}");
+                }
+                catch (Exception ex)
+                {
+                    fehler.Add($"{eintrag.display}: {ex.Message}");
+                    Log($"Fehler beim Löschen von {eintrag.display}: {ex.Message}");
+                }
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Fehler beim Löschen:\n" + ex.Message);
-                Log($"Fehler beim Löschen der gesicherten Lösung: {ex.Message}");
-            }
+
+            // Speicher & Anzeige aus der Datei neu aufbauen — dadurch fallen die
+            // gelöschten Lös-/Gesichert-Lösungen auch aus letzteSolutions heraus.
+            try { LadeExcelDatenNeu(zeigeWarnungen: false); }
+            catch (Exception ex) { Log($"Hinweis: Neuladen nach Löschen fehlgeschlagen: {ex.Message}"); }
+
+            if (fehler.Count == 0)
+                MessageBox.Show($"{erfolg} Lösung(en) gelöscht.");
+            else
+                MessageBox.Show($"{erfolg} Lösung(en) gelöscht, {fehler.Count} fehlgeschlagen:\n\n" +
+                                string.Join("\n", fehler));
         }
 
         // =====================================================
@@ -3273,7 +3311,11 @@ namespace Stundenplan_V2
                     input.LehrerFreiTageMinus2,
                     input.LehrerFreiTageMinus3,
                     Log,
-                    out string debug);
+                    out string debug,
+                    extraFreieStunden: input.ExtraFreieStunden,
+                    freieStundenBereich: input.FreieStundenBereich,
+                    lehrerFreieStundenMinus2: input.LehrerFreieStundenMinus2,
+                    lehrerFreieStundenMinus3: input.LehrerFreieStundenMinus3);
 
                 statusFenster.Close();
 
@@ -3305,7 +3347,7 @@ namespace Stundenplan_V2
                                 input.LehrerStammdaten,
                                 input.StrafeHohlstunde, input.StrafeDoppelHohlstunde,
                                 input.StrafeDreifachHohlstunde, input.StrafeStdFolge,
-                                meldeMinus2, input.ExtraFreieTage, input.LehrerFreiTageMinus2)))
+                                meldeMinus2, input.ExtraFreieTage, input.LehrerFreiTageMinus2, input.ExtraFreieStunden, input.FreieStundenBereich, input.LehrerFreieStundenMinus2)))
                         .ToList();
 
                     var zusatzDaten = ergebnisse
@@ -3414,6 +3456,152 @@ namespace Stundenplan_V2
                 wb.Worksheets.Delete("Gesichert");
 
             wb.Save();
+        }
+
+        // Liest die Namen (Header ab Spalte 3) aus dem Sheet "Lös" — analog zu
+        // LeseGesicherteNamen, nur für die zuletzt geschriebenen Lösungen.
+        private List<string> LeseLösNamen()
+        {
+            var namen = new List<string>();
+            using var wb = new XLWorkbook(excelPfad);
+            if (!wb.Worksheets.Any(ws => ws.Name == "Lös")) return namen;
+
+            var sheet = wb.Worksheet("Lös");
+            var headerRow = sheet.Row(1);
+            int maxCol = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
+            for (int col = 3; col <= maxCol; col++)
+            {
+                string label = headerRow.Cell(col).GetString().Trim();
+                if (!string.IsNullOrEmpty(label))
+                    namen.Add(label);
+            }
+            return namen;
+        }
+
+        // Generischer Spalten-Löscher für Lösungs-Sheets (Header ab Spalte 3).
+        // Entfernt die erste Spalte, deren Kopf == name ist. Für "Lös"/"LösLehrer"
+        // bleibt das WTag/Stunde-Gerüst erhalten (sheetLöschenWennLeer=false),
+        // damit ein späteres SchreibeInExcel das existierende Sheet wiederfindet.
+        private void LöscheSpalteAusSheet(string sheetName, string name, bool sheetLöschenWennLeer = false)
+        {
+            using var wb = new XLWorkbook(excelPfad);
+            if (!wb.Worksheets.Any(ws => ws.Name == sheetName)) return;
+
+            var sheet = wb.Worksheet(sheetName);
+            var headerRow = sheet.Row(1);
+            int maxCol = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
+
+            int zielCol = -1;
+            for (int col = 3; col <= maxCol; col++)
+            {
+                if (headerRow.Cell(col).GetString().Trim() == name)
+                {
+                    zielCol = col;
+                    break;
+                }
+            }
+            if (zielCol == -1) { wb.Save(); return; } // nichts zu tun
+
+            sheet.Column(zielCol).Delete();
+
+            if (sheetLöschenWennLeer)
+            {
+                var headerRowNeu = sheet.Row(1);
+                int maxColNeu = headerRowNeu.LastCellUsed()?.Address.ColumnNumber ?? 2;
+                bool nochEineDa = false;
+                for (int col = 3; col <= maxColNeu; col++)
+                    if (!string.IsNullOrWhiteSpace(headerRowNeu.Cell(col).GetString()))
+                        { nochEineDa = true; break; }
+                if (!nochEineDa)
+                    wb.Worksheets.Delete(sheetName);
+            }
+
+            wb.Save();
+        }
+
+        // Modaler Mehrfach-Auswahl-Dialog (Checkbox-Liste + OK/Abbrechen), rein in
+        // C# aufgebaut. Gibt die Anzeige-Strings der angehakten Einträge zurück,
+        // oder null bei Abbruch. Enthält "Alle" / "Keine" als Bequemlichkeit.
+        private List<string> ZeigeMehrfachAuswahlDialog(string titel, string frage, List<string> optionen)
+        {
+            var fenster = new Window
+            {
+                Title = titel,
+                Width = 460,
+                MaxHeight = 560,
+                SizeToContent = SizeToContent.Height,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+                ResizeMode = ResizeMode.NoResize
+            };
+
+            var panel = new System.Windows.Controls.StackPanel { Margin = new Thickness(16) };
+            panel.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = frage, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10)
+            });
+
+            var checkBoxes = new List<System.Windows.Controls.CheckBox>();
+            var listenPanel = new System.Windows.Controls.StackPanel();
+            foreach (var o in optionen)
+            {
+                var cb = new System.Windows.Controls.CheckBox
+                { Content = o, Margin = new Thickness(0, 2, 0, 2) };
+                checkBoxes.Add(cb);
+                listenPanel.Children.Add(cb);
+            }
+
+            var scroll = new System.Windows.Controls.ScrollViewer
+            {
+                Content = listenPanel,
+                VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
+                MaxHeight = 340,
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+            panel.Children.Add(scroll);
+
+            // Alle / Keine
+            var togglePanel = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            var btnAlle = new System.Windows.Controls.Button
+            { Content = "Alle", Width = 70, Margin = new Thickness(0, 0, 8, 0) };
+            var btnKeine = new System.Windows.Controls.Button
+            { Content = "Keine", Width = 70 };
+            btnAlle.Click += (s, e) => { foreach (var cb in checkBoxes) cb.IsChecked = true; };
+            btnKeine.Click += (s, e) => { foreach (var cb in checkBoxes) cb.IsChecked = false; };
+            togglePanel.Children.Add(btnAlle);
+            togglePanel.Children.Add(btnKeine);
+            panel.Children.Add(togglePanel);
+
+            var btnPanel = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            var btnOk = new System.Windows.Controls.Button
+            { Content = "Löschen", Width = 90, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+            var btnAbbrechen = new System.Windows.Controls.Button
+            { Content = "Abbrechen", Width = 90, IsCancel = true };
+            btnPanel.Children.Add(btnOk);
+            btnPanel.Children.Add(btnAbbrechen);
+            panel.Children.Add(btnPanel);
+
+            fenster.Content = panel;
+
+            bool ok = false;
+            btnOk.Click += (s, e) => { ok = true; fenster.DialogResult = true; };
+            btnAbbrechen.Click += (s, e) => { fenster.DialogResult = false; };
+
+            bool? result = fenster.ShowDialog();
+            if (result != true || !ok) return null;
+
+            return checkBoxes.Where(cb => cb.IsChecked == true)
+                             .Select(cb => cb.Content as string)
+                             .Where(s => s != null)
+                             .ToList();
         }
 
         // Einfacher modal Auswahl-Dialog (ComboBox + OK/Abbrechen), rein in C#
@@ -4052,7 +4240,7 @@ namespace Stundenplan_V2
                     input.StrafeStdFolge,
                     meldeMinus2,
                     input.ExtraFreieTage,
-                    input.LehrerFreiTageMinus2);
+                    input.LehrerFreiTageMinus2, input.ExtraFreieStunden, input.FreieStundenBereich, input.LehrerFreieStundenMinus2);
 
                 var zusatzZ = BerechneZusatzDiagWerte(sol.belegung, sol.blocks ?? input.Blocks);
                 var zusatzDaten = new List<(string, int, int)> { (sol.label, zusatzZ.spaetePaed, zusatzZ.qualitaet) };

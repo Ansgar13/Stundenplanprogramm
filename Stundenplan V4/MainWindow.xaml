@@ -82,7 +82,7 @@
             <Button Grid.Row="4" Grid.Column="1" Content="11. Plan-Editor (interaktiv)" Margin="6,0,0,10" Click="BtnPlanEditor_Click"/>
 
             <Button Grid.Row="5" Grid.Column="0" Content="12. Lösung sichern" Margin="0,0,6,10" Click="BtnLoesungSichern_Click"/>
-            <Button Grid.Row="5" Grid.Column="1" Content="13. Gesicherte Lösung löschen" Margin="6,0,0,10" Click="BtnGesicherteLoesungLoeschen_Click"/>
+            <Button Grid.Row="5" Grid.Column="1" Content="13. Lösungen löschen" Margin="6,0,0,10" Click="BtnLoesungenLoeschen_Click"/>
 
             <Button Grid.Row="6" Grid.Column="0" Content="14. Lösung verbessern" Margin="0,0,6,10" Click="BtnPlanVerbessern_Click"/>
             <Button Grid.Row="6" Grid.Column="1" Content="15. Minimale Änderungen (Solver)" Margin="6,0,0,10" Click="BtnMinimalAenderung_Click"/>

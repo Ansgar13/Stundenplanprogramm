@@ -51,6 +51,12 @@ namespace Stundenplan_V2
         // "DreifachHohl hart": keine drei oder mehr Hohlstunden in Folge.
         public bool DreifachHohlHart { get; set; } = false;
 
+        // "Verbot Bad units": verbietet späte pädagogische Einheiten ("bad units")
+        // dieses Lehrers hart (Solver-Sperre). ja/1 = gesperrt; nein/0/leer = 0.
+        // Bewusst NICHT Teil von HatHarteRegel: eigener Mechanismus, eigene
+        // Diagnose-Stufe (nicht die StD-Hart-Kaskade).
+        public bool VerbotBadUnits { get; set; } = false;
+
         /// <summary>
         /// True, wenn dieser Lehrer mindestens eine harte Regel hat. Wird
         /// gebraucht, weil der ganze Modellblock sonst an den Strafgewichten

@@ -129,7 +129,7 @@ namespace Stundenplan_V2
                             input.StrafeStdFolge,
                             meldeMinus2,
                             input.ExtraFreieTage,
-                            input.LehrerFreiTageMinus2)))
+                            input.LehrerFreiTageMinus2, input.ExtraFreieStunden, input.FreieStundenBereich, input.LehrerFreieStundenMinus2)))
                     .ToList();
 
                 LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten,
@@ -346,7 +346,10 @@ namespace Stundenplan_V2
                     input.GrossePausen,
                     meldeLeherMinus2: meldeMinus2,
                     extraFreieTage: input.ExtraFreieTage,
-                    lehrerFreiTageMinus2: input.LehrerFreiTageMinus2);
+                    lehrerFreiTageMinus2: input.LehrerFreiTageMinus2,
+                    extraFreieStunden: input.ExtraFreieStunden,
+                    freieStundenBereich: input.FreieStundenBereich,
+                    lehrerFreieStundenMinus2: input.LehrerFreieStundenMinus2);
 
                 PlanValidator.SchreibeTabelle(excelPfad, verletzungen);
 

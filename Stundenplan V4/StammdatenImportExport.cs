@@ -110,6 +110,18 @@ namespace Stundenplan_V2
             SpalteFreieTage, SpalteGewichtFreieTage
         };
 
+        // Freie-Stunden-Spalten (Teilband) in StD — analog zu den Freie-Tage-
+        // Spalten. Stammen NICHT aus Untis und werden bei einem GPU004-Import
+        // nie ueberschrieben, sondern aus dem Bestand uebernommen. Muessen exakt
+        // zu den in ExcelLoader gesuchten Namen passen.
+        public const string SpalteFreieStunden = "Freie Stunden";
+        public const string SpalteTageFreieStunden = "Tage freie Stunden";
+        public const string SpalteGewichtFreieStunden = "Gewicht freie Stunden";
+        public static readonly string[] FreieStundenSpalten =
+        {
+            SpalteFreieStunden, SpalteTageFreieStunden, SpalteGewichtFreieStunden
+        };
+
         // StD schreibt Dezimalzahlen mit Komma ("24,500"). Bewusst fest auf
         // de-DE statt CurrentCulture: die Excel-Datei soll auf jedem Rechner
         // gleich aussehen, nicht je nach Windows-Spracheinstellung anders.
@@ -457,6 +469,11 @@ namespace Stundenplan_V2
             // erhalten, da die Spalte als Bestandsspalte mitlaeuft.
             if (!HatFreieTageAnzahlSpalte(ergebnis))       ergebnis.Spalten.Add(SpalteFreieTage);
             if (!HatFreieTageGewichtSpalte(ergebnis))      ergebnis.Spalten.Add(SpalteGewichtFreieTage);
+
+            // Freie-Stunden-Spalten (Teilband) ebenfalls sicherstellen. Neue
+            // Spalten ohne Alt-Namen -> einfacher Exakt-Check genuegt.
+            foreach (var s in FreieStundenSpalten)
+                if (!ergebnis.HatSpalte(s)) ergebnis.Spalten.Add(s);
 
             var bestandNachName = new Dictionary<string, Dictionary<string, string>>(
                 StringComparer.OrdinalIgnoreCase);

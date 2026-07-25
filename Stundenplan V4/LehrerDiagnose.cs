@@ -26,6 +26,10 @@ namespace Stundenplan_V2
         // -2-Verletzungen (Zeitslots + fehlende freie Tage getrennt)
         public int Minus2Verletzungen { get; set; }        // belegte -2-Zeitslots
         public int Minus2FreiTageVerletzungen { get; set; } // fehlende freie Tage mit -2-Markierung
+        // Fehlende freie Stunden-Bänder mit -2-Markierung. Wird zur Anzeige in
+        // der (rasterfesten) Diag-Tabelle zusätzlich in Minus2FreiTageVerletzungen
+        // eingerechnet; hier separat für Transparenz/andere Auswertungen.
+        public int Minus2FreieStundenVerletzungen { get; set; }
 
         // Doppelstunden- und Tagesregel-Verletzungen (pro Lehrer, ueber Bloecke)
         public int DoppelstundenVerletzungen { get; set; }
@@ -68,7 +72,10 @@ namespace Stundenplan_V2
             int strafeStdFolge,
             bool meldeLeherMinus2 = false,
             Dictionary<string, int> extraFreieTage = null,
-            HashSet<string> lehrerFreiTageMinus2 = null)
+            HashSet<string> lehrerFreiTageMinus2 = null,
+            Dictionary<string, int> extraFreieStunden = null,
+            Dictionary<string, (int von, int bis)> freieStundenBereich = null,
+            HashSet<string> lehrerFreieStundenMinus2 = null)
         {
             // Alle Lehrer ermitteln
             var alleLehrern = blocks
@@ -247,6 +254,21 @@ namespace Stundenplan_V2
                             if (!hatUnterricht) freieTageTatsächlich++;
                         }
                         diag.Minus2FreiTageVerletzungen = Math.Max(0, gewünscht - freieTageTatsächlich);
+                    }
+
+                    // Fehlende freie Stunden-Bänder für -2-markierte Lehrer.
+                    if (extraFreieStunden != null && freieStundenBereich != null &&
+                        lehrerFreieStundenMinus2 != null &&
+                        lehrerFreieStundenMinus2.Contains(lehrer) &&
+                        extraFreieStunden.TryGetValue(lehrer, out int fsGewünscht) && fsGewünscht > 0 &&
+                        freieStundenBereich.TryGetValue(lehrer, out var fsBereich))
+                    {
+                        var tageListe = tage is List<string> tl ? tl : tage.ToList();
+                        int freieBandTage = FreieStunden.ZaehleFreieBandTage(
+                            lehrer, belegung, blocks, slots, tageListe, fsBereich.von, fsBereich.bis);
+                        diag.Minus2FreieStundenVerletzungen = Math.Max(0, fsGewünscht - freieBandTage);
+                        // In den rasterfesten "-2-frei"-Wert der Diag-Tabelle einrechnen.
+                        diag.Minus2FreiTageVerletzungen += diag.Minus2FreieStundenVerletzungen;
                     }
                 }
 

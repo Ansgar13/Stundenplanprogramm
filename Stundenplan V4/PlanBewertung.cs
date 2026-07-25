@@ -600,5 +600,86 @@ namespace Stundenplan_V2
 
             return badVars;
         }
+
+        // =====================================================
+        // HARTE SPERRE "Verbot Bad units" je Lehrer.
+        // Für jede päd. Einheit, an der ein gesperrter Lehrer beteiligt ist,
+        // wird die Zahl später Slots UNTER die "bad"-Schwelle gezwungen — die
+        // Einheit kann damit nie "bad" werden. Nutzt dieselbe Einheiten-Bildung,
+        // Ausnahme-Regel und Schwelle wie SolverSpaetePaedEinheiten, damit die
+        // Definition einer "bad unit" garantiert identisch ist.
+        // Kann ein Modell hart unlösbar machen (das ist der Sinn eines Verbots).
+        //
+        // NUR NICHT-FIXIERTE Badness wird verboten: späte Slots, die per FixUNrn
+        // fest vorgegeben sind, gelten als unvermeidbar und zählen als Konstante.
+        // Reicht die fixierte Badness allein schon an/über die Schwelle, ist die
+        // Einheit "voll fixiert bad" -> sie wird NICHT verboten (analog
+        // nurNichtFixiert in SpaetePaedEinheitenJeLehrer). Verboten wird nur, dass
+        // die Einheit über BEWEGLICHE späte Slots die Schwelle erreicht.
+        // =====================================================
+        public static void AddVerbotBadUnits(
+            CpModel model,
+            BoolVar[,] x,
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            HashSet<string> verbotLehrer)
+        {
+            if (verbotLehrer == null || verbotLehrer.Count == 0) return;
+
+            foreach (var einheit in BauePaedEinheiten(blocks))
+            {
+                if (IstAusgenommen(einheit)) continue;
+
+                // Ist ein gesperrter Lehrer an dieser Einheit beteiligt?
+                bool betroffen = einheit.BlockIds.Any(b =>
+                    blocks[b].Teile.Any(t => verbotLehrer.Contains(t.Lehrer)));
+                if (!betroffen) continue;
+
+                // Späte Slots trennen in FIX (per FixUNrn erzwungen -> unvermeidbar,
+                // Konstante) und BEWEGLICH (vom Solver steuerbar).
+                int fixLateCount = 0;
+                var freeLateVars = new List<IntVar>();
+                for (int s = 0; s < slots.Count; s++)
+                {
+                    if (slots[s].Stunde < ErsteSpaeteStunde) continue;
+                    var varsAtS = einheit.BlockIds.Select(b => x[b, s]).ToList();
+                    if (varsAtS.Count == 0) continue;
+
+                    // Ist dieser späte Slot durch eine Fixierung eines Unit-Blocks belegt?
+                    bool fixBelegt = einheit.BlockIds.Any(b =>
+                        slots[s].FixUNrn.Contains(blocks[b].UNr));
+                    if (fixBelegt)
+                    {
+                        fixLateCount++;   // fest -> zählt als unvermeidbare Badness
+                        continue;
+                    }
+
+                    if (varsAtS.Count == 1)
+                    {
+                        freeLateVars.Add(varsAtS[0]);
+                    }
+                    else
+                    {
+                        var occupied = model.NewBoolVar($"vbu_lateslot_unr{einheit.RepUnr}_{s}");
+                        model.AddMaxEquality(occupied, varsAtS);
+                        freeLateVars.Add(occupied);
+                    }
+                }
+
+                int schwelle = SchwelleFuerWst(einheit.Wst);
+
+                // Fixierte Badness allein erreicht die Schwelle -> voll fixiert bad,
+                // nicht verbieten (sonst würde ein unvermeidbarer Zustand hart
+                // ausgeschlossen und das Modell künstlich unlösbar).
+                if (fixLateCount >= schwelle) continue;
+
+                // Ohne bewegliche späte Slots gibt es nichts zu verbieten.
+                if (freeLateVars.Count == 0) continue;
+
+                // Gesamte späte Slots (fix + beweglich) < Schwelle:
+                //   fixLateCount + Sum(freeLateVars) <= schwelle - 1
+                model.Add(LinearExpr.Sum(freeLateVars) <= schwelle - 1 - fixLateCount);
+            }
+        }
     }
 }

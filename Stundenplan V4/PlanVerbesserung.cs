@@ -483,6 +483,72 @@ namespace Stundenplan_V2
                     lehrerListeFt, tageListeFt, B);
             }
 
+            // Freie Stunden (Teilband) – HART für -3 sowie -2 mit aktivem Verbot
+            // (analog PlanenIntern; -2 ohne Verbot bleibt weich über die Zielbewertung).
+            if (input.ExtraFreieStunden != null && input.ExtraFreieStunden.Count > 0 &&
+                input.FreieStundenBereich != null)
+            {
+                var lehrerListeFs = blocks.SelectMany(b => b.Teile.Select(t => t.Lehrer))
+                    .Distinct().ToList();
+                var tageListeFs = slots.Select(z => z.WTag).Distinct().ToList();
+
+                var freeBand = new BoolVar[lehrerListeFs.Count, tageListeFs.Count];
+                for (int l = 0; l < lehrerListeFs.Count; l++)
+                    for (int day = 0; day < tageListeFs.Count; day++)
+                        freeBand[l, day] = model.NewBoolVar($"lns_freeBand_{l}_{day}");
+
+                for (int l = 0; l < lehrerListeFs.Count; l++)
+                {
+                    string name = lehrerListeFs[l];
+                    if (!input.ExtraFreieStunden.TryGetValue(name, out int gewünscht) || gewünscht <= 0)
+                        continue;
+                    if (!input.FreieStundenBereich.TryGetValue(name, out var bereich))
+                        continue;
+
+                    bool hatMinus3 = input.LehrerFreieStundenMinus3 != null
+                                     && input.LehrerFreieStundenMinus3.Contains(name);
+                    bool hatMinus2 = input.LehrerFreieStundenMinus2 != null
+                                     && input.LehrerFreieStundenMinus2.Contains(name);
+
+                    if (hatMinus3 || (hatMinus2 && input.VerbotMinus2Verletzungen))
+                        model.Add(LinearExpr.Sum(
+                            Enumerable.Range(0, tageListeFs.Count).Select(day => freeBand[l, day]))
+                            >= gewünscht);
+
+                    // Vollständig -3-gesperrtes Band bzw. an diesem Tag nicht
+                    // existierendes Band zählt nicht als "frei" (analog PlanenIntern).
+                    for (int day = 0; day < tageListeFs.Count; day++)
+                    {
+                        string tag = tageListeFs[day];
+                        var bandSlots = slots
+                            .Where(z => z.WTag == tag && z.Stunde >= bereich.von && z.Stunde <= bereich.bis)
+                            .ToList();
+                        if (bandSlots.Count == 0)
+                        {
+                            model.Add(freeBand[l, day] == 0);
+                            continue;
+                        }
+                        bool bandFixFrei = bandSlots.All(z =>
+                            z.LehrerWunsch.TryGetValue(name, out int lw) && lw == -3);
+                        if (bandFixFrei)
+                            model.Add(freeBand[l, day] == 0);
+                    }
+                }
+
+                FreeHourConstraint.Add(model, x, freeBand, blocks, slots,
+                    lehrerListeFs, tageListeFs, input.FreieStundenBereich, B);
+            }
+
+            // Verbot Bad units – harte Sperre später päd. Einheiten je Lehrer.
+            if (input.LehrerStammdaten != null)
+            {
+                var verbotBadLehrer = new HashSet<string>(input.LehrerStammdaten
+                    .Where(kv => kv.Value != null && kv.Value.VerbotBadUnits)
+                    .Select(kv => kv.Key));
+                if (verbotBadLehrer.Count > 0)
+                    PlanBewertung.AddVerbotBadUnits(model, x, blocks, slots, verbotBadLehrer);
+            }
+
             // Zielfunktion – Hohlstunden und Doppelstunden minimieren
             var earlyVars = new List<BoolVar>();
             var lateVars  = new List<BoolVar>();
@@ -792,6 +858,49 @@ namespace Stundenplan_V2
 
                     int freieTage = tageListeFt.Count(tag => !belegtLehrerTag.Contains((name, tag)));
                     if (freieTage < gefordert) return false;
+                }
+            }
+
+            // Freie Stunden (Teilband): HART für -3 sowie -2 mit aktivem Verbot.
+            if (input.ExtraFreieStunden != null && input.ExtraFreieStunden.Count > 0 &&
+                input.FreieStundenBereich != null)
+            {
+                var tageListeFs = slots.Select(z => z.WTag).Distinct().ToList();
+
+                foreach (var kv in input.ExtraFreieStunden)
+                {
+                    int gefordert = kv.Value;
+                    if (gefordert <= 0) continue;
+                    string name = kv.Key;
+                    if (!input.FreieStundenBereich.TryGetValue(name, out var bereich)) continue;
+
+                    bool hatMinus3 = input.LehrerFreieStundenMinus3 != null
+                                     && input.LehrerFreieStundenMinus3.Contains(name);
+                    bool hatMinus2 = input.LehrerFreieStundenMinus2 != null
+                                     && input.LehrerFreieStundenMinus2.Contains(name);
+                    bool hart = hatMinus3 || (hatMinus2 && input.VerbotMinus2Verletzungen);
+                    if (!hart) continue;
+
+                    int freieBandTage = FreieStunden.ZaehleFreieBandTage(
+                        name, belegung, blocks, slots, tageListeFs, bereich.von, bereich.bis);
+                    if (freieBandTage < gefordert) return false;
+                }
+            }
+
+            // Verbot Bad units: gesperrte Lehrer dürfen keine späten päd.
+            // Einheiten haben (harte Sperre, identische Zählung wie im Solver).
+            if (input.LehrerStammdaten != null)
+            {
+                var verbotBadLehrer = input.LehrerStammdaten
+                    .Where(kv => kv.Value != null && kv.Value.VerbotBadUnits)
+                    .Select(kv => kv.Key)
+                    .ToHashSet();
+                if (verbotBadLehrer.Count > 0)
+                {
+                    var badJeLehrer = PlanBewertung.SpaetePaedEinheitenJeLehrer(belegung, blocks, slots, nurNichtFixiert: true);
+                    foreach (var lehrer in verbotBadLehrer)
+                        if (badJeLehrer.TryGetValue(lehrer, out int anzahl) && anzahl > 0)
+                            return false;
                 }
             }
 
@@ -1183,6 +1292,27 @@ namespace Stundenplan_V2
                     }
 
                     int fehlend = Math.Max(0, gewünscht - freieTageTatsächlich);
+                    strafe += fehlend * input.StrafeMinus2Verletzungen;
+                }
+            }
+
+            // (c) Fehlende freie Stunden-Bänder für -2-markierte Lehrer.
+            if (input.LehrerFreieStundenMinus2 != null && input.LehrerFreieStundenMinus2.Count > 0
+                && input.ExtraFreieStunden != null && input.FreieStundenBereich != null)
+            {
+                var alleLehrernFs = blocks.SelectMany(b => b.Teile.Select(t => t.Lehrer))
+                    .Distinct().ToList();
+                var alleTageFs = slots.Select(s => s.WTag).Distinct().ToList();
+
+                foreach (var lehrer in alleLehrernFs)
+                {
+                    if (!input.LehrerFreieStundenMinus2.Contains(lehrer)) continue;
+                    if (!input.ExtraFreieStunden.TryGetValue(lehrer, out int gewünscht) || gewünscht <= 0) continue;
+                    if (!input.FreieStundenBereich.TryGetValue(lehrer, out var bereich)) continue;
+
+                    int freieBandTage = FreieStunden.ZaehleFreieBandTage(
+                        lehrer, belegung, blocks, slots, alleTageFs, bereich.von, bereich.bis);
+                    int fehlend = Math.Max(0, gewünscht - freieBandTage);
                     strafe += fehlend * input.StrafeMinus2Verletzungen;
                 }
             }

@@ -325,6 +325,15 @@ namespace Stundenplan_V2
             var lehrerFreiTageMinus3 = new HashSet<string>();
             var ftDiagnose = new List<string>();
 
+            // Freie Stunden (Teilband) — parallel zu den freien Tagen, aus den
+            // StD-Spalten "Freie Stunden" / "Tage freie Stunden" / "Gewicht
+            // freie Stunden". Diagnosezeilen laufen bewusst in dieselbe Liste
+            // ftDiagnose (Anzeige gemeinsam mit den freien Tagen).
+            var extraFreieStunden = new Dictionary<string, int>();
+            var freieStundenBereich = new Dictionary<string, (int von, int bis)>();
+            var lehrerFreieStundenMinus2 = new HashSet<string>();
+            var lehrerFreieStundenMinus3 = new HashSet<string>();
+
             // Zusaetzliche freie Tage kommen jetzt aus den Spalten "FT" und
             // "FT-Gewicht" im Sheet "StD" (siehe StAMMDATEN-Block weiter unten).
             // Die fruehere eigene Tabelle "FT" wird bewusst NICHT mehr gelesen.
@@ -620,6 +629,12 @@ namespace Stundenplan_V2
                 int colDoppelHart   = FindeSpalte(headerSD, "DoppelHohl hart");
                 int colDreifachHart = FindeSpalte(headerSD, "DreifachHohl hart");
 
+                // "Verbot Bad units": harte Sperre später päd. Einheiten je Lehrer.
+                // ja/j/x/1 = gesperrt; nein/0/leere Zelle = 0.
+                int colVerbotBadUnits = FindeSpalte(headerSD,
+                    "Verbot Bad units", "Verbot BadUnits", "VerbotBadUnits",
+                    "Verbot bad units", "Verbot Badunits");
+
                 // ---- Freie Tage aus StD (ersetzen die fruehere Tabelle "FT") ----
                 // "Freie Tage"        = Anzahl zusaetzlicher freier Tage
                 // "Gewicht freie Tage" = -3 (zwingend/hart) oder -2 (Wunsch)
@@ -631,6 +646,17 @@ namespace Stundenplan_V2
                 // Anzahl-Spalte ausschliessen, damit nicht die falsche trifft.
                 int colFtGewicht = FindeFtGewichtSpalte(headerSD);
                 int colFtAnzahl  = FindeFtAnzahlSpalte(headerSD, colFtGewicht);
+
+                // ---- Freie Stunden (Teilband) aus StD ----
+                // "Freie Stunden"        = Stundenbereich, z.B. "5-11" oder "1-1"
+                // "Tage freie Stunden"   = Anzahl Tage mit freiem Band
+                // "Gewicht freie Stunden" = -3 (zwingend/hart) oder -2 (Wunsch)
+                // Alle drei enthalten "freie Stunden" als Teilstring, daher in
+                // fester Reihenfolge bestimmen und die jeweils schon gefundenen
+                // Spalten ausschliessen (wie bei den freien Tagen).
+                int colFsGewicht = FindeFsGewichtSpalte(headerSD);
+                int colFsTage    = FindeFsTageSpalte(headerSD, colFsGewicht);
+                int colFsBereich = FindeFsBereichSpalte(headerSD, colFsGewicht, colFsTage);
 
                 // Zelle als gesetzt werten: "x", "X", "ja", "1" — wie es
                 // "Sperr." und "( _ )" in diesem Sheet schon handhaben.
@@ -700,6 +726,12 @@ namespace Stundenplan_V2
                     sd.DoppelHohlHart = IstGesetzt(row, colDoppelHart);
                     sd.DreifachHohlHart = IstGesetzt(row, colDreifachHart);
 
+                    // "Verbot Bad units": späte päd. Einheiten dieses Lehrers hart
+                    // verbieten. Braucht keinen weiteren Wert; leere Zelle = 0.
+                    sd.VerbotBadUnits = IstGesetzt(row, colVerbotBadUnits);
+                    if (sd.VerbotBadUnits)
+                        stdDiagnose.Add($"StD: '{name}' HART: Verbot Bad units (keine späten päd. Einheiten).");
+
                     if (sd.HatHarteRegel)
                     {
                         var teile = new List<string>();
@@ -747,6 +779,53 @@ namespace Stundenplan_V2
                                 : !markerVorhanden ? "Gewichtung (Spalte 'Gewicht freie Tage') fehlt oder keine Zahl"
                                 : $"Gewichtung {ftMarker} ist weder -3 noch -2";
                             ftDiagnose.Add($"StD/FT: '{name}' verworfen ({grund}).");
+                        }
+                    }
+
+                    // ---- Freie Stunden (Teilband) aus StD ----
+                    // Bereich (z.B. "5-11") + Anzahl Tage + Gewicht (-3/-2).
+                    // Nur wenn alle drei gueltig sind, wird der Eintrag
+                    // uebernommen; sonst mit Grund protokolliert. Mechanik der
+                    // -2/-3-Gewichtung identisch zu den freien Tagen.
+                    if (colFsBereich > 0 && colFsTage > 0)
+                    {
+                        string fsBereichRaw = row.Cell(colFsBereich).GetString().Trim();
+                        LiesGanzzahlTolerant(row.Cell(colFsTage), out int fsTage);
+
+                        int fsMarker = 0;
+                        bool fsMarkerVorhanden = colFsGewicht > 0 &&
+                            LiesGanzzahlTolerant(row.Cell(colFsGewicht), out fsMarker);
+
+                        bool bereichOk = FreieStunden.TryParseBereich(fsBereichRaw, out int fsVon, out int fsBis);
+
+                        if (bereichOk && fsTage > 0 && fsMarkerVorhanden && (fsMarker == -3 || fsMarker == -2))
+                        {
+                            if (!extraFreieStunden.ContainsKey(name))
+                            {
+                                extraFreieStunden[name] = fsTage;
+                                freieStundenBereich[name] = (fsVon, fsBis);
+                            }
+                            if (fsMarker == -3)
+                            {
+                                lehrerFreieStundenMinus3.Add(name);
+                                ftDiagnose.Add($"StD/FS: '{name}' -> Band {FreieStunden.FormatBereich(fsVon, fsBis)} " +
+                                               $"an {fsTage} Tag(en) frei, -3 (ZWINGEND/hart).");
+                            }
+                            else
+                            {
+                                lehrerFreieStundenMinus2.Add(name);
+                                ftDiagnose.Add($"StD/FS: '{name}' -> Band {FreieStunden.FormatBereich(fsVon, fsBis)} " +
+                                               $"an {fsTage} Tag(en) frei, -2 (Wunsch; hart nur bei 'Verbot -2 = ja', sonst Strafe).");
+                            }
+                        }
+                        else if (!string.IsNullOrEmpty(fsBereichRaw) || fsTage > 0 || fsMarkerVorhanden)
+                        {
+                            string grund =
+                                !bereichOk ? "Stundenbereich (Spalte 'Freie Stunden') fehlt oder ungueltig (Form z.B. 5-11)"
+                                : fsTage <= 0 ? "Anzahl Tage (Spalte 'Tage freie Stunden') fehlt oder <= 0"
+                                : !fsMarkerVorhanden ? "Gewichtung (Spalte 'Gewicht freie Stunden') fehlt oder keine Zahl"
+                                : $"Gewichtung {fsMarker} ist weder -3 noch -2";
+                            ftDiagnose.Add($"StD/FS: '{name}' verworfen ({grund}).");
                         }
                     }
 
@@ -860,6 +939,10 @@ namespace Stundenplan_V2
                 GrossePausen = grossePausen,
                 LehrerFreiTageMinus2 = lehrerFreiTageMinus2,
                 LehrerFreiTageMinus3 = lehrerFreiTageMinus3,
+                ExtraFreieStunden = extraFreieStunden,
+                FreieStundenBereich = freieStundenBereich,
+                LehrerFreieStundenMinus2 = lehrerFreieStundenMinus2,
+                LehrerFreieStundenMinus3 = lehrerFreieStundenMinus3,
                 FtDiagnose = ftDiagnose,
                 StdDiagnose = stdDiagnose,
                 AusgenommeneSpaetFaecher = ausgenommeneSpaetFaecher,
@@ -1293,6 +1376,71 @@ namespace Stundenplan_V2
                 if (k.Contains("gewicht") || k.Contains("gew")) continue;
                 if (k == "freietage" || k == "ft")
                     return kv.Value;
+            }
+            return -1;
+        }
+
+        // ---- Freie-Stunden-Spalten (Teilband) --------------------------
+        // Alle drei Ueberschriften enthalten "freie Stunden". Deshalb zuerst
+        // Gewicht, dann Tage/Anzahl (Gewicht ausgeschlossen), dann Bereich
+        // (Gewicht + Tage ausgeschlossen) bestimmen.
+        private static string NormHeader(string s)
+            => new string((s ?? "").Where(ch => !char.IsWhiteSpace(ch)).ToArray()).ToLowerInvariant();
+
+        private static int FindeFsGewichtSpalte(Dictionary<string, int> map)
+        {
+            string[] exakt = { "Gewicht freie Stunden", "Gewicht Freie Stunden", "GewichtFreieStunden", "FS-Gewicht", "FS Gewicht" };
+            foreach (var name in exakt)
+                foreach (var kv in map)
+                    if (string.Equals(kv.Key.Trim(), name, StringComparison.OrdinalIgnoreCase))
+                        return kv.Value;
+
+            foreach (var kv in map)
+            {
+                string k = NormHeader(kv.Key);
+                bool hatGewicht = k.Contains("gewicht") || k.Contains("gew");
+                bool hatFsBezug = k.Contains("freiestunden") || k.Contains("fs");
+                if (hatGewicht && hatFsBezug) return kv.Value;
+            }
+            return -1;
+        }
+
+        private static int FindeFsTageSpalte(Dictionary<string, int> map, int colFsGewicht)
+        {
+            string[] exakt = { "Tage freie Stunden", "Anzahl freie Stunden", "Tage Freie Stunden", "TageFreieStunden", "FS-Tage" };
+            foreach (var name in exakt)
+                foreach (var kv in map)
+                    if (kv.Value != colFsGewicht &&
+                        string.Equals(kv.Key.Trim(), name, StringComparison.OrdinalIgnoreCase))
+                        return kv.Value;
+
+            foreach (var kv in map)
+            {
+                if (kv.Value == colFsGewicht) continue;
+                string k = NormHeader(kv.Key);
+                if (k.Contains("gewicht") || k.Contains("gew")) continue;
+                bool hatFsBezug = k.Contains("freiestunden");
+                if (hatFsBezug && (k.Contains("tage") || k.Contains("anzahl"))) return kv.Value;
+            }
+            return -1;
+        }
+
+        private static int FindeFsBereichSpalte(Dictionary<string, int> map, int colFsGewicht, int colFsTage)
+        {
+            string[] exakt = { "Freie Stunden", "FreieStunden", "FS", "FS-Bereich", "Stundenbereich" };
+            foreach (var name in exakt)
+                foreach (var kv in map)
+                    if (kv.Value != colFsGewicht && kv.Value != colFsTage &&
+                        string.Equals(kv.Key.Trim(), name, StringComparison.OrdinalIgnoreCase))
+                        return kv.Value;
+
+            foreach (var kv in map)
+            {
+                if (kv.Value == colFsGewicht || kv.Value == colFsTage) continue;
+                string k = NormHeader(kv.Key);
+                if (k.Contains("gewicht") || k.Contains("gew")) continue;
+                if (k.Contains("tage") || k.Contains("anzahl")) continue;
+                if (k == "freiestunden" || k == "fs") return kv.Value;
             }
             return -1;
         }
