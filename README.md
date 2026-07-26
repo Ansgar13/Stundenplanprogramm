@@ -25,7 +25,7 @@ Die Unterrichts- und Lehrerstammdaten können z. B. aus einer Untis-Datei per Co
 - Automatische Sequenzdiagnose bei Infeasibility (identifiziert den schuldigen Constraint-Block)
 - Manueller Plan-Editor mit Drag & Drop, Tauschvorschlägen auch über zwei Klassen hinweg
 
-Eine ausführliche Bedienungsanleitung befindet sich in `Anleitung V111.docx`.
+Eine ausführliche Bedienungsanleitung befindet sich in `Anleitung V120.docx`.
 
 ## Technologie-Stack
 
