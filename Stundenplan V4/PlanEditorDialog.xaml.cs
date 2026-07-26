@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using ClosedXML.Excel;
 
 namespace Stundenplan_V2
 {
@@ -946,28 +947,32 @@ namespace Stundenplan_V2
 
         private void BtnNaechsterLehrer_Click(object sender, RoutedEventArgs e)
         {
-            if (CboLehrer.Items.Count == 0) return;
-            CboLehrer.SelectedIndex = (CboLehrer.SelectedIndex + 1) % CboLehrer.Items.Count;
+            var cbo = _vergleichsModus ? CboVmLehrer : CboLehrer;
+            if (cbo.Items.Count == 0) return;
+            cbo.SelectedIndex = (cbo.SelectedIndex + 1) % cbo.Items.Count;
         }
 
         private void BtnVorigerLehrer_Click(object sender, RoutedEventArgs e)
         {
-            if (CboLehrer.Items.Count == 0) return;
-            int n = CboLehrer.Items.Count;
-            CboLehrer.SelectedIndex = (CboLehrer.SelectedIndex - 1 + n) % n;
+            var cbo = _vergleichsModus ? CboVmLehrer : CboLehrer;
+            if (cbo.Items.Count == 0) return;
+            int n = cbo.Items.Count;
+            cbo.SelectedIndex = (cbo.SelectedIndex - 1 + n) % n;
         }
 
         private void BtnNaechsteKlasse_Click(object sender, RoutedEventArgs e)
         {
-            if (CboKlasse.Items.Count == 0) return;
-            CboKlasse.SelectedIndex = (CboKlasse.SelectedIndex + 1) % CboKlasse.Items.Count;
+            var cbo = _vergleichsModus ? CboVmKlasse : CboKlasse;
+            if (cbo.Items.Count == 0) return;
+            cbo.SelectedIndex = (cbo.SelectedIndex + 1) % cbo.Items.Count;
         }
 
         private void BtnVorigeKlasse_Click(object sender, RoutedEventArgs e)
         {
-            if (CboKlasse.Items.Count == 0) return;
-            int n = CboKlasse.Items.Count;
-            CboKlasse.SelectedIndex = (CboKlasse.SelectedIndex - 1 + n) % n;
+            var cbo = _vergleichsModus ? CboVmKlasse : CboKlasse;
+            if (cbo.Items.Count == 0) return;
+            int n = cbo.Items.Count;
+            cbo.SelectedIndex = (cbo.SelectedIndex - 1 + n) % n;
         }
 
         // Die Vergleichsmodus-Dropdowns (CboVmLehrer/CboVmKlasse) sind nur
@@ -1005,15 +1010,197 @@ namespace Stundenplan_V2
             _vmSyncLaeuft = true;
             try
             {
-                // Items angleichen (nur wenn nötig, Reihenfolge ist identisch)
-                if (vm.Items.Count != master.Items.Count)
+                bool filterAktiv = ChkVmNurAbw != null && ChkVmNurAbw.IsChecked == true;
+                if (!filterAktiv)
                 {
-                    vm.Items.Clear();
-                    foreach (var it in master.Items) vm.Items.Add(it);
+                    // Items angleichen (nur wenn nötig, Reihenfolge ist identisch)
+                    if (vm.Items.Count != master.Items.Count)
+                    {
+                        vm.Items.Clear();
+                        foreach (var it in master.Items) vm.Items.Add(it);
+                    }
+                    vm.SelectedItem = master.SelectedItem;
                 }
-                vm.SelectedItem = master.SelectedItem;
+                else
+                {
+                    // Abw-Filter aktiv: die gefilterten Items bleiben stehen; nur
+                    // die Auswahl spiegeln, sofern sie in der gefilterten Liste ist.
+                    if (master.SelectedItem != null && vm.Items.Contains(master.SelectedItem))
+                        vm.SelectedItem = master.SelectedItem;
+                }
             }
             finally { _vmSyncLaeuft = false; }
+        }
+
+        // Füllt die Vergleichs-Dropdowns passend zum Abw-Filter: ist „Nur Abw“
+        // aktiv, gefiltert auf die im Sheet „Abw“ genannten Lehrer/Klassen, sonst
+        // volle Spiegelung der Master-Dropdowns.
+        private void SyncVmDropdowns()
+        {
+            if (ChkVmNurAbw != null && ChkVmNurAbw.IsChecked == true)
+                FuelleVmDropdownsGefiltert();
+            else
+            {
+                SpiegeleAuswahlInVm(CboLehrer, CboVmLehrer);
+                SpiegeleAuswahlInVm(CboKlasse, CboVmKlasse);
+            }
+        }
+
+        private void FuelleVmDropdownsGefiltert()
+        {
+            LeseAbwLehrerUndKlassen(out var abwLehrer, out var abwKlassen);
+            FuelleVmGefiltert(CboLehrer, CboVmLehrer, abwLehrer);
+            FuelleVmGefiltert(CboKlasse, CboVmKlasse, abwKlassen);
+        }
+
+        // Übernimmt aus dem Master nur die in 'erlaubt' enthaltenen Einträge.
+        // Ist 'erlaubt' leer/null, bleibt die volle Liste (kein leeres Dropdown).
+        private void FuelleVmGefiltert(System.Windows.Controls.ComboBox master,
+                                       System.Windows.Controls.ComboBox vm,
+                                       HashSet<string> erlaubt)
+        {
+            if (vm == null || master == null) return;
+            _vmSyncLaeuft = true;
+            try
+            {
+                string vorher = vm.SelectedItem as string;
+                vm.Items.Clear();
+                foreach (var it in master.Items)
+                {
+                    string s = it as string;
+                    if (s == null) continue;
+                    if (erlaubt == null || erlaubt.Count == 0 || erlaubt.Contains(s))
+                        vm.Items.Add(it);
+                }
+                if (vorher != null && vm.Items.Contains(vorher)) vm.SelectedItem = vorher;
+                else if (master.SelectedItem != null && vm.Items.Contains(master.SelectedItem))
+                    vm.SelectedItem = master.SelectedItem;
+                else if (vm.Items.Count > 0) vm.SelectedIndex = 0;
+            }
+            finally { _vmSyncLaeuft = false; }
+        }
+
+        // Liest die im Sheet „Abw“ genannten Lehrer (Spalte 2) und Klassen
+        // (Spalte 4) über ALLE Vergleichsblöcke ein. Nur echte Datenzeilen
+        // (Spalte 1 = UNr-Zahl) werden ausgewertet; kommagetrennte Einträge
+        // werden aufgesplittet.
+        private void LeseAbwLehrerUndKlassen(out HashSet<string> lehrer, out HashSet<string> klassen)
+        {
+            lehrer = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            klassen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(_excelPfad)) return;
+            try
+            {
+                using var wb = new XLWorkbook(_excelPfad);
+                if (!wb.Worksheets.Any(ws => ws.Name == "Abw")) return;
+                var sheet = wb.Worksheet("Abw");
+                int lastRow = sheet.LastRowUsed()?.RowNumber() ?? 0;
+                for (int r = 1; r <= lastRow; r++)
+                {
+                    // Datenzeile erkennt man an einer UNr-Zahl in Spalte 1.
+                    if (!int.TryParse(sheet.Cell(r, 1).GetString().Trim(), out _)) continue;
+                    foreach (var t in SplitNamen(sheet.Cell(r, 2).GetString())) lehrer.Add(t);
+                    foreach (var k in SplitNamen(sheet.Cell(r, 4).GetString())) klassen.Add(k);
+                }
+            }
+            catch { /* Abw nicht lesbar -> leere Mengen (Filter greift dann nicht) */ }
+        }
+
+        private static IEnumerable<string> SplitNamen(string roh)
+        {
+            if (string.IsNullOrWhiteSpace(roh)) yield break;
+            foreach (var teil in roh.Split(','))
+            {
+                string t = teil.Trim();
+                if (t.Length > 0) yield return t;
+            }
+        }
+
+        private void ChkVmUnterschiede_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_initialisiert) return;
+            if (_vergleichsModus) ZeichneVergleichsModus();
+        }
+
+        private void ChkVmPfeile_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_initialisiert) return;
+            if (_vergleichsModus) ZeichneVergleichsModus();
+        }
+
+        private void ChkVmNurAbw_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_initialisiert || _vmSyncLaeuft) return;
+
+            if (ChkVmNurAbw.IsChecked == true)
+            {
+                LeseAbwLehrerUndKlassen(out var abwL, out var abwK);
+                if (abwL.Count == 0 && abwK.Count == 0)
+                {
+                    MessageBox.Show(
+                        "Das Sheet „Abw“ enthält keine Lehrer/Klassen. Erst „Minimale Änderungen“ " +
+                        "(Button 15) mit Abweichungs-Export ausführen. Der Filter bleibt aus.",
+                        "Nur Abw", MessageBoxButton.OK, MessageBoxImage.Information);
+                    _vmSyncLaeuft = true;
+                    try { ChkVmNurAbw.IsChecked = false; } finally { _vmSyncLaeuft = false; }
+                    return;
+                }
+            }
+
+            SyncVmDropdowns();
+            // Master an die (ggf. veränderte) gefilterte VM-Auswahl angleichen,
+            // damit der Vergleich denselben Lehrer/dieselbe Klasse zeichnet.
+            AngleicheMasterAnVm();
+            if (_vergleichsModus) ZeichneVergleichsModus();
+        }
+
+        // Setzt CboLehrer/CboKlasse auf die aktuell im VM-Dropdown gewählten
+        // Einträge (löst über die Master-SelectionChanged das Neuzeichnen aus).
+        private void AngleicheMasterAnVm()
+        {
+            string lsel = CboVmLehrer?.SelectedItem as string;
+            if (lsel != null)
+            {
+                int i = CboLehrer.Items.IndexOf(lsel);
+                if (i >= 0 && i != CboLehrer.SelectedIndex) CboLehrer.SelectedIndex = i;
+            }
+            string ksel = CboVmKlasse?.SelectedItem as string;
+            if (ksel != null)
+            {
+                int i = CboKlasse.Items.IndexOf(ksel);
+                if (i >= 0 && i != CboKlasse.SelectedIndex) CboKlasse.SelectedIndex = i;
+            }
+        }
+        // (_belegung/_blocks) und Lösung B (_vglBelegung2/_vglBlocks2)
+        // unterscheidet. Verglichen wird die Menge der belegten UNrn (nicht der
+        // Block-Indizes, da A und B unterschiedliche Blocklisten haben können).
+        private HashSet<int> UnterschiedsSlots(string auswahl, bool lehrerAnsicht)
+        {
+            var res = new HashSet<int>();
+            if (auswahl == null || _vglBelegung2 == null || _vglBlocks2 == null) return res;
+            for (int s = 0; s < _slots.Count; s++)
+            {
+                var setA = UnrSetImSlot(_belegung, _blocks, s, auswahl, lehrerAnsicht);
+                var setB = UnrSetImSlot(_vglBelegung2, _vglBlocks2, s, auswahl, lehrerAnsicht);
+                if (!setA.SetEquals(setB)) res.Add(s);
+            }
+            return res;
+        }
+
+        private HashSet<int> UnrSetImSlot(int[,] belegung, List<UnterrichtsBlock> blocks,
+                                          int slotIdx, string auswahl, bool lehrerAnsicht)
+        {
+            var set = new HashSet<int>();
+            if (slotIdx < 0 || belegung == null || blocks == null) return set;
+            for (int b = 0; b < blocks.Count; b++)
+            {
+                if (belegung[b, slotIdx] != 1) continue;
+                bool betrifft = lehrerAnsicht
+                    ? blocks[b].Teile.Any(t => t.Lehrer == auswahl)
+                    : blocks[b].Teile.Any(t => t.Klassen.Contains(auswahl));
+                if (betrifft) set.Add(blocks[b].UNr);
+            }
+            return set;
         }
 
         // =====================================================
@@ -1030,6 +1217,9 @@ namespace Stundenplan_V2
             BtnVorigeVglLoesung2.Visibility = vis;
             CboVglLoesung2.Visibility = vis;
             BtnNaechsteVglLoesung2.Visibility = vis;
+            ChkVmUnterschiede.Visibility = vis;
+            ChkVmPfeile.Visibility = vis;
+            ChkVmNurAbw.Visibility = vis;
 
             if (_vergleichsModus)
             {
@@ -1070,6 +1260,7 @@ namespace Stundenplan_V2
 
                 SpiegeleAuswahlInVm(CboLehrer, CboVmLehrer);
                 SpiegeleAuswahlInVm(CboKlasse, CboVmKlasse);
+                SyncVmDropdowns();
 
                 ZeichneVergleichsModus();
             }
@@ -1172,25 +1363,37 @@ namespace Stundenplan_V2
             if (_vglBelegung2 != null && _vglBlocks2 != null)
                 BerechneSpaetePaed(_vglBelegung2, _vglBlocks2, zeigeRot, false, out spaetB, out _);
 
+            // Unterschiedlich belegte Slots (A vs. B) gelb markieren, wenn aktiviert.
+            bool zeigeGelb = ChkVmUnterschiede != null && ChkVmUnterschiede.IsChecked == true;
+            HashSet<int> gelbLehrer = zeigeGelb ? UnterschiedsSlots(lehrer, true) : null;
+            HashSet<int> gelbKlasse = zeigeGelb ? UnterschiedsSlots(klasse, false) : null;
+
             // Lösung A (aktuelle Belegung)
             ZeichneVergleichsGrid(VmLehrerGridA, lehrer, lehrerAnsicht: true,  belegung: _belegung, blocks: _blocks,
-                                  spaetRot: spaetA);
+                                  spaetRot: spaetA, gelbSlots: gelbLehrer);
             ZeichneVergleichsGrid(VmKlasseGridA, klasse, lehrerAnsicht: false, belegung: _belegung, blocks: _blocks,
-                                  spaetRot: spaetA);
+                                  spaetRot: spaetA, gelbSlots: gelbKlasse);
 
             // Lösung B (Vergleichsbelegung)
             if (_vglBelegung2 != null && _vglBlocks2 != null)
             {
                 ZeichneVergleichsGrid(VmLehrerGridB, lehrer, lehrerAnsicht: true,  belegung: _vglBelegung2, blocks: _vglBlocks2,
-                                      spaetRot: spaetB);
+                                      spaetRot: spaetB, gelbSlots: gelbLehrer);
                 ZeichneVergleichsGrid(VmKlasseGridB, klasse, lehrerAnsicht: false, belegung: _vglBelegung2, blocks: _vglBlocks2,
-                                      spaetRot: spaetB);
+                                      spaetRot: spaetB, gelbSlots: gelbKlasse);
             }
             else
             {
                 VmLehrerGridB.Children.Clear();
                 VmKlasseGridB.Children.Clear();
             }
+
+            // Verschiebungspfeile in den linken A-Rastern. Verzoegert, weil die
+            // Zellpositionen erst nach abgeschlossenem Layout vermessbar sind
+            // (gleiches Muster wie ZeichnePfeile). Die Methode leert die beiden
+            // A-Canvases selbst und zeichnet nur, wenn ChkVmPfeile aktiv ist.
+            Dispatcher.BeginInvoke(new Action(ZeichneVmVerschiebungsPfeile),
+                System.Windows.Threading.DispatcherPriority.Loaded);
         }
 
         // Wie ZeichneEinGrid, aber mit explizit übergebenen Blocks (nötig, weil
@@ -1201,7 +1404,7 @@ namespace Stundenplan_V2
         // nicht voll fixierten päd. Einheit gehören.
         private void ZeichneVergleichsGrid(Grid grid, string auswahl, bool lehrerAnsicht,
                                            int[,] belegung, List<UnterrichtsBlock> blocks,
-                                           HashSet<int> spaetRot = null)
+                                           HashSet<int> spaetRot = null, HashSet<int> gelbSlots = null)
         {
             grid.Children.Clear();
             grid.ColumnDefinitions.Clear();
@@ -1233,7 +1436,7 @@ namespace Stundenplan_V2
                 {
                     int slotIdx = FindeSlot(_tage[ti], _stunden[hi]);
                     var zelle = BaueVergleichsZelle(slotIdx, auswahl, lehrerAnsicht, belegung, blocks,
-                                                    spaetRot);
+                                                    spaetRot, gelbSlots);
                     Grid.SetRow(zelle, hi + 1); Grid.SetColumn(zelle, ti + 1);
                     grid.Children.Add(zelle);
                 }
@@ -1248,7 +1451,7 @@ namespace Stundenplan_V2
         // nicht voll fixierten päd. Einheit gehören → rote Fläche.
         private Border BaueVergleichsZelle(int slotIdx, string auswahl, bool lehrerAnsicht,
                                            int[,] belegung, List<UnterrichtsBlock> blocks,
-                                           HashSet<int> spaetRot = null)
+                                           HashSet<int> spaetRot = null, HashSet<int> gelbSlots = null)
         {
             var border = new Border
             {
@@ -1258,6 +1461,21 @@ namespace Stundenplan_V2
                 Background = Brushes.White
             };
             if (slotIdx < 0) { border.Background = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)); return border; }
+
+            // Slot-Index als Tag, damit ZellMittelpunkt diese Zelle beim Zeichnen
+            // der Verschiebungspfeile (linke A-Raster) wiederfindet.
+            border.Tag = slotIdx;
+
+            // Unterschiedlich belegter Slot (A vs. B) -> gelb hervorheben. Fläche
+            // (hell) macht leere Slot-Seiten sichtbar, der kräftige gelbe Rahmen
+            // bleibt auch bei belegten Zellen sichtbar (die späte-päd.-Rotfläche
+            // liegt auf den inneren Blöcken und bleibt dadurch erhalten).
+            if (gelbSlots != null && gelbSlots.Contains(slotIdx))
+            {
+                border.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xF3, 0x9A));
+                border.BorderBrush = new SolidColorBrush(Color.FromRgb(0xF2, 0xC9, 0x00));
+                border.BorderThickness = new Thickness(2);
+            }
 
             // Zeitwunsch-Gewichtungszahl (wie im normalen Editor)
             int? wunsch = null;
@@ -1389,7 +1607,9 @@ namespace Stundenplan_V2
         // gezeichnet — sonst bliebe die frisch gesetzte Hervorhebung unsichtbar.
         private void VergleichsKlickSync(UnterrichtsBlock block, bool ausLehrerPlan)
         {
-            var ziel = ausLehrerPlan ? CboKlasse : CboLehrer;
+            // Ziel ist im Vergleichsmodus das VM-Dropdown — so wirkt auch der
+            // Zellklick nur innerhalb der ggf. auf „Abw“ eingeschränkten Liste.
+            var ziel = ausLehrerPlan ? CboVmKlasse : CboVmLehrer;
 
             var kandidaten = (ausLehrerPlan
                     ? block.Teile.SelectMany(t => t.Klassen)
@@ -1418,7 +1638,7 @@ namespace Stundenplan_V2
                 if (kandidaten.Count > 0 && !ausLehrerPlan)
                     SetStatus("Lehrer " + string.Join(", ", kandidaten) +
                               " steht nicht in der Auswahlliste — vermutlich blendet " +
-                              "der aktive Diag-Filter ihn aus.", true);
+                              "der aktive Filter (Diag bzw. „Nur Abw“) ihn aus.", true);
                 ZeichneVergleichsModus();
                 return;
             }
@@ -3461,6 +3681,126 @@ namespace Stundenplan_V2
                 if (betroffen)
                     ZeichneKlassenPfeileIn(kette, GridVglKlasseVorher, VglKlasseVorherCanvas);
             }
+        }
+
+        // =====================================================================
+        // VERSCHIEBUNGSPFEILE IM VERGLEICHSMODUS (linke A-Raster)
+        //
+        // Fuer jede paed. Einheit (UNr), die sowohl in Loesung A als auch in
+        // Loesung B fuer den gewaehlten Lehrer/die gewaehlte Klasse vorkommt,
+        // aber auf einem anderen Anker-Slot liegt, wird im LINKEN Raster ein
+        // Pfeil gezeichnet: von der A-Position (wo die Zelle links tatsaechlich
+        // steht) zur B-Position (wie im rechten Raster). Anker = fruehester Slot
+        // wie ErsterSlot; Mehrfachstunden/A-B-Woche werden hier bewusst simpel
+        // ueber diesen einen Anker abgebildet.
+        // =====================================================================
+        private void ZeichneVmVerschiebungsPfeile()
+        {
+            // Immer zuerst leeren, damit alte Pfeile auch beim Abschalten der
+            // Checkbox oder beim Lehrer-/Klassenwechsel verschwinden.
+            if (VmLehrerACanvas != null) VmLehrerACanvas.Children.Clear();
+            if (VmKlasseACanvas != null) VmKlasseACanvas.Children.Clear();
+
+            if (!_vergleichsModus) return;
+            if (ChkVmPfeile == null || ChkVmPfeile.IsChecked != true) return;
+            if (_vglBelegung2 == null || _vglBlocks2 == null) return;
+
+            string lehrer = CboLehrer.SelectedItem as string;
+            string klasse = CboKlasse.SelectedItem as string;
+
+            var farbeLehrer = (Color)ColorConverter.ConvertFromString("#0050C8"); // Blau (wie Lehrerpfeil)
+            var farbeKlasse = (Color)ColorConverter.ConvertFromString("#D1006C"); // Magenta (wie Klassenpfeil)
+
+            ZeichneVmPfeileFuer(VmLehrerGridA, VmLehrerACanvas, lehrer, lehrerAnsicht: true,  farbe: farbeLehrer);
+            ZeichneVmPfeileFuer(VmKlasseGridA, VmKlasseACanvas, klasse, lehrerAnsicht: false, farbe: farbeKlasse);
+        }
+
+        // Zeichnet die Verschiebungspfeile eines A-Rasters (Lehrer- oder
+        // Klassensicht) in dessen Canvas. Vergleicht die UNr->Slots-Abbildung
+        // von Loesung A und B fuer die gegebene Auswahl.
+        //
+        // Pro UNr gilt: Jede A-Position, an der in B NICHT dieselbe UNr liegt,
+        // ist verschoben und bekommt einen Pfeil. Ziel ist eine B-Position, die
+        // A nicht traegt. Bei mehreren Wochenstunden werden die gemeinsamen
+        // (unveraenderten) Slots zuerst abgezogen; nur die uebrigen A-Slots
+        // (verschoben) werden mit den uebrigen B-Slots (neue Lage) verbunden.
+        // Paarung ueber die zeitlich sortierte Reihenfolge (minimiert Kreuzungen).
+        private void ZeichneVmPfeileFuer(Grid grid, Canvas canvas, string auswahl,
+                                         bool lehrerAnsicht, Color farbe)
+        {
+            if (grid == null || canvas == null || auswahl == null) return;
+
+            var mapA = UnrSlotsMap(_belegung, _blocks, auswahl, lehrerAnsicht);
+            var mapB = UnrSlotsMap(_vglBelegung2, _vglBlocks2, auswahl, lehrerAnsicht);
+
+            foreach (var kv in mapA)
+            {
+                int unr = kv.Key;
+                var setA = new HashSet<int>(kv.Value);
+
+                // Ohne diese UNr in B gibt es keine Zielposition -> kein Pfeil.
+                if (!mapB.TryGetValue(unr, out var listB)) continue;
+                var setB = new HashSet<int>(listB);
+
+                // Verschobene A-Positionen: hier liegt die UNr in A, aber NICHT
+                // an derselben Stelle in B. Zeitlich sortiert.
+                var ausA = setA.Where(s => !setB.Contains(s))
+                               .OrderBy(SlotSortSchluessel).ToList();
+                // Neue B-Positionen: hier liegt die UNr in B, aber nicht in A.
+                var zuB  = setB.Where(s => !setA.Contains(s))
+                               .OrderBy(SlotSortSchluessel).ToList();
+
+                // Jede verschobene A-Position bekommt einen Pfeil auf die
+                // gleichrangige neue B-Position. Ueberzaehlige (UNr hat in einer
+                // Loesung mehr Stunden) bleiben ohne Partner unberuecksichtigt.
+                int paare = Math.Min(ausA.Count, zuB.Count);
+                for (int i = 0; i < paare; i++)
+                {
+                    var pVon  = ZellMittelpunkt(grid, canvas, ausA[i]); // A-Position (Zelle steht hier)
+                    var pNach = ZellMittelpunkt(grid, canvas, zuB[i]);  // B-Position (wie im rechten Raster)
+                    if (pVon == null || pNach == null) continue;
+
+                    ZeichnePfeil(canvas, pVon.Value, pNach.Value, farbe, doppel: false);
+                }
+            }
+        }
+
+        // Zeitliche Sortierung eines Slots: erst nach Wochentag (Reihenfolge in
+        // _tage), dann nach Stunde. Fuer die stabile, kreuzungsarme Paarung der
+        // verschobenen A- mit den neuen B-Positionen.
+        private int SlotSortSchluessel(int slotIdx)
+        {
+            if (slotIdx < 0 || slotIdx >= _slots.Count) return int.MaxValue;
+            int tagIdx = _tage.IndexOf(_slots[slotIdx].WTag);
+            if (tagIdx < 0) tagIdx = 99;
+            return tagIdx * 1000 + _slots[slotIdx].Stunde;
+        }
+
+        // UNr -> Liste ihrer belegten Slots fuer eine bestimmte Auswahl
+        // (Lehrer bzw. Klasse) in der gegebenen Belegung/Blockliste.
+        private Dictionary<int, List<int>> UnrSlotsMap(int[,] belegung,
+                                                       List<UnterrichtsBlock> blocks,
+                                                       string auswahl, bool lehrerAnsicht)
+        {
+            var map = new Dictionary<int, List<int>>();
+            if (auswahl == null || belegung == null || blocks == null) return map;
+
+            for (int b = 0; b < blocks.Count; b++)
+            {
+                bool betrifft = lehrerAnsicht
+                    ? blocks[b].Teile.Any(t => t.Lehrer == auswahl)
+                    : blocks[b].Teile.Any(t => t.Klassen.Contains(auswahl));
+                if (!betrifft) continue;
+
+                int unr = blocks[b].UNr;
+                for (int s = 0; s < _slots.Count; s++)
+                {
+                    if (belegung[b, s] != 1) continue;
+                    if (!map.TryGetValue(unr, out var lst)) { lst = new List<int>(); map[unr] = lst; }
+                    lst.Add(s);
+                }
+            }
+            return map;
         }
 
         // Zeichnet einen Pfeil (Linie + Spitze) auf den Canvas. Bei doppel=true mit

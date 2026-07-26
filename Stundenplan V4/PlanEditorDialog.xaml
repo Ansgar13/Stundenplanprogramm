@@ -96,6 +96,18 @@
                       SelectionChanged="CboVglLoesung2_SelectionChanged" Visibility="Collapsed"/>
             <Button x:Name="BtnNaechsteVglLoesung2" Content="&#9654;" Width="28" VerticalAlignment="Center"
                     ToolTip="Nächste 2. Lösung" Click="BtnNaechsteVglLoesung2_Click" Visibility="Collapsed"/>
+            <CheckBox x:Name="ChkVmUnterschiede" Content="Unterschiede gelb"
+                      VerticalAlignment="Center" Margin="16,0,10,0" Visibility="Collapsed"
+                      ToolTip="Markiert Zeitslots, die in den beiden verglichenen Lösungen unterschiedlich belegt sind, gelb (Rahmen bzw. Fläche)."
+                      Checked="ChkVmUnterschiede_Changed" Unchecked="ChkVmUnterschiede_Changed"/>
+            <CheckBox x:Name="ChkVmPfeile" Content="Verschiebungspfeile"
+                      VerticalAlignment="Center" Margin="0,0,10,0" Visibility="Collapsed"
+                      ToolTip="Zeichnet im linken Plan (Lösung A) für jede päd. Einheit, die in beiden Lösungen vorkommt, aber verschoben wurde, einen Pfeil von ihrer A-Position zur Position in Lösung B (rechter Plan)."
+                      Checked="ChkVmPfeile_Changed" Unchecked="ChkVmPfeile_Changed"/>
+            <CheckBox x:Name="ChkVmNurAbw" Content="Nur Abw"
+                      VerticalAlignment="Center" Margin="0,0,10,0" Visibility="Collapsed"
+                      ToolTip="Beschränkt die Lehrer-/Klassen-Dropdowns im Vergleichsmodus auf die im Sheet „Abw“ genannten Lehrer und Klassen."
+                      Checked="ChkVmNurAbw_Changed" Unchecked="ChkVmNurAbw_Changed"/>
         </WrapPanel>
 
         <!-- Hinweiszeile -->
@@ -339,7 +351,10 @@
                     <TextBlock x:Name="LblVmLehrerA" DockPanel.Dock="Top" Text="LEHRER – Lösung A"
                                FontWeight="Bold" Height="20" HorizontalAlignment="Center" Margin="0,2,0,2"/>
                     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                        <Grid x:Name="VmLehrerGridA"/>
+                        <Grid>
+                            <Grid x:Name="VmLehrerGridA"/>
+                            <Canvas x:Name="VmLehrerACanvas" IsHitTestVisible="False"/>
+                        </Grid>
                     </ScrollViewer>
                 </DockPanel>
             </Border>
@@ -361,7 +376,10 @@
                     <TextBlock x:Name="LblVmKlasseA" DockPanel.Dock="Top" Text="KLASSE – Lösung A"
                                FontWeight="Bold" Height="20" HorizontalAlignment="Center" Margin="0,2,0,2"/>
                     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                        <Grid x:Name="VmKlasseGridA"/>
+                        <Grid>
+                            <Grid x:Name="VmKlasseGridA"/>
+                            <Canvas x:Name="VmKlasseACanvas" IsHitTestVisible="False"/>
+                        </Grid>
                     </ScrollViewer>
                 </DockPanel>
             </Border>
