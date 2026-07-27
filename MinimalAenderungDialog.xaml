@@ -1,0 +1,83 @@
+<Window x:Class="Stundenplan_V2.MinimalAenderungDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="11. Minimale Änderungen – Solver"
+        Height="490" Width="460"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Infotext -->
+        <TextBlock Grid.Row="0" TextWrapping="Wrap" Margin="0,0,0,10"
+                   Text="Der Solver sucht Lösungen, die dem gewählten Ausgangsplan möglichst ähnlich sind. Zeitwünsche, Fix-UNrn und alle anderen Qualitätskriterien bleiben weiterhin wirksam."/>
+
+        <!-- Lösung wählen -->
+        <GroupBox Grid.Row="1" Header="Ausgangsplan" Margin="0,0,0,8">
+            <ComboBox x:Name="CmbLösung" Margin="5"/>
+        </GroupBox>
+
+        <!-- Stabilitätsgewicht -->
+        <GroupBox Grid.Row="2" Header="Stabilitätsgewicht" Margin="0,0,0,8">
+            <Grid Margin="5">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="160"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.ColumnSpan="2" TextWrapping="Wrap" Margin="0,0,0,6"
+                    Text="Höheres Gewicht = Solver bleibt näher am Ausgangsplan. Empfehlung: 10–30 für moderate Nähe, 50–100 für maximale Stabilität."/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Gewicht (1–100):" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="1" Grid.Column="1" x:Name="TxtGewicht" Text="20" Width="60" HorizontalAlignment="Left"/>
+            </Grid>
+        </GroupBox>
+
+        <!-- Solver-Parameter -->
+        <GroupBox Grid.Row="3" Header="Solver-Parameter" Margin="0,0,0,8">
+            <Grid Margin="5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="160"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="100"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Text="Zeitlimit (Sek.):" VerticalAlignment="Center"/>
+                <TextBox Grid.Column="1" x:Name="TxtZeitlimit" Text="30" Width="60" HorizontalAlignment="Left"/>
+
+                <TextBlock Grid.Column="2" Text="Anz. Lösungen:" VerticalAlignment="Center"/>
+                <TextBox Grid.Column="3" x:Name="TxtAnzahl" Text="2" Width="40" HorizontalAlignment="Left"/>
+            </Grid>
+        </GroupBox>
+
+        <!-- Abweichungsliste -->
+        <GroupBox Grid.Row="4" Header="Abweichungsliste" Margin="0,0,0,12">
+            <CheckBox x:Name="ChkAbweichung" Margin="5"
+                      Content="Abweichungen zum Ausgangsplan in Sheet 'Abw' exportieren"
+                      IsChecked="True"/>
+        </GroupBox>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="5" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,0,0,0">
+            <Button x:Name="BtnStarten" Content="Solver starten"
+                    Width="120" Margin="0,0,8,0"
+                    Click="BtnStarten_Click"/>
+            <Button Content="Abbrechen" Width="100"
+                    Click="BtnAbbrechen_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

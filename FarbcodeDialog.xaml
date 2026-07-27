@@ -1,0 +1,91 @@
+<Window x:Class="Stundenplan_V2.FarbcodeDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Farbcode — Hintergrundfarben für Klassen, Fächer und Sonderfälle"
+        Width="980" Height="640"
+        MinWidth="780" MinHeight="420"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResizeWithGrip">
+
+    <Window.Resources>
+        <!-- Eine Zeile der Klassen-/Fächer-/Sonderliste: Farbfeld + Name.
+             Gebunden wird an "Anzeige" (nicht an "Name"), damit ein Sondereintrag
+             ohne eigene Farbe zusätzlich "(Standard)" zeigen kann. -->
+        <DataTemplate x:Key="FarbEintragTemplate">
+            <StackPanel Orientation="Horizontal" Margin="0,1,0,1">
+                <Border Width="24" Height="16" Margin="0,0,6,0"
+                        BorderBrush="#888" BorderThickness="1"
+                        Background="{Binding Farbe}"/>
+                <TextBlock Text="{Binding Anzeige}" VerticalAlignment="Center" TextWrapping="Wrap"/>
+            </StackPanel>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="#555"
+                   Text="Einträge markieren (Mehrfachauswahl mit Strg/Shift, auch über alle drei Listen hinweg) und dann unten eine Farbe der Palette anklicken. Klassen- und Fachfarben erscheinen im Plan-Editor überall dort, wo eine Stunde sonst normal hellblau wäre — gelbe Warnungen und die späten päd. Einheiten behalten Vorrang. Unter 'Sonderfarben' lassen sich die beiden Töne der späten päd. Einheiten selbst festlegen. Gespeichert wird dauerhaft im Sheet 'Farben' der Excel-Datei."/>
+
+        <!-- Klassen | Fächer | Sonderfarben -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="250"/>
+            </Grid.ColumnDefinitions>
+
+            <DockPanel Grid.Column="0">
+                <TextBlock DockPanel.Dock="Top" Text="Klassen:" FontWeight="Bold" Margin="0,0,0,4"/>
+                <ListBox x:Name="LstKlassen" SelectionMode="Extended"
+                         ItemTemplate="{StaticResource FarbEintragTemplate}"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+            </DockPanel>
+
+            <DockPanel Grid.Column="2">
+                <TextBlock DockPanel.Dock="Top" Text="Fächer:" FontWeight="Bold" Margin="0,0,0,4"/>
+                <ListBox x:Name="LstFaecher" SelectionMode="Extended"
+                         ItemTemplate="{StaticResource FarbEintragTemplate}"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+            </DockPanel>
+
+            <DockPanel Grid.Column="4">
+                <TextBlock DockPanel.Dock="Top" Text="Sonderfarben:" FontWeight="Bold" Margin="0,0,0,4"/>
+                <TextBlock DockPanel.Dock="Bottom" Margin="0,6,0,0" TextWrapping="Wrap" Foreground="#555"
+                           Text="Gilt nur für die Anzeige im Plan-Editor. „Keine Farbe“ stellt hier den Standardton wieder her; die Excel-Exporte bleiben unverändert."/>
+                <ListBox x:Name="LstSonder" SelectionMode="Extended"
+                         ItemTemplate="{StaticResource FarbEintragTemplate}"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+            </DockPanel>
+        </Grid>
+
+        <!-- Palette -->
+        <GroupBox Grid.Row="2" Header="Palette" Margin="0,10,0,0" Padding="6">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" x:Name="BtnKeineFarbe" Content="Keine Farbe"
+                        Width="100" Height="24" VerticalAlignment="Top" Margin="8,0,0,0"
+                        ToolTip="Farbe der markierten Einträge entfernen (bei Sonderfarben: zurück auf den Standardton)"
+                        Click="BtnKeineFarbe_Click"/>
+                <StackPanel x:Name="PnlPalette"/>
+            </DockPanel>
+        </GroupBox>
+
+        <TextBlock Grid.Row="3" x:Name="TxtHinweis" Margin="0,8,0,0" Foreground="#555"
+                   TextWrapping="Wrap" Text="Bereit."/>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button x:Name="BtnSpeichern" Content="Speichern" Width="100" Margin="0,0,6,0"
+                    Click="BtnSpeichern_Click"/>
+            <Button x:Name="BtnAbbrechen" Content="Abbrechen" Width="90" IsCancel="True"
+                    Click="BtnAbbrechen_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>
