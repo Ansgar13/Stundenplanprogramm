@@ -1745,6 +1745,30 @@ namespace Stundenplan_V2
             FuelleFachgruppenDropdown(CboFachgruppe?.SelectedItem as string);
         }
 
+        // Ruft den PlanValidator mit den vollstaendigen Freie-Tage- UND
+        // Freie-Stunden-(Band-)Parametern auf. Fehlen diese Parameter, ueberspringt
+        // der Validator die Band-Pruefung (Block 9b) komplett — dann bleibt ein Zug
+        // ins gesperrte Band im Editor voellig unbemerkt (kein Verletzungseintrag,
+        // keine gelbe Drag-Warnung). Besonders lehrerFreieStundenMinus3 muss dabei
+        // sein: ohne diesen Wert ist der harte (-3) Bandfall im Validator nie als
+        // Verletzung sichtbar. Alle Drag-/Verletzungspruefungen im Editor laufen
+        // deshalb ueber diesen Helper statt ueber den 4-Argument-Aufruf.
+        private System.Collections.Generic.List<PlanValidator.Verletzung> PrüfeMitRegeln(int[,] bel)
+        {
+            var p = _bewParam;
+            return PlanValidator.Prüfe(
+                bel, _blocks, _slots, _grossePausen,
+                meldeLeherMinus2: p?.MeldeMinus2 ?? false,
+                extraFreieTage: p?.ExtraFreieTage,
+                lehrerFreiTageMinus2: p?.LehrerFreiTageMinus2,
+                lehrerFreiTageMinus3: p?.LehrerFreiTageMinus3,
+                verbotMinus2Lehrer: p?.VerbotMinus2 ?? false,
+                extraFreieStunden: p?.ExtraFreieStunden,
+                freieStundenBereich: p?.FreieStundenBereich,
+                lehrerFreieStundenMinus2: p?.LehrerFreieStundenMinus2,
+                lehrerFreieStundenMinus3: p?.LehrerFreieStundenMinus3);
+        }
+
         // Lehrer-Diagnose einer Belegung als Nachschlagetabelle (Lehrer -> Werte).
         // Ausgelagert, weil der Diag-Filter im Vergleichsmodus zwei Loesungen
         // gegeneinander prueft und beide exakt gleich berechnet werden muessen.
@@ -5866,7 +5890,7 @@ namespace Stundenplan_V2
             // --- Tagesregel: die plan-weite Anzahl darf nicht steigen ---
             try
             {
-                int trNach = PlanValidator.Prüfe(probe, _blocks, _slots, _grossePausen)
+                int trNach = PrüfeMitRegeln(probe)
                                           .Count(v => v.Kategorie == "Tagesregel");
                 if (trNach > trVor) return true;
             }
@@ -6060,8 +6084,8 @@ namespace Stundenplan_V2
             var trNachL = new Dictionary<string, int>();
             try
             {
-                var vVorAll = PlanValidator.Prüfe(_belegung, _blocks, _slots, _grossePausen);
-                var vNachAll = PlanValidator.Prüfe(probeBelegung, _blocks, _slots, _grossePausen);
+                var vVorAll = PrüfeMitRegeln(_belegung);
+                var vNachAll = PrüfeMitRegeln(probeBelegung);
                 // UNr -> beteiligte Lehrer (das Lehrer-Feld der Verletzung ist ein
                 // kombinierter String "Lehrer | Klassen" und eignet sich nicht zum
                 // direkten Vergleich; daher ueber die UNr auf die Block-Lehrer mappen).
@@ -6181,8 +6205,8 @@ namespace Stundenplan_V2
             int doppVor = 0, doppNach = 0, tagVor = 0, tagNach = 0;
             try
             {
-                var vVor = PlanValidator.Prüfe(_belegung, _blocks, _slots, _grossePausen);
-                var vNach = PlanValidator.Prüfe(probeBelegung, _blocks, _slots, _grossePausen);
+                var vVor = PrüfeMitRegeln(_belegung);
+                var vNach = PrüfeMitRegeln(probeBelegung);
                 doppVor = vVor.Count(x => x.Kategorie == "Doppelstunden");
                 doppNach = vNach.Count(x => x.Kategorie == "Doppelstunden");
                 tagVor = vVor.Count(x => x.Kategorie == "Tagesregel");
@@ -6404,7 +6428,7 @@ namespace Stundenplan_V2
             List<PlanValidator.Verletzung> nachher;
             try
             {
-                nachher = PlanValidator.Prüfe(probe, _blocks, _slots, _grossePausen);
+                nachher = PrüfeMitRegeln(probe);
             }
             catch
             {
@@ -7134,7 +7158,7 @@ namespace Stundenplan_V2
         {
             try
             {
-                _aktuelleVerletzungen = PlanValidator.Prüfe(_belegung, _blocks, _slots, _grossePausen);
+                _aktuelleVerletzungen = PrüfeMitRegeln(_belegung);
                 _verletzungenGueltig = true;
             }
             catch

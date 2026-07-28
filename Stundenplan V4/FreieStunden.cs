@@ -95,11 +95,16 @@ namespace Stundenplan_V2
 
                 if (bandSlots.Count == 0) continue; // an diesem Tag existiert das Band nicht
 
-                // Band komplett per ZWL (-3) gesperrt? -> zaehlt nicht als frei.
-                bool bandFixGesperrt = bandSlots.All(s =>
+                // Beruehrt das Band an diesem Tag AUCH NUR EINE per ZWL (-3)
+                // gesperrte Stunde, zaehlt der Tag NICHT als frei gewaehltes Band
+                // -> exakt wie im Solver (freeBand=0, siehe PlanenIntern/LNS). So
+                // ist das Band strikt zusaetzlich zu den ZWL-Sperren. Frueher stand
+                // hier .All (nur ein KOMPLETT gesperrtes Band schloss den Tag aus);
+                // das war laxer als der Solver und meldete Verletzungen zu spaet.
+                bool bandBeruehrtZwlFrei = bandSlots.Any(s =>
                     slots[s].LehrerWunsch != null &&
                     slots[s].LehrerWunsch.TryGetValue(lehrer, out int lw) && lw == -3);
-                if (bandFixGesperrt) continue;
+                if (bandBeruehrtZwlFrei) continue;
 
                 bool hatUnterrichtImBand = false;
                 for (int b = 0; b < B && !hatUnterrichtImBand; b++)

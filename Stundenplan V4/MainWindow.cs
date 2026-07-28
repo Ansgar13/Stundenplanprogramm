@@ -349,7 +349,8 @@ namespace Stundenplan_V2
                     lehrerFreiTageMinus2: input.LehrerFreiTageMinus2,
                     extraFreieStunden: input.ExtraFreieStunden,
                     freieStundenBereich: input.FreieStundenBereich,
-                    lehrerFreieStundenMinus2: input.LehrerFreieStundenMinus2);
+                    lehrerFreieStundenMinus2: input.LehrerFreieStundenMinus2,
+                    lehrerFreieStundenMinus3: input.LehrerFreieStundenMinus3);
 
                 PlanValidator.SchreibeTabelle(excelPfad, verletzungen);
 
