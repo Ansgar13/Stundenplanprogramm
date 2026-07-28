@@ -21,10 +21,122 @@ namespace Stundenplan_V2
         // blocks = die für diese Lösung gültigen Blöcke (ggf. mit getauschten Lehrern)
         private List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> letzteSolutions = new();
 
+        // Separates großes Ausgabefenster (null = gerade nicht geöffnet)
+        private AusgabeFenster? _ausgabeFenster;
+
         public MainWindow()
         {
             InitializeComponent();
             PasseStartgroesseAnMonitorAn();
+
+            // Ausgabefenster automatisch neben dem Hauptfenster öffnen, sobald
+            // dessen Position feststeht (Loaded statt Konstruktor -> Left/Top gültig).
+            Loaded += (s, e) => ZeigeAusgabeFenster();
+        }
+
+        // =====================================================
+        // SAVE ON CLOSE
+        // Beim Beenden anbieten, die aktuell im Speicher gehaltenen Lösungen
+        // (letzteSolutions) noch einmal in die Excel-Datei ("Lös" + Ranking +
+        // Lehrer-Abweichungen) zu schreiben. Verhindert, dass zuletzt erzeugte
+        // oder bearbeitete Lösungen beim Schließen verloren gehen, falls sie
+        // noch nicht auf die Platte geschrieben wurden.
+        // =====================================================
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            base.OnClosing(e);
+            if (e.Cancel) return; // Beenden bereits anderweitig abgebrochen
+
+            // Nur nachfragen, wenn es überhaupt speicherbare Lösungen gibt.
+            if (letzteSolutions == null || letzteSolutions.Count == 0
+                || input == null || string.IsNullOrEmpty(excelPfad))
+                return;
+
+            var antwort = MessageBox.Show(
+                "Sollen die aktuellen Lösungen vor dem Beenden (noch einmal) in " +
+                "die Excel-Datei geschrieben werden?\n\n" +
+                "Ja = speichern und beenden\n" +
+                "Nein = ohne Speichern beenden\n" +
+                "Abbrechen = nicht beenden",
+                "Programm beenden",
+                MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+
+            if (antwort == MessageBoxResult.Cancel)
+            {
+                e.Cancel = true; // Beenden abbrechen
+                return;
+            }
+            if (antwort == MessageBoxResult.No)
+                return; // ohne Speichern beenden
+
+            // Ja: speichern. Eigene Fehlermeldung (zeigeFehlermeldung: false),
+            // damit bei einem Speicherfehler direkt gefragt werden kann, ob
+            // trotzdem beendet werden soll.
+            if (!SpeichereLösungenInExcel(letzteSolutions, zeigeFehlermeldung: false))
+            {
+                var trotzdem = MessageBox.Show(
+                    "Die Lösungen konnten nicht gespeichert werden — möglicherweise " +
+                    "ist die Excel-Datei gerade in Excel geöffnet.\n\n" +
+                    "Trotzdem beenden und die Lösungen verwerfen?\n\n" +
+                    "Nein = nicht beenden (dann Excel schließen und erneut versuchen)",
+                    "Speichern fehlgeschlagen",
+                    MessageBoxButton.YesNo, MessageBoxImage.Warning);
+
+                if (trotzdem == MessageBoxResult.No)
+                    e.Cancel = true; // Beenden abbrechen, Nutzer kann Excel schließen
+            }
+        }
+
+        // =====================================================
+        // SEPARATES AUSGABEFENSTER
+        // =====================================================
+        private void BtnAusgabeFenster_Click(object sender, RoutedEventArgs e)
+        {
+            ZeigeAusgabeFenster();
+        }
+
+        private void ZeigeAusgabeFenster()
+        {
+            if (_ausgabeFenster == null)
+            {
+                _ausgabeFenster = new AusgabeFenster(excelPfad) { Owner = this };
+                _ausgabeFenster.Closed += (s, e) => _ausgabeFenster = null;
+
+                // Rechts neben dem Hauptfenster platzieren; sonst links; sonst versetzt.
+                var wa = SystemParameters.WorkArea;
+                double rechtsX = Left + Width + 8;
+                if (rechtsX + _ausgabeFenster.Width <= wa.Right)
+                {
+                    _ausgabeFenster.Left = rechtsX;
+                    _ausgabeFenster.Top = Top;
+                }
+                else if (Left - _ausgabeFenster.Width - 8 >= wa.Left)
+                {
+                    _ausgabeFenster.Left = Left - _ausgabeFenster.Width - 8;
+                    _ausgabeFenster.Top = Top;
+                }
+                else
+                {
+                    _ausgabeFenster.Left = wa.Left + 40;
+                    _ausgabeFenster.Top = wa.Top + 40;
+                }
+
+                // Höhe an die Arbeitsfläche anpassen, falls unten kein Platz ist.
+                if (_ausgabeFenster.Top + _ausgabeFenster.Height > wa.Bottom)
+                    _ausgabeFenster.Height = Math.Max(
+                        _ausgabeFenster.MinHeight, wa.Bottom - _ausgabeFenster.Top - 8);
+
+                _ausgabeFenster.Show();
+            }
+            else
+            {
+                if (_ausgabeFenster.WindowState == WindowState.Minimized)
+                    _ausgabeFenster.WindowState = WindowState.Normal;
+                _ausgabeFenster.Activate();
+            }
+
+            // Aktuellen Log-Inhalt übernehmen, damit im Fenster nichts fehlt.
+            _ausgabeFenster.SetzeInhalt(TxtLog.Text);
         }
 
         // =====================================================
@@ -76,6 +188,7 @@ namespace Stundenplan_V2
         {
             TxtLog.AppendText(text + Environment.NewLine);
             TxtLog.ScrollToEnd();
+            _ausgabeFenster?.Append(text);
         }
 
         // =====================================================
@@ -685,6 +798,7 @@ namespace Stundenplan_V2
             // leeren, damit hier nur das Protokoll des aktuellen Laufs steht
             // und nicht das der vorherigen Läufe mit angehängt wird.
             TxtLog.Clear();
+            _ausgabeFenster?.Clear();
 
             var fenster = new SucheStatusFenster(excelPfad) { Owner = this };
             var cts = new System.Threading.CancellationTokenSource();
@@ -796,10 +910,15 @@ namespace Stundenplan_V2
             foreach (var l in letzteSolutions)
                 Log($"  [{l.label}] Qualität: {l.quality}, BadUnits: {l.badUnits}");
 
-            // In Excel schreiben
-            SchreibeInExcel(solutions);
-            SchreibeLehrerAbweichungenLös(solutions);
-            SchreibeRanking(solutions);
+            // In Excel schreiben (abgesichert: bei einem Speicherfehler -
+            // z.B. Datei in Excel geöffnet - erscheint eine klare Meldung statt
+            // eines Absturzes; die Lösungen bleiben in letzteSolutions erhalten
+            // und können beim Beenden erneut gespeichert werden).
+            if (!SpeichereLösungenInExcel(solutions))
+            {
+                TxtStatus.Text = "Lösungen gefunden, aber Speichern fehlgeschlagen.";
+                return;
+            }
             ErzeugeNuHoAusgaben(solutions);
 
             // Diagnose-Tabelle für alle Lösungen
@@ -2209,6 +2328,41 @@ namespace Stundenplan_V2
             workbook.Save();
         }
 
+        // Schreibt Lös-Sheet, Lehrer-Abweichungen und Ranking gebündelt und
+        // abgesichert in die Excel-Datei. Fängt Speicherfehler (typischerweise:
+        // die Datei ist gerade in Excel geöffnet und damit gesperrt) ab und
+        // meldet sie klar, statt eine unbehandelte Ausnahme in einem async-void-
+        // Handler auszulösen (die die App abstürzen ließe). Die Lösungen bleiben
+        // bei einem Fehler unverändert im Speicher (letzteSolutions) und können
+        // erneut - z.B. beim Beenden über OnClosing - gespeichert werden.
+        // Rückgabe: true bei Erfolg, false bei Speicherfehler.
+        private bool SpeichereLösungenInExcel(
+            List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> solutions,
+            bool zeigeFehlermeldung = true)
+        {
+            try
+            {
+                SchreibeInExcel(solutions);
+                SchreibeLehrerAbweichungenLös(solutions);
+                SchreibeRanking(solutions);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"Speichern der Lösungen fehlgeschlagen: {ex.Message}");
+                if (zeigeFehlermeldung)
+                    MessageBox.Show(
+                        "Die Lösungen konnten nicht in die Excel-Datei geschrieben werden:\n\n" +
+                        ex.Message +
+                        "\n\nMöglicherweise ist die Datei gerade in Excel geöffnet. " +
+                        "Bitte dort schließen und den Vorgang wiederholen — die " +
+                        "Lösungen sind im Programm noch vorhanden.",
+                        "Speichern fehlgeschlagen",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+        }
+
         private void SchreibeRanking(
             List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> solutions)
         {
@@ -3315,7 +3469,9 @@ namespace Stundenplan_V2
                     extraFreieStunden: input.ExtraFreieStunden,
                     freieStundenBereich: input.FreieStundenBereich,
                     lehrerFreieStundenMinus2: input.LehrerFreieStundenMinus2,
-                    lehrerFreieStundenMinus3: input.LehrerFreieStundenMinus3);
+                    lehrerFreieStundenMinus3: input.LehrerFreieStundenMinus3,
+                    doppelSelberTagFaecher: input.DoppelSelberTagFaecher,
+                    strafeDoppelSelberTag: input.StrafeDoppelSelberTag);
 
                 statusFenster.Close();
 
