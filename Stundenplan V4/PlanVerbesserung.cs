@@ -434,15 +434,23 @@ namespace Stundenplan_V2
                 }
             }
 
+            // free/freeBand werden in getrennten if-Bloecken angelegt. Damit der
+            // Freie-Stunden-Block unten die Additivitaets-Kopplung
+            // (free + freeBand <= 1) bilden kann, liegen die Referenzen hier im
+            // gemeinsamen Scope (bleiben null, falls keine freien Tage aktiv sind).
+            BoolVar[,] free = null;
+            List<string> lehrerListeFt = null;
+            List<string> tageListeFt = null;
+
             // Freie Tage (FT) – HART für -3 sowie -2 mit aktivem Verbot
             // (analog PlanenIntern; -2 ohne Verbot bleibt weich über die Zielbewertung).
             if (input.ExtraFreieTage != null && input.ExtraFreieTage.Count > 0)
             {
-                var lehrerListeFt = blocks.SelectMany(b => b.Teile.Select(t => t.Lehrer))
+                lehrerListeFt = blocks.SelectMany(b => b.Teile.Select(t => t.Lehrer))
                     .Distinct().ToList();
-                var tageListeFt = slots.Select(z => z.WTag).Distinct().ToList();
+                tageListeFt = slots.Select(z => z.WTag).Distinct().ToList();
 
-                var free = new BoolVar[lehrerListeFt.Count, tageListeFt.Count];
+                free = new BoolVar[lehrerListeFt.Count, tageListeFt.Count];
                 for (int l = 0; l < lehrerListeFt.Count; l++)
                     for (int day = 0; day < tageListeFt.Count; day++)
                         free[l, day] = model.NewBoolVar($"lns_free_{l}_{day}");
@@ -515,8 +523,14 @@ namespace Stundenplan_V2
                             Enumerable.Range(0, tageListeFs.Count).Select(day => freeBand[l, day]))
                             >= gewünscht);
 
-                    // Vollständig -3-gesperrtes Band bzw. an diesem Tag nicht
-                    // existierendes Band zählt nicht als "frei" (analog PlanenIntern).
+                    // ZWL-Additivitaet: beruehrt das Band an einem Tag AUCH NUR
+                    // EINE per ZWL (-3) gesperrte Stunde (oder existiert das Band
+                    // an dem Tag gar nicht), zaehlt dieser Tag NICHT als frei
+                    // gewaehltes Band -> freeBand = 0. Das Band kommt so strikt
+                    // zusaetzlich zu den ZWL-Sperren. Frueher stand hier .All
+                    // (nur ein KOMPLETT -3-gesperrtes Band schloss den Tag aus);
+                    // dadurch rechnete der LNS-Lauf teilgesperrte Tage faelschlich
+                    // als Band-Tag an. Jetzt .Any, identisch zu PlanenIntern.
                     for (int day = 0; day < tageListeFs.Count; day++)
                     {
                         string tag = tageListeFs[day];
@@ -528,10 +542,25 @@ namespace Stundenplan_V2
                             model.Add(freeBand[l, day] == 0);
                             continue;
                         }
-                        bool bandFixFrei = bandSlots.All(z =>
+                        bool bandBeruehrtZwlFrei = bandSlots.Any(z =>
                             z.LehrerWunsch.TryGetValue(name, out int lw) && lw == -3);
-                        if (bandFixFrei)
+                        if (bandBeruehrtZwlFrei)
                             model.Add(freeBand[l, day] == 0);
+                    }
+
+                    // Additivitaet zu den freien Tagen: ein Tag darf nicht zugleich
+                    // als freier Tag UND als freies Band zaehlen, sonst erfuellt der
+                    // Solver den Bandwunsch gratis ueber einen ohnehin freien Tag.
+                    // Nur moeglich, wenn der FreeDay-Block oben aktiv war und
+                    // dieselbe Lehrer-/Tage-Herleitung nutzt (gleiche blocks/slots)
+                    // -> Dimensionen deckungsgleich, Index l gilt in beiden Arrays.
+                    // Identische Haerte wie PlanenIntern (free[l,day]+freeBand[l,day]<=1).
+                    if (free != null &&
+                        free.GetLength(0) == lehrerListeFs.Count &&
+                        free.GetLength(1) == tageListeFs.Count)
+                    {
+                        for (int day = 0; day < tageListeFs.Count; day++)
+                            model.Add(free[l, day] + freeBand[l, day] <= 1);
                     }
                 }
 

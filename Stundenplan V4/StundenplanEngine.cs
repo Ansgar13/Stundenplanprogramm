@@ -686,6 +686,11 @@ namespace Stundenplan_V2
                 }
             }
 
+            // freeDiag wird im FreeDay-Block belegt und im FreeHour-Block fuer
+            // die Additivitaets-Kopplung (free + freeBand <= 1) referenziert.
+            // Bleibt null, wenn keine freien Tage im Modell sind -> keine Kopplung.
+            BoolVar[,] freeDiag = null;
+
             // === OPTIONAL: FreeDay ===
             if (mitFreeDay && extraFreieTage != null && extraFreieTage.Count > 0)
             {
@@ -696,6 +701,7 @@ namespace Stundenplan_V2
                 for (int l = 0; l < lehrerListeD.Count; l++)
                     for (int day = 0; day < tageListeD.Count; day++)
                         free[l, day] = model.NewBoolVar($"d_free_{l}_{day}");
+                freeDiag = free;
 
                 for (int l = 0; l < lehrerListeD.Count; l++)
                 {
@@ -753,7 +759,11 @@ namespace Stundenplan_V2
                         Enumerable.Range(0, tageListeH.Count).Select(day => freeBand[l, day])
                     ) >= extraFreieStunden[name]);
 
-                    // Fix-Sperre bzw. an diesem Tag nicht existierendes Band -> 0.
+                    // Fix-Sperre / Additivitaet zu ZWL: beruehrt das Band an
+                    // diesem Tag AUCH NUR EINE per ZWL (-3) gesperrte Stunde
+                    // (oder existiert das Band nicht), zaehlt der Tag NICHT als
+                    // frei gewaehltes Band -> freeBand = 0. Identisch zu
+                    // PlanenIntern, damit die Diagnose dieselbe Haerte abbildet.
                     for (int day = 0; day < tageListeH.Count; day++)
                     {
                         string tag = tageListeH[day];
@@ -765,10 +775,23 @@ namespace Stundenplan_V2
                             model.Add(freeBand[l, day] == 0);
                             continue;
                         }
-                        bool bandFixFrei = bandSlots.All(s =>
+                        bool bandBeruehrtZwlFrei = bandSlots.Any(s =>
                             s.LehrerWunsch.TryGetValue(name, out int lw) && lw == -3);
-                        if (bandFixFrei)
+                        if (bandBeruehrtZwlFrei)
                             model.Add(freeBand[l, day] == 0);
+                    }
+
+                    // Additivitaet zu den freien Tagen: nur wenn der FreeDay-Block
+                    // ebenfalls aktiv war (freeDiag belegt) und die Lehrer-/Tage-
+                    // Indizes deckungsgleich sind (gleiche Herleitung aus
+                    // blocks/slots). Dann darf ein Tag nicht zugleich freier Tag
+                    // und freies Band sein -> identische Haerte wie PlanenIntern.
+                    if (freeDiag != null &&
+                        freeDiag.GetLength(0) == lehrerListeH.Count &&
+                        freeDiag.GetLength(1) == tageListeH.Count)
+                    {
+                        for (int day = 0; day < tageListeH.Count; day++)
+                            model.Add(freeDiag[l, day] + freeBand[l, day] <= 1);
                     }
                 }
 
@@ -3036,7 +3059,11 @@ namespace Stundenplan_V2
             Dictionary<string, int> extraFreieStunden = null,
             Dictionary<string, (int von, int bis)> freieStundenBereich = null,
             HashSet<string> lehrerFreieStundenMinus2 = null,
-            HashSet<string> lehrerFreieStundenMinus3 = null)
+            HashSet<string> lehrerFreieStundenMinus3 = null,
+            // "Fächer-Doppelstd. nicht am selben Tag" (weiche Regel, pro Klasse) —
+            // optional, damit bestehende Aufrufer unveraendert bleiben.
+            HashSet<string> doppelSelberTagFaecher = null,
+            int strafeDoppelSelberTag = 5)
         {
             // Diagnose-Buffer für aktuellen Lauf zurücksetzen
             _infeasibleDetails.Clear();
@@ -3045,6 +3072,7 @@ namespace Stundenplan_V2
             freieStundenBereich ??= new Dictionary<string, (int von, int bis)>();
             lehrerFreieStundenMinus2 ??= new HashSet<string>();
             lehrerFreieStundenMinus3 ??= new HashSet<string>();
+            doppelSelberTagFaecher ??= new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
 
             // Abbruch-Token für diesen Lauf hinterlegen, damit auch die
             // Diagnose-Hilfsmethoden (LöseModellMitFlags & Co.) darauf
@@ -3147,6 +3175,8 @@ namespace Stundenplan_V2
                 freieStundenBereich: freieStundenBereich,
                 lehrerFreieStundenMinus2: lehrerFreieStundenMinus2,
                 lehrerFreieStundenMinus3: lehrerFreieStundenMinus3,
+                doppelSelberTagFaecher: doppelSelberTagFaecher,
+                strafeDoppelSelberTag: strafeDoppelSelberTag,
                 reporter: reporter, abbruch: abbruch, liveState: liveState,
                 darfDiagnose: diagnoseGate);
             if (reporter != null)
@@ -3304,6 +3334,8 @@ namespace Stundenplan_V2
                             freieStundenBereich: freieStundenBereich,
                             lehrerFreieStundenMinus2: lehrerFreieStundenMinus2,
                             lehrerFreieStundenMinus3: lehrerFreieStundenMinus3,
+                            doppelSelberTagFaecher: doppelSelberTagFaecher,
+                            strafeDoppelSelberTag: strafeDoppelSelberTag,
                             reporter: reporter, abbruch: abbruch, liveState: liveState);
                         if (lösungen.Count > 0)
                         {
@@ -3517,6 +3549,11 @@ namespace Stundenplan_V2
             Dictionary<string, (int von, int bis)> freieStundenBereich = null,
             HashSet<string> lehrerFreieStundenMinus2 = null,
             HashSet<string> lehrerFreieStundenMinus3 = null,
+            // "Fächer-Doppelstd. nicht am selben Tag" (weiche Regel, pro Klasse):
+            // pro Klasse und Tag höchstens ein gelistetes Fach als Doppelstunde;
+            // jedes weitere kostet strafeDoppelSelberTag Punkte.
+            HashSet<string> doppelSelberTagFaecher = null,
+            int strafeDoppelSelberTag = 5,
             // Stabilitätsmodus (Button 11 "Minimale Änderungen"):
             // ausgangsplan  = blockIdx → slotIdx der Referenzlösung
             // stabilitaetsGewicht > 0 aktiviert Belohnung für beibehaltene Slots
@@ -3624,9 +3661,12 @@ namespace Stundenplan_V2
                         ) >= gewünschteBandTage);
                     }
 
-                    // Fix-Sperre: ist das GESAMTE Band eines Tages per ZWL (-3)
-                    // gesperrt, zaehlt dieser (ohnehin leere) Tag NICHT als frei
-                    // gewaehltes Band -> freeBand = 0 (analog free bei den Tagen).
+                    // Fix-Sperre / Additivitaet zu ZWL: beruehrt das Band an
+                    // diesem Tag AUCH NUR EINE per ZWL (-3) gesperrte Stunde
+                    // (oder existiert das Band an dem Tag nicht), zaehlt dieser
+                    // Tag NICHT als frei gewaehltes Band -> freeBand = 0. Damit
+                    // ist das gewuenschte Band strikt zusaetzlich zu den freien
+                    // Stunden aus der ZWL (frueher: nur wenn das GESAMTE Band -3).
                     for (int day = 0; day < tageListe.Count; day++)
                     {
                         string tag = tageListe[day];
@@ -3639,11 +3679,20 @@ namespace Stundenplan_V2
                             model.Add(freeBand[l, day] == 0);
                             continue;
                         }
-                        bool bandFixFrei = bandSlots.All(s =>
+                        bool bandBeruehrtZwlFrei = bandSlots.Any(s =>
                             s.LehrerWunsch.TryGetValue(name, out int lw) && lw == -3);
-                        if (bandFixFrei)
+                        if (bandBeruehrtZwlFrei)
                             model.Add(freeBand[l, day] == 0);
                     }
+
+                    // Additivitaet zu den freien Tagen: ein Tag darf nicht
+                    // gleichzeitig als freier Tag UND als freies Band zaehlen.
+                    // Ohne diese Kopplung legt der Solver das Band gratis auf
+                    // einen ohnehin freien Tag; der Bandwunsch bringt dann keine
+                    // zusaetzliche Entlastung. Hart, damit das Band echt on top
+                    // der freien Tage aus StD kommt.
+                    for (int day = 0; day < tageListe.Count; day++)
+                        model.Add(free[l, day] + freeBand[l, day] <= 1);
                 }
             }
 
@@ -3926,6 +3975,90 @@ namespace Stundenplan_V2
 
                     // Sum(x) <= 1 + hatDoppel
                     model.Add(LinearExpr.Sum(vars) <= 1 + hatDoppel);
+                }
+            }
+
+            // =====================================================
+            // FÄCHER-DOPPELSTD. NICHT AM SELBEN TAG (weich, pro Klasse)
+            // PM-Zeile "Fächer-Doppelstd. nicht am selben Tag" (Spalte B:
+            // z.B. "Sp, Ku"). Pro Klasse und Tag soll höchstens EINES der
+            // gelisteten Fächer eine Doppelstunde haben. Jedes weitere gelistete
+            // Fach mit Doppelstunde am selben Tag (derselben Klasse) wird bestraft.
+            //
+            // Modellierung: pro (Klasse, gelistetes Fach, Tag) ein hatDoppel-OR
+            // (analog oben). Pro (Klasse, Tag) erzeugen wir dann Überschuss-Bools
+            //   v_i (i = 2 .. #Gruppe), erzwungen auf 1, sobald mind. i der
+            //   gelisteten Fächer an dem Tag eine Doppelstunde haben:
+            //       Sum(hatDoppelGruppe) - (i-1) <= |Gruppe| * v_i
+            // Die Summe der v_i über eine (Klasse,Tag) ist damit im Optimum genau
+            // max(0, Anzahl-1) — also die Zahl der "zu viel" gelegten Doppelstunden.
+            // Diese Bools werden im Ziel mit strafeDoppelSelberTag bestraft.
+            // =====================================================
+            var doppelSelberTagVars = new List<BoolVar>();
+            var dstFaecher = doppelSelberTagFaecher
+                ?? new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+
+            if (dstFaecher.Count > 0 && strafeDoppelSelberTag != 0)
+            {
+                var klassenListe = fachKlasseMap.Keys
+                    .Select(k => k.klasse)
+                    .Distinct()
+                    .ToList();
+
+                foreach (var tag in tage)
+                {
+                    var daySlots = slots
+                        .Select((z, i) => new { z, i })
+                        .Where(z => z.z.WTag == tag)
+                        .Select(z => z.i)
+                        .ToList();
+                    var daySlotsSet = new HashSet<int>(daySlots);
+
+                    foreach (var klasse in klassenListe)
+                    {
+                        // Pro gelistetem Fach dieser Klasse: hatDoppel = OR der d[b,s]
+                        // an diesem Tag (nur Fächer, die es in der Klasse gibt).
+                        var hatDoppelGruppe = new List<BoolVar>();
+
+                        foreach (var fach in dstFaecher)
+                        {
+                            if (!fachKlasseMap.TryGetValue((klasse, fach), out var bloeckeDesFachs))
+                                continue;
+
+                            var doppelVars = new List<BoolVar>();
+                            foreach (var b in bloeckeDesFachs)
+                                foreach (var s in daySlots)
+                                {
+                                    if (s + 1 >= S) continue;
+                                    if (!daySlotsSet.Contains(s + 1)) continue;
+                                    if (d[b, s] == null) continue;
+                                    doppelVars.Add(d[b, s]);
+                                }
+
+                            if (doppelVars.Count == 0) continue; // Fach an dem Tag gar nicht als Doppel möglich
+
+                            var hatDoppel = model.NewBoolVar($"dst_hat_{klasse}_{fach}_{tag}");
+                            foreach (var dv in doppelVars)
+                                model.Add(hatDoppel >= dv);
+                            model.Add(hatDoppel <= LinearExpr.Sum(doppelVars));
+                            hatDoppelGruppe.Add(hatDoppel);
+                        }
+
+                        // Erst ab zwei möglichen gelisteten Fächern kann überhaupt
+                        // ein Konflikt am selben Tag entstehen.
+                        if (hatDoppelGruppe.Count < 2) continue;
+
+                        int g = hatDoppelGruppe.Count;
+                        var summe = LinearExpr.Sum(hatDoppelGruppe);
+                        for (int i = 2; i <= g; i++)
+                        {
+                            var vi = model.NewBoolVar($"dst_ueber_{klasse}_{tag}_{i}");
+                            // Sum - (i-1) <= g * vi  → Sum >= i erzwingt vi = 1;
+                            // andernfalls bleibt vi frei und wird im Ziel auf 0 gedrückt.
+                            model.Add(summe - (i - 1) <= g * vi);
+                            doppelSelberTagVars.Add(vi);
+                        }
+                    }
                 }
             }
 
@@ -4486,7 +4619,9 @@ namespace Stundenplan_V2
                 späteLkVars, hauptfachSpätVars, minus2LehrerVars,
                 gewichtFrüh, gewichtSpät, gewichtPäd, gewichtFrei,
                 strafeHohl, strafeDoppelHohl, strafeDreifachHohl, strafeEinzel,
-                strafeStdFolge, strafeSpäteLk, strafeHauptfachSpät, strafeMinus2Lehrer);
+                strafeStdFolge, strafeSpäteLk, strafeHauptfachSpät, strafeMinus2Lehrer,
+                doppelSelberTagVars: doppelSelberTagVars,
+                strafeDoppelSelberTag: strafeDoppelSelberTag);
 
             // Stabilitätsmodus: Für jeden Block, der im Ausgangsplan einen
             // bekannten Slot hat, wird das Beibehalten dieses Slots belohnt
@@ -5761,7 +5896,11 @@ namespace Stundenplan_V2
             Dictionary<string, int> extraFreieStunden = null,
             Dictionary<string, (int von, int bis)> freieStundenBereich = null,
             HashSet<string> lehrerFreieStundenMinus2 = null,
-            HashSet<string> lehrerFreieStundenMinus3 = null)
+            HashSet<string> lehrerFreieStundenMinus3 = null,
+            // "Fächer-Doppelstd. nicht am selben Tag" — auch im Stabilitätsmodus,
+            // damit der Nah-Klon dieselbe weiche Regel berücksichtigt.
+            HashSet<string> doppelSelberTagFaecher = null,
+            int strafeDoppelSelberTag = 5)
         {
             debug = "";
             _infeasibleDetails.Clear();
@@ -5847,6 +5986,8 @@ namespace Stundenplan_V2
                     freieStundenBereich: freieStundenBereich,
                     lehrerFreieStundenMinus2: lehrerFreieStundenMinus2,
                     lehrerFreieStundenMinus3: lehrerFreieStundenMinus3,
+                    doppelSelberTagFaecher: doppelSelberTagFaecher,
+                    strafeDoppelSelberTag: strafeDoppelSelberTag,
                     ausgangsplan: ausgangsCompound,
                     stabilitaetsGewicht: stabilitaetsGewicht);
 
