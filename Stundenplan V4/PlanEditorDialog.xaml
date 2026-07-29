@@ -472,6 +472,11 @@
                                   ToolTip="Sucht beim Ziehen live nach Wegen, den Unterricht auf ein belegtes Feld zu bekommen, indem die Hindernis-Blöcke klassenintern ausweichen. Rechenintensiv: läuft bei jeder überfahrenen Zelle neu. Abgeschaltet bleibt das Ziehen flüssig, die roten und gelben Warnungen am Zielfeld kommen weiterhin.">
                             <TextBlock Text="Ausweichsuche beim Ziehen (rechenintensiv)" TextWrapping="Wrap" FontSize="11"/>
                         </CheckBox>
+                        <CheckBox DockPanel.Dock="Top" x:Name="ChkAusweichTiefe3" Margin="12,0,0,4"
+                                  Checked="ChkAusweichTiefe3_Changed" Unchecked="ChkAusweichTiefe3_Changed"
+                                  ToolTip="Erweitert die Ausweichsuche auf drei Klassen: Blockiert der Ausweich-Tausch in der 2. Klasse selbst einen Lehrer in einer 3. Klasse, wird auch dort getauscht. Deutlich rechenintensiver - nur zuschalten, wenn nötig. Wirkt nur bei aktiver Ausweichsuche.">
+                            <TextBlock Text="…auch über 3 Klassen (noch rechenintensiver)" TextWrapping="Wrap" FontSize="11"/>
+                        </CheckBox>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <StackPanel x:Name="PnlVerschieb"/>
                         </ScrollViewer>

@@ -4516,156 +4516,335 @@ namespace Stundenplan_V2
         private List<VerschiebungMitAusweich> SucheVerschiebungMitAusweich(
             int hauptBlock, List<int> altSlots, List<int> zielSlots)
         {
+            // ===================================================================
+            // NEUAUFBAU - nur dieser eine Fall:
+            // Ein klasseninterner Tausch bringt A auf zielSlots, scheitert aber
+            // EINZIG daran, dass ein beteiligter Block seinen Lehrer auf einen Slot
+            // bringt, an dem dieser Lehrer in einer ANDEREN Klasse bereits
+            // unterrichtet. Dieser blockierende Fremdblock wird mit DEMSELBEN
+            // Algorithmus (SucheTauschketten) in SEINER Klasse weggetauscht. Beides
+            // zusammen ergibt den Vorschlag.
+            //
+            // Der Tausch in A's Klasse benutzt exakt die Kandidaten-/Ring-Logik des
+            // linken Kastens (2er/3er/4er ueber SammleKandidaten). Anders als dort
+            // lassen wir hier bewusst auch die Ketten zu, die die harte Pruefung nur
+            // wegen des Fremdklassen-Lehrerkonflikts nicht bestehen.
+            // ===================================================================
             var ergebnis = new List<VerschiebungMitAusweich>();
-            var hauptKlassen = new HashSet<string>(_blocks[hauptBlock].Teile.SelectMany(t => t.Klassen));
-            var hauptLehrer = new HashSet<string>(
-                _blocks[hauptBlock].Teile.Select(t => t.Lehrer).Where(l => !string.IsNullOrWhiteSpace(l)));
+            if (altSlots == null || altSlots.Count == 0) return ergebnis; // Parkfall laeuft ueber SucheEinplanungMitAusweich
+            if (zielSlots == null || zielSlots.Count == 0) return ergebnis;
 
-            // 1) Hindernis-Bloecke an den Zielslots ermitteln (ausser A selbst und gleiche UNr).
-            var hindernisse = new HashSet<int>();
-            foreach (int s in zielSlots)
-                for (int b = 0; b < _blocks.Count; b++)
-                {
-                    if (b == hauptBlock) continue;
-                    if (_blocks[b].UNr == _blocks[hauptBlock].UNr) continue;
-                    if (_belegung[b, s] != 1) continue;
-                    bool klasseKoll = _blocks[b].Teile.SelectMany(t => t.Klassen).Any(k => hauptKlassen.Contains(k));
-                    bool lehrerKoll = _blocks[b].Teile.Any(t => hauptLehrer.Contains(t.Lehrer));
-                    if (klasseKoll || lehrerKoll)
-                        hindernisse.Add(b);
-                }
+            // Suchtiefe ueber die Checkbox: 1 = zwei Klassen (Standard),
+            // 2 = bis drei Klassen (deutlich mehr Zweige, nur auf Wunsch).
+            bool tiefe3 = (ChkAusweichTiefe3?.IsChecked == true);
+            int maxTiefe = tiefe3 ? 2 : 1;
 
-            // Kein Hindernis -> hier nichts zu tun (einfache Verschiebung laeuft anderswo).
-            if (hindernisse.Count == 0) return ergebnis;
-            // Mehr als 2 Hindernisse: erste Stufe deckt max. 2 ab.
-            if (hindernisse.Count > 2) return ergebnis;
+            const int MAX_VORSCHLAEGE = 30;
+            int fremdBudget = tiefe3 ? 8 : 3;     // teure SucheTauschketten je Zelle
+            int kombiBudget = tiefe3 ? 1500 : 400; // harte Gesamtpruefungen (Klone) je Zelle
+            var gesehen = new HashSet<string>();
+            var fremdCache = new Dictionary<string, List<Tauschkette>>();
 
-            // 2) Fuer jedes Hindernis die moeglichen klasseninternen Ausweich-Tausche sammeln.
-            //    Ein Ausweich = Hindernis-Block tauscht innerhalb SEINER Klasse mit einem
-            //    anderen Block, sodass es die Zielslots (Y) raeumt.
-            //    Bei genau einem Hindernis werden zusaetzlich 3er- und 4er-Ringe versucht
-            //    (H -> P1 -> P2 -> H bzw. H -> P1 -> P2 -> P3 -> H), begrenzt auf die
-            //    Klasse des Hindernisses (hKlasse) - siehe Schritt 3.
-            //    Diese Vorab-Sammlung wird NUR fuer den 2-Hindernisse-Fall benoetigt;
-            //    beim 1-Hindernis-Fall uebernimmt SucheAusweichKetten die Kandidatensuche.
-            var hListeVorab = hindernisse.ToList();
-            var ausweichProHindernis = new Dictionary<int, List<(int partner, List<int> hSlots, List<int> pSlots)>>();
-            if (hListeVorab.Count == 2)
+            foreach (var klasseA in _blocks[hauptBlock].Teile.SelectMany(t => t.Klassen).Distinct())
             {
-                foreach (int h in hListeVorab)
+                foreach (var kette in BaueZielKetten(hauptBlock, altSlots, zielSlots, klasseA))
                 {
-                    var hSlotsAmTag = ErmittleBlockSlotsAmTag(h, zielSlots[0]);
-                    if (hSlotsAmTag.Count == 0) { return ergebnis; }
-                    string hKlasse = _blocks[h].Teile.SelectMany(t => t.Klassen).FirstOrDefault();
-                    if (hKlasse == null) return ergebnis;
-
-                    var partnerKandidaten = SammleKandidaten(hKlasse, hSlotsAmTag.Count, h);
-                    var moeglich = new List<(int, List<int>, List<int>)>();
-                    foreach (var pk in partnerKandidaten)
+                    foreach (var v in LoeseUeberFremdklasse(hauptBlock, altSlots, zielSlots, kette,
+                                                            fremdCache, ref fremdBudget, ref kombiBudget, maxTiefe))
                     {
-                        // Partner darf nicht selbst auf Y liegen (sonst raeumt es nicht)
-                        if (pk.slots.Any(s => zielSlots.Contains(s))) continue;
-                        moeglich.Add((pk.blockIdx, hSlotsAmTag, pk.slots));
+                        if (!gesehen.Add(BildeSignaturAusVerschiebung(v))) continue;
+                        ergebnis.Add(v);
+                        if (ergebnis.Count >= MAX_VORSCHLAEGE) break;
                     }
-                    if (moeglich.Count == 0) return ergebnis; // dieses Hindernis nicht loesbar
-                    ausweichProHindernis[h] = moeglich;
+                    if (ergebnis.Count >= MAX_VORSCHLAEGE) break;
                 }
+                if (ergebnis.Count >= MAX_VORSCHLAEGE) break;
             }
 
-            // 3) Kombinationen bilden (bei 1 Hindernis: 2er-Partner + 3er/4er-Ring;
-            //    bei 2 Hindernissen: Kreuzprodukt nur aus 2er-Partnern) und jeweils
-            //    die Probe-Belegung bauen + hart pruefen.
-            var hListe = hindernisse.ToList();
-
-            if (hListe.Count == 1)
-            {
-                int h = hListe[0];
-                string hKlasse = _blocks[h].Teile.SelectMany(t => t.Klassen).FirstOrDefault();
-                var hSlotsAmTag = ErmittleBlockSlotsAmTag(h, zielSlots[0]);
-                if (hSlotsAmTag.Count == 0 || hKlasse == null) return ergebnis;
-
-                // Alle Ausweichketten fuer H sammeln: 2er (direkter Partner),
-                // 3er- und 4er-Ring, alle begrenzt auf hKlasse.
-                var ketten = SucheAusweichKetten(h, hSlotsAmTag, hKlasse);
-
-                foreach (var kette in ketten)
-                {
-                    var v = BaueProbeAusweichKette(hauptBlock, altSlots, zielSlots, kette);
-                    if (v != null) ergebnis.Add(v);
-                }
-
-                // NEU: rekursives Freimachen - h soll bevorzugt auf A's frei
-                // werdende altSlots wandern (der naheliegende Gegen-Tausch);
-                // klappt das nicht direkt, weil h selbst in einer ANDEREN
-                // Klasse zur Zeit von altSlots schon Unterricht hat, wird das
-                // jeweils blockierende Hindernis klassenintern in SEINER
-                // EIGENEN Klasse weggetauscht - rekursiv, bis FREIMACHEN_MAX_TIEFE.
-                // Nur sinnvoll, wenn die Stundenzahl von h's Tag mit A's
-                // altSlots uebereinstimmt (sonst passt h gar nicht 1:1 dorthin).
-                if (hSlotsAmTag.Count == altSlots.Count)
-                {
-                    var bereitsBewegt = new HashSet<int> { hauptBlock, h };
-
-                    // A landet auf zielSlots - diese Slots sind fuer die gesamte
-                    // Kette tabu. Ohne das sucht die Rekursion gegen den
-                    // UNVERAENDERTEN Plan, sieht Y als frei an und schickt bei
-                    // tieferen Ketten gern ein spaetes Glied ausgerechnet dorthin.
-                    var reserviert = new HashSet<int>(zielSlots);
-
-                    var freimachKetten = SucheFreimachKetten(
-                        h, hSlotsAmTag, altSlots, bereitsBewegt, reserviert,
-                        geraeumt: new HashSet<int>(), tiefe: 1,
-                        maxErgebnisse: FREIMACHEN_MAX_ERGEBNISSE);
-
-                    foreach (var schritte in freimachKetten)
-                    {
-                        var v = BaueProbeFuerFreimachKette(hauptBlock, altSlots, zielSlots, schritte);
-                        if (v != null) ergebnis.Add(v);
-                    }
-                }
-            }
-            else // genau 2 Hindernisse
-            {
-                int h1 = hListe[0], h2 = hListe[1];
-                foreach (var a1 in ausweichProHindernis[h1])
-                    foreach (var a2 in ausweichProHindernis[h2])
-                    {
-                        if (a1.partner == a2.partner) continue; // nicht denselben Partner doppelt
-                        var v = BaueProbeAusweich(hauptBlock, altSlots, zielSlots,
-                            new List<(int h, int partner, List<int> hSlots, List<int> pSlots)>
-                            { (h1, a1.partner, a1.hSlots, a1.pSlots),
-                              (h2, a2.partner, a2.hSlots, a2.pSlots) });
-                        if (v != null) ergebnis.Add(v);
-                    }
-            }
-
-            // Interne Duplikate entfernen (z.B. wenn der bisherige Ring-Ansatz
-            // und das neue rekursive Freimachen zufaellig dieselbe Loesung
-            // finden).
-            var gesehene = new HashSet<string>();
-            ergebnis = ergebnis.Where(v => gesehene.Add(BildeSignaturAusVerschiebung(v))).ToList();
-
-            // Duplikate zur linken Liste (Tauschvorschlaege) herausfiltern:
-            // beide Suchen koennen unabhaengig voneinander denselben einfachen
-            // klasseninternen Tausch finden - in der rechten Liste soll dann
-            // nur stehen, was ueber die linke Liste hinausgeht. Die linke
-            // Liste (_aktuelleKetten) selbst wird dabei nur gelesen, nicht
-            // veraendert.
+            // Duplikate zur linken Liste (Tauschvorschlaege) herausfiltern: dort
+            // stehen die direkt moeglichen Tausche; rechts nur, was ueber einen
+            // Zusatz-Tausch hinausgeht. Die linke Liste wird nur gelesen.
             if (_aktuelleKetten != null && _aktuelleKetten.Count > 0)
             {
                 var linkeSignaturen = new HashSet<string>(_aktuelleKetten.Select(BildeSignaturAusKette));
                 ergebnis = ergebnis.Where(v => !linkeSignaturen.Contains(BildeSignaturAusVerschiebung(v))).ToList();
             }
 
-            // Optionaler Filter (Checkbox ueber der linken Liste, gilt fuer beide):
-            // Vorschlaege aussortieren, die eine neue Tagesregel- oder
-            // Freie-Tage-Verletzung einfuehren wuerden. Bewusst erst hier, wenn
-            // die Liste durch Duplikat-Filterung schon klein ist - der Validator
-            // laeuft je verbleibendem Vorschlag einmal ueber den ganzen Plan.
             if (ChkFilterVerletzungen?.IsChecked == true)
                 ergebnis = FiltereVerletzungsverschiebungen(ergebnis);
 
             return ergebnis;
+        }
+
+        // Klasseninterne Tauschketten (2er/3er/4er), die A auf zielSlots bringen:
+        // A wandert auf die Slots von G1, also muss G1 (erster Partner) genau auf
+        // zielSlots liegen; G2/G3 sind beliebige weitere Kandidaten der Klasse.
+        // Dieselbe Kandidatenlogik wie im linken Kasten. Die Zahl der daraus
+        // folgenden teuren Fremdsuchen ist im Aufrufer hart budgetiert.
+        private IEnumerable<Tauschkette> BaueZielKetten(
+            int hauptBlock, List<int> altSlots, List<int> zielSlots, string klasse)
+        {
+            int stundenzahl = altSlots.Count;
+            if (stundenzahl == 0) yield break;
+
+            var kandidaten = SammleKandidaten(klasse, stundenzahl, hauptBlock);
+            if (kandidaten.Count == 0) yield break;
+
+            var zielSet = new HashSet<int>(zielSlots);
+            var g1Liste = kandidaten.Where(k => new HashSet<int>(k.slots).SetEquals(zielSet)).ToList();
+            if (g1Liste.Count == 0) yield break; // an Y liegt kein tauschbarer Block dieser Klasse
+
+            var start = (hauptBlock, altSlots);
+
+            foreach (var g1 in g1Liste)
+            {
+                // 2er: A <-> G1
+                var k2 = new Tauschkette();
+                k2.Glieder.Add(start);
+                k2.Glieder.Add((g1.blockIdx, g1.slots));
+                yield return k2;
+
+                // 3er: A -> G1 -> G2 -> A
+                foreach (var g2 in kandidaten)
+                {
+                    if (g2.blockIdx == g1.blockIdx) continue;
+                    var k3 = new Tauschkette();
+                    k3.Glieder.Add(start);
+                    k3.Glieder.Add((g1.blockIdx, g1.slots));
+                    k3.Glieder.Add((g2.blockIdx, g2.slots));
+                    yield return k3;
+                }
+
+                // 4er: A -> G1 -> G2 -> G3 -> A
+                foreach (var g2 in kandidaten)
+                {
+                    if (g2.blockIdx == g1.blockIdx) continue;
+                    foreach (var g3 in kandidaten)
+                    {
+                        if (g3.blockIdx == g1.blockIdx || g3.blockIdx == g2.blockIdx) continue;
+                        var k4 = new Tauschkette();
+                        k4.Glieder.Add(start);
+                        k4.Glieder.Add((g1.blockIdx, g1.slots));
+                        k4.Glieder.Add((g2.blockIdx, g2.slots));
+                        k4.Glieder.Add((g3.blockIdx, g3.slots));
+                        yield return k4;
+                    }
+                }
+            }
+        }
+
+        // Wandelt eine Tauschkette in konkrete Zuege (Block, alteSlots, neueSlots)
+        // um. Ringrotation: Glied i wandert auf die Slots von Glied (i+1) mod n.
+        private List<(int block, List<int> von, List<int> neu)> KetteZuZuegen(Tauschkette kette)
+        {
+            var zuege = new List<(int, List<int>, List<int>)>();
+            int n = kette.Glieder.Count;
+            for (int i = 0; i < n; i++)
+            {
+                int ziel = (i + 1) % n;
+                zuege.Add((kette.Glieder[i].blockIdx,
+                           kette.Glieder[i].slots.ToList(),
+                           kette.Glieder[ziel].slots.ToList()));
+            }
+            return zuege;
+        }
+
+        // Baut die Probe-Belegung fuer eine Liste von Zuegen: erst alle Quellslots
+        // raeumen, dann alle Zielslots setzen (reihenfolgeunabhaengig).
+        private int[,] ProbeAusZuegen(List<(int block, List<int> von, List<int> neu)> zuege)
+        {
+            var probe = (int[,])_belegung.Clone();
+            foreach (var z in zuege)
+                foreach (int s in z.von) probe[z.block, s] = 0;
+            foreach (var z in zuege)
+                foreach (int s in z.neu) probe[z.block, s] = 1;
+            return probe;
+        }
+
+        // Loest eine A-auf-Ziel-Kette auf, die einzig an einem Fremdklassen-
+        // Lehrerkonflikt scheitert: der blockierende Fremdblock wird mit
+        // SucheTauschketten (identische Mechanik wie in der Ausgangsklasse) in
+        // SEINER Klasse weggetauscht. Blockiert dieser Tausch selbst wieder einen
+        // Lehrer in einer weiteren Klasse, wird das rekursiv fortgesetzt - bis zu
+        // maxTiefe zusaetzlichen Klassen (1 = 2 Klassen gesamt, 2 = 3 Klassen).
+        // Die Gesamtbewegung wird hart geprueft; nur konfliktfreie Kombinationen
+        // werden gesammelt (alle, nicht nur die erste).
+        //
+        // Performance: Blockadensuche ohne Belegungs-Klon; SucheTauschketten pro
+        // Fremdblock nur einmal (cache) und ueber fremdBudget/kombiBudget gedeckelt.
+        private List<VerschiebungMitAusweich> LoeseUeberFremdklasse(
+            int hauptBlock, List<int> altSlots, List<int> zielSlots, Tauschkette kette,
+            Dictionary<string, List<Tauschkette>> cache, ref int fremdBudget, ref int kombiBudget,
+            int maxTiefe)
+        {
+            var treffer = new List<VerschiebungMitAusweich>();
+
+            // Degeneriert (Block doppelt oder Nullbewegung) -> nutzlos.
+            var c1Bloecke = new HashSet<int>();
+            foreach (var g in kette.Glieder)
+                if (!c1Bloecke.Add(g.blockIdx)) return treffer;
+            int nA = kette.Glieder.Count;
+            for (int i = 0; i < nA; i++)
+            {
+                int ziel = (i + 1) % nA;
+                if (new HashSet<int>(kette.Glieder[i].slots).SetEquals(new HashSet<int>(kette.Glieder[ziel].slots)))
+                    return treffer;
+            }
+
+            SammleAusweich(hauptBlock, altSlots, zielSlots,
+                           KetteZuZuegen(kette), c1Bloecke, maxTiefe,
+                           cache, ref fremdBudget, ref kombiBudget, treffer);
+            return treffer;
+        }
+
+        // Rekursiver Kern: nimmt die bisher gesammelten Zuege.
+        //  - Gibt es KEINEN Fremdklassen-Lehrerkonflikt mehr -> harte Gesamtpruefung;
+        //    ist sie konfliktfrei, ist das eine fertige Loesung.
+        //  - Gibt es einen -> den blockierenden Fremdblock mit SucheTauschketten in
+        //    SEINER Klasse wegtauschen (alle Ringe) und je Variante EINE Ebene tiefer
+        //    weitersuchen, bis restTiefe erschoepft ist.
+        // Bewusst weiterhin nur EIN Fremdblock je Ebene.
+        private void SammleAusweich(
+            int hauptBlock, List<int> altSlots, List<int> zielSlots,
+            List<(int block, List<int> von, List<int> neu)> zuege, HashSet<int> beteiligte,
+            int restTiefe,
+            Dictionary<string, List<Tauschkette>> cache, ref int fremdBudget, ref int kombiBudget,
+            List<VerschiebungMitAusweich> treffer)
+        {
+            var platzierungen = zuege.Select(z => (z.block, z.neu)).ToList();
+
+            if (!FindeLehrerBlockadeOhneKlon(platzierungen, beteiligte, out int c, out int konfliktSlot))
+            {
+                // Keine Fremdblockade mehr -> harte Gesamtpruefung (ein Klon).
+                if (kombiBudget <= 0) return;
+                kombiBudget--;
+                if (!BaueUndPruefeKombi(zuege, out int[,] probeGesamt)) return;
+
+                var v = new VerschiebungMitAusweich
+                {
+                    HauptBlock = hauptBlock,
+                    AltSlots = altSlots.ToList(),
+                    ZielSlots = zielSlots.ToList(),
+                    ProbeBelegung = probeGesamt
+                };
+                foreach (var z in zuege)
+                    if (z.block != hauptBlock)
+                        v.Ausweiche.Add((z.block, z.von.ToList(), z.neu.ToList()));
+                treffer.Add(v);
+                return;
+            }
+
+            // Es gibt eine Fremdblockade - tiefer aufloesen, sofern noch Tiefe erlaubt.
+            if (restTiefe <= 0) return;
+
+            var cVon = ErmittleBlockSlotsAmTag(c, konfliktSlot);
+            if (cVon.Count == 0) return;
+
+            foreach (var cKlasse in _blocks[c].Teile.SelectMany(t => t.Klassen).Distinct())
+            {
+                string key = c + "#" + cKlasse + "#" + string.Join(",", cVon.OrderBy(x => x));
+                if (!cache.TryGetValue(key, out var cKetten))
+                {
+                    if (fremdBudget <= 0) continue;   // teures Budget aufgebraucht
+                    fremdBudget--;
+                    cKetten = SucheTauschketten(c, cVon, cKlasse);
+                    cache[key] = cKetten;
+                }
+
+                foreach (var cKette in cKetten)
+                {
+                    // Kein Block darf schon beteiligt sein (sonst doppelt bewegt).
+                    if (cKette.Glieder.Any(g => beteiligte.Contains(g.blockIdx))) continue;
+                    if (kombiBudget <= 0) return;
+
+                    var neueZuege = new List<(int block, List<int> von, List<int> neu)>(zuege);
+                    neueZuege.AddRange(KetteZuZuegen(cKette));
+                    var neuBeteiligt = new HashSet<int>(beteiligte);
+                    foreach (var g in cKette.Glieder) neuBeteiligt.Add(g.blockIdx);
+
+                    SammleAusweich(hauptBlock, altSlots, zielSlots, neueZuege, neuBeteiligt,
+                                   restTiefe - 1, cache, ref fremdBudget, ref kombiBudget, treffer);
+                }
+            }
+        }
+
+        // Blockadensuche OHNE Belegungs-Klon: fuer jede neue Platzierung eines
+        // beteiligten Blocks pruefen, ob dort ein UNbeteiligter Block sitzt, der
+        // sich einen Lehrer teilt. Unbeteiligte stehen an ihren _belegung-Positionen,
+        // deshalb genuegt _belegung direkt. A/B-Wochen kollidieren nie.
+        private bool FindeLehrerBlockadeOhneKlon(
+            List<(int block, List<int> neu)> platzierungen, HashSet<int> beteiligte,
+            out int fremdBlock, out int konfliktSlot)
+        {
+            fremdBlock = -1; konfliktSlot = -1;
+
+            foreach (var (bi, neu) in platzierungen)
+            {
+                string wg = (_blocks[bi].WochenGruppe ?? "").Trim();
+                var lehrerBi = new HashSet<string>(_blocks[bi].Teile
+                    .Select(t => t.Lehrer).Where(l => !string.IsNullOrWhiteSpace(l)));
+                if (lehrerBi.Count == 0) continue;
+
+                foreach (int s in neu)
+                    for (int b2 = 0; b2 < _blocks.Count; b2++)
+                    {
+                        if (beteiligte.Contains(b2)) continue;
+                        if (_belegung[b2, s] != 1) continue;
+                        string wg2 = (_blocks[b2].WochenGruppe ?? "").Trim();
+                        if ((wg == "A" && wg2 == "B") || (wg == "B" && wg2 == "A")) continue;
+                        if (!_blocks[b2].Teile.Any(t => lehrerBi.Contains(t.Lehrer))) continue;
+                        fremdBlock = b2; konfliktSlot = s; return true;
+                    }
+            }
+            return false;
+        }
+
+        // Generalisierte harte Pruefung fuer eine Liste von Zuegen aus MEHREREN
+        // Ketten (A-Klasse + Fremdklasse). Identische Kriterien wie
+        // BaueUndPruefeKette: kein Block doppelt, keine Nullbewegung, je Block eine
+        // harte Konfliktpruefung an den neuen Slots, plus strikte Ueberlagerungs-
+        // pruefung gegen UNbeteiligte (ohne UNr/KKK/AB-Ausnahmen). Alle bewegten
+        // Bloecke gelten untereinander als beteiligt; echte Konflikte zwischen
+        // ihnen deckt FindeHartenKonflikt ab.
+        private bool BaueUndPruefeKombi(
+            List<(int block, List<int> von, List<int> neu)> zuege, out int[,] probe)
+        {
+            probe = null;
+            if (zuege.Count == 0) return false;
+
+            var beteiligte = new HashSet<int>();
+            foreach (var z in zuege)
+                if (!beteiligte.Add(z.block)) return false; // Block doppelt in Bewegung
+
+            foreach (var z in zuege)
+                if (new HashSet<int>(z.von).SetEquals(new HashSet<int>(z.neu)))
+                    return false; // Nullbewegung
+
+            var p = ProbeAusZuegen(zuege);
+
+            foreach (var z in zuege)
+                if (FindeHartenKonflikt(p, z.block, z.neu) != null) return false;
+
+            foreach (var z in zuege)
+            {
+                var block = _blocks[z.block];
+                var meineLehrer = new HashSet<string>(
+                    block.Teile.Select(t => t.Lehrer).Where(l => !string.IsNullOrWhiteSpace(l)));
+                var meineKlassen = new HashSet<string>(block.Teile.SelectMany(t => t.Klassen));
+
+                foreach (int s in z.neu)
+                    for (int b2 = 0; b2 < _blocks.Count; b2++)
+                    {
+                        if (beteiligte.Contains(b2)) continue;
+                        if (p[b2, s] != 1) continue;
+                        if (_blocks[b2].Teile.Any(t => meineLehrer.Contains(t.Lehrer)) ||
+                            _blocks[b2].Teile.SelectMany(t => t.Klassen).Any(k => meineKlassen.Contains(k)))
+                            return false;
+                    }
+            }
+
+            probe = p;
+            return true;
         }
 
         // =====================================================
@@ -4969,6 +5148,37 @@ namespace Stundenplan_V2
         }
 
         // Baut die Probe-Belegung fuer eine Ausweich-KETTE (2er bis 4er) und prueft hart.
+        // Prueft, ob bei der Ringrotation ein Glied auf A's Zielslots landet UND
+        // dort mit A real kollidiert (gemeinsame Klasse oder gemeinsamer Lehrer).
+        // Der Ring schliesst sich strukturell immer auf die alten Slots des
+        // Hindernisses (= A's Ziel), das LETZTE Glied landet also stets dort;
+        // ein pauschales Verbot wuerde daher JEDEN Ring kippen. Schaedlich ist
+        // das aber nur, wenn genau dieses Glied mit A eine Klasse/einen Lehrer
+        // teilt - ein fremdes Glied (andere Klasse, anderer Lehrer) darf parallel
+        // neben A auf dem Zielslot liegen. Bewusst OHNE die Ausnahmen aus
+        // FindeHartenKonflikt (gleiche UNr/KKK/AB): teilt das Glied Klasse oder
+        // Lehrer mit A, ist es hier hart gesperrt - das schliesst genau die
+        // Doppelbelegungen, die jene Ausnahmen sonst durchliessen.
+        private bool RingGliedKollidiertMitAAmZiel(
+            List<(int blockIdx, List<int> slots)> kette, int hauptBlock, HashSet<int> zielSet)
+        {
+            var aKlassen = new HashSet<string>(_blocks[hauptBlock].Teile.SelectMany(t => t.Klassen));
+            var aLehrer = new HashSet<string>(_blocks[hauptBlock].Teile
+                .Select(t => t.Lehrer).Where(l => !string.IsNullOrWhiteSpace(l)));
+
+            int n = kette.Count;
+            for (int i = 0; i < n; i++)
+            {
+                int ziel = (i + 1) % n;                       // Glied i landet auf kette[ziel].slots
+                if (!kette[ziel].slots.Any(s => zielSet.Contains(s))) continue;
+                var m = _blocks[kette[i].blockIdx];
+                bool teiltKlasse = m.Teile.SelectMany(t => t.Klassen).Any(k => aKlassen.Contains(k));
+                bool teiltLehrer = m.Teile.Any(t => aLehrer.Contains(t.Lehrer));
+                if (teiltKlasse || teiltLehrer) return true;
+            }
+            return false;
+        }
+
         // kette[0] ist immer h selbst. Ringrotation: Glied i -> Slots von Glied (i+1) mod n.
         // Danach wandert A (hauptBlock) auf zielSlots.
         private VerschiebungMitAusweich BaueProbeAusweichKette(
@@ -4997,23 +5207,18 @@ namespace Stundenplan_V2
             // A auf Zielslots setzen
             foreach (int s in zielSlots) probe[hauptBlock, s] = 1;
 
-            // Invariante (bisher nur im Freimach-Zweig vorhanden): kein Ring-
-            // Glied darf auf A's Zielslots landen. Der Ring schliesst sich
-            // strukturell auf die alten Slots des Hindernisses - und das sind
-            // bei einer Verschiebung auf ein belegtes Einzelfeld genau A's
-            // Zielslots. Bisher hing es allein an FindeHartenKonflikt, ob das
-            // auffiel; dessen Ausnahmen fuer gleiche UNr, gleiches KKK und
-            // A/B-Wochen lassen solche Doppelbelegungen durch.
+            // Invariante: ein Ring-Glied darf auf A's Zielslots nur dann landen,
+            // wenn es dort NICHT mit A kollidiert (keine gemeinsame Klasse/Lehrer).
+            // Das letzte Glied landet strukturell immer auf A's Ziel (Ring schliesst
+            // sich auf die alten Slots des Hindernisses); ein pauschales Verbot
+            // wuerde jeden Ring kippen. Ein fremdes Glied darf parallel neben A
+            // liegen - nur ein A-kollidierendes wird gesperrt (siehe Helfer, der
+            // bewusst ohne die UNr/KKK/AB-Ausnahmen von FindeHartenKonflikt prueft).
             var zielSetR = new HashSet<int>(zielSlots);
-            for (int i = 0; i < n; i++)
+            if (RingGliedKollidiertMitAAmZiel(kette, hauptBlock, zielSetR))
             {
-                int zielR = (i + 1) % n;
-                if (kette[zielR].slots.Any(s => zielSetR.Contains(s)))
-                {
-                    DbgPark("    Ring verworfen: Block " + kette[i].blockIdx
-                            + " wuerde auf A's Zielslot " + DbgSlots(zielSlots) + " landen.");
-                    return null;
-                }
+                DbgPark("    Ring verworfen: ein Glied kollidiert mit A auf dem Zielslot.");
+                return null;
             }
 
             // Hart pruefen: A an Ziel
@@ -5068,6 +5273,187 @@ namespace Stundenplan_V2
             return v;
         }
 
+        // =====================================================
+        // Option (a): Rettung eines Klassen-Rings, der AUSSCHLIESSLICH an einem
+        // direkten Lehrerkonflikt scheitert.
+        //
+        // Ausgangslage: der 2-/3-/4-er Ring in Klasse 1 waere gueltig, nur bringt
+        // ein Ring-Glied seinen Lehrer X auf einen neuen Slot, auf dem X in einer
+        // ANDEREN Klasse bereits unterrichtet (Fremdblock c). Wir versuchen genau
+        // EINMAL, c in SEINER eigenen Klasse wegzuraeumen - entweder auf einen
+        // echten Freiplatz oder per 2er-Tausch mit einem Partner der c-Klasse.
+        // Bewusst nur eine Ebene: erzeugt der Zusatz-Tausch selbst einen neuen
+        // harten Konflikt, wird die Kombination verworfen (kein tieferes Nachziehen).
+        // =====================================================
+        private VerschiebungMitAusweich VersucheLehrerAusweichFuerRing(
+            int hauptBlock, List<int> altSlots, List<int> zielSlots,
+            List<(int blockIdx, List<int> slots)> kette)
+        {
+            int n = kette.Count;
+
+            // Ring-Probe wie in BaueProbeAusweichKette aufbauen.
+            var ringProbe = (int[,])_belegung.Clone();
+            foreach (int s in altSlots) ringProbe[hauptBlock, s] = 0;
+            foreach (var g in kette)
+                foreach (int s in g.slots)
+                    ringProbe[g.blockIdx, s] = 0;
+            for (int i = 0; i < n; i++)
+            {
+                int ziel = (i + 1) % n;
+                foreach (int s in kette[ziel].slots) ringProbe[kette[i].blockIdx, s] = 1;
+            }
+            foreach (int s in zielSlots) ringProbe[hauptBlock, s] = 1;
+
+            // A darf nicht selbst Ring-Glied sein (waere sonst doppelt bewegt).
+            if (kette.Any(g => g.blockIdx == hauptBlock)) return null;
+
+            // Gleiche, klassen-/lehrerbewusste Zielpruefung wie im normalen Ring:
+            // ein Glied auf A's Ziel ist nur schaedlich, wenn es dort mit A
+            // kollidiert. Sonst darf der Ring bestehen (und wir versuchen unten,
+            // den restlichen Lehrerkonflikt in der Fremdklasse aufzuloesen).
+            var zielSet = new HashSet<int>(zielSlots);
+            if (RingGliedKollidiertMitAAmZiel(kette, hauptBlock, zielSet)) return null;
+
+            var beteiligte = new HashSet<int>(kette.Select(g => g.blockIdx)) { hauptBlock };
+
+            // Blockierenden Fremdblock (gemeinsamer Lehrer) ermitteln. Keiner ->
+            // hier gibt es nichts zu retten (der Ring scheitert an etwas anderem).
+            if (!FindeLehrerBlockade(ringProbe, beteiligte, out int c, out int konfliktSlot))
+                return null;
+
+            var cVon = ErmittleBlockSlotsAmTag(c, konfliktSlot);
+            if (cVon.Count == 0) return null;
+            string cKlasse = _blocks[c].Teile.SelectMany(t => t.Klassen).FirstOrDefault();
+            if (cKlasse == null) return null;
+
+            // c darf nicht auf A's Ziel oder auf eine neue Ring-Position ausweichen.
+            var reserviert = new HashSet<int>(zielSlots);
+            for (int i = 0; i < n; i++)
+            {
+                int ziel = (i + 1) % n;
+                foreach (int s in kette[ziel].slots) reserviert.Add(s);
+            }
+
+            // 1) c auf einen echten Freiplatz seiner Klasse schieben (nur ein Zug).
+            foreach (var frei in SammleFreieSlotGruppen(c, cVon, reserviert))
+            {
+                var v = BaueRingProbeMitZusatz(ringProbe, hauptBlock, altSlots, zielSlots, kette,
+                    new List<(int block, List<int> von, List<int> neu)> { (c, cVon, frei) });
+                if (v != null) return v;
+            }
+
+            // 2) c per 2-/3-/4-er Ring in SEINER Klasse wegraeumen. SucheAusweich-
+            //    Ketten liefert den 2er-Tausch ebenso wie 3er-/4er-Ringe; c steht
+            //    dabei immer an Position 0, verlaesst cVon, und der Ring schliesst
+            //    sich am Ende wieder auf cVon (letztes Glied -> cVon).
+            foreach (var ring in SucheAusweichKetten(c, cVon, cKlasse))
+            {
+                // Kein Ring-Glied darf ein bereits Beteiligter (A oder das Klasse-1-
+                // Ring-Glied) sein - sonst wuerde ein Block zweifach bewegt.
+                if (ring.Any(g => beteiligte.Contains(g.blockIdx))) continue;
+
+                int m = ring.Count;
+                var zuege = new List<(int block, List<int> von, List<int> neu)>();
+                for (int i = 0; i < m; i++)
+                {
+                    int ziel = (i + 1) % m;
+                    zuege.Add((ring[i].blockIdx, ring[i].slots.ToList(), ring[ziel].slots.ToList()));
+                }
+
+                var v = BaueRingProbeMitZusatz(ringProbe, hauptBlock, altSlots, zielSlots, kette, zuege);
+                if (v != null) return v;
+            }
+
+            return null;
+        }
+
+        // Sucht die erste Lehrer-Doppelbelegung zwischen einem BETEILIGTEN Block
+        // (an seiner neuen Position in der Probe) und einem UNbeteiligten Block:
+        // beide belegen denselben Slot und teilen sich einen Lehrer. A/B-Wochen
+        // kollidieren nie (wie in FindeHartenKonflikt). Liefert den unbeteiligten
+        // Block und den Konfliktslot.
+        private bool FindeLehrerBlockade(
+            int[,] probe, HashSet<int> beteiligte, out int fremdBlock, out int konfliktSlot)
+        {
+            fremdBlock = -1; konfliktSlot = -1;
+
+            foreach (int bi in beteiligte)
+            {
+                string wg = (_blocks[bi].WochenGruppe ?? "").Trim();
+                var lehrerBi = new HashSet<string>(_blocks[bi].Teile
+                    .Select(t => t.Lehrer).Where(l => !string.IsNullOrWhiteSpace(l)));
+                if (lehrerBi.Count == 0) continue;
+
+                for (int s = 0; s < _slots.Count; s++)
+                {
+                    if (probe[bi, s] != 1) continue;
+                    for (int b2 = 0; b2 < _blocks.Count; b2++)
+                    {
+                        if (beteiligte.Contains(b2)) continue;
+                        if (probe[b2, s] != 1) continue;
+                        string wg2 = (_blocks[b2].WochenGruppe ?? "").Trim();
+                        if ((wg == "A" && wg2 == "B") || (wg == "B" && wg2 == "A")) continue;
+                        if (!_blocks[b2].Teile.Any(t => lehrerBi.Contains(t.Lehrer))) continue;
+                        fremdBlock = b2; konfliktSlot = s; return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // Nimmt die fertige Ring-Probe und setzt zusaetzliche Bewegungen (der
+        // Lehrer-Ausweich in der Fremdklasse) obendrauf. Prueft danach ALLES hart:
+        // A, jedes Ring-Glied und jeden Zusatz-Block an seinen neuen Slots. Nur
+        // wenn nichts mehr kollidiert, entsteht ein Vorschlag - so ist garantiert,
+        // dass der Ring wirklich nur am (jetzt behobenen) Lehrerkonflikt hing.
+        private VerschiebungMitAusweich BaueRingProbeMitZusatz(
+            int[,] ringProbe, int hauptBlock, List<int> altSlots, List<int> zielSlots,
+            List<(int blockIdx, List<int> slots)> kette,
+            List<(int block, List<int> von, List<int> neu)> zusatz)
+        {
+            var probe = (int[,])ringProbe.Clone();
+
+            // Erst alle Quell-Slots raeumen, dann alle Ziel-Slots setzen
+            // (reihenfolgeunabhaengig, kein Ueberschreiben eines gerade Gesetzten).
+            foreach (var z in zusatz)
+                foreach (int s in z.von) probe[z.block, s] = 0;
+            foreach (var z in zusatz)
+                foreach (int s in z.neu) probe[z.block, s] = 1;
+
+            // Kein Zusatz-Block auf A's Zielslot (analog Ring-Invariante).
+            var zielSet = new HashSet<int>(zielSlots);
+            foreach (var z in zusatz)
+                if (z.neu.Any(s => zielSet.Contains(s))) return null;
+
+            // Voller harter Check.
+            if (FindeHartenKonflikt(probe, hauptBlock, zielSlots) != null) return null;
+            int n = kette.Count;
+            for (int i = 0; i < n; i++)
+            {
+                int ziel = (i + 1) % n;
+                if (FindeHartenKonflikt(probe, kette[i].blockIdx, kette[ziel].slots) != null)
+                    return null;
+            }
+            foreach (var z in zusatz)
+                if (FindeHartenKonflikt(probe, z.block, z.neu) != null) return null;
+
+            var v = new VerschiebungMitAusweich
+            {
+                HauptBlock = hauptBlock,
+                AltSlots = altSlots.ToList(),
+                ZielSlots = zielSlots.ToList(),
+                ProbeBelegung = probe
+            };
+            for (int i = 0; i < n; i++)
+            {
+                int ziel = (i + 1) % n;
+                v.Ausweiche.Add((kette[i].blockIdx, kette[i].slots.ToList(), kette[ziel].slots.ToList()));
+            }
+            foreach (var z in zusatz)
+                v.Ausweiche.Add((z.block, z.von.ToList(), z.neu.ToList()));
+            return v;
+        }
+
         // Baut die Probe-Belegung fuer eine Verschiebung-mit-Ausweich und prueft sie hart.
         // ausweiche: je (Hindernis-Block, Partner-Block, Hindernis-Slots, Partner-Slots).
         // Der Hindernis-Block tauscht mit dem Partner (klassenintern): Hindernis -> Partner-Slots,
@@ -5092,6 +5478,34 @@ namespace Stundenplan_V2
 
             // A auf Zielslots setzen
             foreach (int s in zielSlots) probe[hauptBlock, s] = 1;
+
+            // ---- Harte Invariante, die dem 2-Hindernis-Zweig bisher fehlte und
+            //      die eigentliche Ursache der Doppelbelegungen ist. ----
+            //
+            // JEDER beteiligte Block (A, beide Hindernisse UND beide Partner) muss
+            // ein anderer sein. Sonst wird ein Block in zwei Rollen bewegt und auf
+            // zwei Slotgruppen gleichzeitig gesetzt - er ist danach doppelt
+            // verplant. Zwei reale Fallen:
+            //   - SammleKandidaten schliesst A (hauptBlock) NICHT aus. Liegt A in
+            //     der Klasse des Hindernisses, wird A gern als eigener Tausch-
+            //     partner geliefert -> probe[A, hSlots]=1 zusaetzlich zu
+            //     probe[A, zielSlots]=1.
+            //   - ein Hindernis dient als Partner des anderen Hindernisses.
+            // FindeHartenKonflikt prueft jede Platzierung nur gegen die UEBRIGEN
+            // Bloecke, nie den Block gegen sich selbst - diese Selbst-Doppel-
+            // belegung faellt daher durch und tritt umso oefter auf, je mehr
+            // Bloecke (Beteiligte) in der Klasse liegen. Ein blosses Nebeneinander
+            // verschiedener Bloecke auf demselben Zeitslot bleibt erlaubt (nur
+            // Lehrer-/Klassen-/Raum-Kollision ist hart - das deckt FindeHarten-
+            // Konflikt ab); deshalb hier NUR die Block-Identitaet pruefen.
+            var beteiligte = new List<int> { hauptBlock };
+            foreach (var aw in ausweiche) { beteiligte.Add(aw.h); beteiligte.Add(aw.partner); }
+            if (beteiligte.Distinct().Count() != beteiligte.Count)
+            {
+                DbgPark("    Ausweich verworfen: ein Block steckt in zwei Rollen "
+                        + "(Partner = A oder = anderes Hindernis).");
+                return null;
+            }
 
             // Hart pruefen: A an Ziel, jeder Hindernis-Block an Partner-Slots, jeder Partner an Hindernis-Slots
             if (FindeHartenKonflikt(probe, hauptBlock, zielSlots) != null) return null;
@@ -5513,6 +5927,19 @@ namespace Stundenplan_V2
                 ZeigeVerschiebungen(_letzteVerschiebungBlock, _letzteVerschiebungAlt, _letzteVerschiebungZiel);
             else
                 LeereVerschiebungen();
+        }
+
+        // Zuschaltbare 3-Klassen-Tiefe: dieselbe Nachrechen-Logik wie bei der
+        // Ausweichsuche. Wirkt nur, wenn die Ausweichsuche aktiv ist (das prueft
+        // ZeigeVerschiebungen selbst); ohne gemerkte Konstellation passiert nichts.
+        private void ChkAusweichTiefe3_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_initialisiert || _belegung == null || _blocks == null) return;
+
+            if (GueltigerBlock(_letzteVerschiebungBlock) &&
+                _letzteVerschiebungZiel != null &&
+                (_letzteVerschiebungAlt != null || _letzteVerschiebungAusPark))
+                ZeigeVerschiebungen(_letzteVerschiebungBlock, _letzteVerschiebungAlt, _letzteVerschiebungZiel);
         }
 
         private void ZeichneVerschiebungsliste()
