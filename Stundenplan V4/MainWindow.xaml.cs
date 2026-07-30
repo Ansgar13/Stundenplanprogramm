@@ -784,6 +784,37 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
+        // Lädt 'input' (inkl. StD/PM/Parameter) VOR einem Solver-/Verbesserungs-
+        // Lauf frisch aus der Excel-Datei. Hintergrund: Knopf 14 (Verbessern)
+        // und Knopf 15 (Minimale Änderungen) arbeiteten bisher mit dem im
+        // Speicher stehenden 'input' und luden erst NACH dem Lauf neu. Eine kurz
+        // zuvor in Excel geänderte StD-Regel (z.B. HohlStd-Max) wurde dadurch
+        // für DIESEN Lauf ignoriert — sowohl in der Optimierung (Freibetrag/harte
+        // Schranke) als auch in der anschließenden Diagnose, die dann veraltete
+        // Soll-Werte in 'Diag' schrieb. Erst der Reload am Ende zog den neuen
+        // Wert, weshalb Knopf 4 danach "richtig" zählte.
+        //
+        // 'LadeExcelDatenNeu' stellt 'letzteSolutions' aus 'Lös'/'Gesichert'
+        // wieder her. Damit eine bislang nur im Speicher gehaltene Lösung nicht
+        // als Ausgangslösung verloren geht, werden vor dem Reload vorhandene
+        // Lösungen gesichert und danach anhand ihres Labels wieder ergänzt,
+        // sofern sie nicht ohnehin aus der Datei gelesen wurden.
+        // =====================================================
+        private void LadeStdUndParameterNeuVorLauf()
+        {
+            if (string.IsNullOrEmpty(excelPfad)) return;
+
+            var vorherigeLösungen = letzteSolutions?.ToList() ?? new();
+
+            LadeExcelDatenNeu(zeigeWarnungen: false);
+
+            var vorhandeneLabels = new HashSet<string>(letzteSolutions.Select(s => s.label));
+            foreach (var alt in vorherigeLösungen)
+                if (!vorhandeneLabels.Contains(alt.label))
+                    letzteSolutions.Add(alt);
+        }
+
+        // =====================================================
         // BUTTON 3 – STUNDENPLANERSTELLUNG
         // =====================================================
         private async void BtnSchritt2_Click(object sender, RoutedEventArgs e)
@@ -1368,6 +1399,12 @@ namespace Stundenplan_V2
                 MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
                 return;
             }
+
+            // StD/Parameter vor dem Lauf frisch aus Excel lesen, damit kurz zuvor
+            // geänderte StD-Regeln (z.B. HohlStd-Max) sowohl in die Verbesserung
+            // als auch in die anschließende Diagnose einfließen (siehe
+            // LadeStdUndParameterNeuVorLauf).
+            LadeStdUndParameterNeuVorLauf();
 
             var verfügbareLösungen = letzteSolutions.Count > 0
                 ? letzteSolutions
@@ -3368,6 +3405,14 @@ namespace Stundenplan_V2
                 MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
                 return;
             }
+
+            // StD/Parameter vor dem Lauf frisch aus Excel lesen, damit kurz zuvor
+            // geänderte StD-Regeln (z.B. HohlStd-Max) sowohl in den Solver-Lauf
+            // als auch in die anschließende Diagnose einfließen (siehe
+            // LadeStdUndParameterNeuVorLauf). Vorher wurde erst NACH dem Lauf neu
+            // geladen — die Diagnose schrieb dann veraltete Soll-Werte nach Diag.
+            LadeStdUndParameterNeuVorLauf();
+
             if (letzteSolutions == null || letzteSolutions.Count == 0)
             {
                 MessageBox.Show("Keine Lösungen verfügbar. Erst Button 3 oder Plan-Editor 'Übernehmen' ausführen.");
