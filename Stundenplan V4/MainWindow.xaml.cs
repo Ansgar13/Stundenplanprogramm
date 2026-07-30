@@ -3311,37 +3311,59 @@ namespace Stundenplan_V2
                 return;
             }
 
-            // Namen aus beiden Quellen einsammeln: dauerhaft gesicherte Lösungen
-            // (Sheet "Gesichert") UND die zuletzt geschriebenen Lösungen (Sheet
-            // "Lös"). Jede Auswahlzeile merkt sich Quelle + Rohnamen.
+            // Auswahlliste über ALLE löschbaren Artefakte, nach Kategorie
+            // gruppiert. Jede Auswahlzeile merkt sich Quelle + Roh-/Blattname.
+            // Gelöscht wird strikt nur das jeweils angewählte Artefakt (KEINE
+            // Kaskade) — so lassen sich auch "verwaiste" Blätter/Spalten (z.B.
+            // Diag-Block ohne zugehörige Lös-Spalte) einzeln aufräumen.
             var eintraege = new List<(string display, string quelle, string name)>();
             try
             {
-                foreach (var n in LeseGesicherteNamen())
-                    eintraege.Add(($"[Gesichert] {n}", "Gesichert", n));
-                foreach (var n in LeseLösNamen())
+                // 1) Lösungs-Spalten
+                foreach (var n in LeseLösNamen().OrderBy(x => x))
                     eintraege.Add(($"[Lös] {n}", "Lös", n));
+                foreach (var n in LeseGesicherteNamen().OrderBy(x => x))
+                    eintraege.Add(($"[Gesichert] {n}", "Gesichert", n));
+
+                // 2) Stundenplan-Blätter (je Lösung ein Blatt; name = Blattname)
+                foreach (var s in LeseBlattnamenMitPrefix("KP_"))
+                    eintraege.Add(($"[KP] {s.Substring(3)}", "KP", s));
+                foreach (var s in LeseBlattnamenMitPrefix("LP_"))
+                    eintraege.Add(($"[LP] {s.Substring(3)}", "LP", s));
+                foreach (var s in LeseBlattnamenMitPrefix("NuHoKP_"))
+                    eintraege.Add(($"[NuHoKP] {s.Substring(7)}", "NuHoKP", s));
+
+                // 3) Spalten-/Block-Einträge in den Sammel-Tabellen
+                //    (Blatt bleibt erhalten; name = Label)
+                foreach (var l in LeseNuHoSpaltenLabels().OrderBy(x => x))
+                    eintraege.Add(($"[NuHo-Spalte] {l}", "NuHo", l));
+                foreach (var l in LeseDiagLabels().OrderBy(x => x))
+                    eintraege.Add(($"[Diag] {l}", "Diag", l));
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Fehler beim Lesen der Lösungs-Sheets:\n" + ex.Message);
+                MessageBox.Show("Fehler beim Lesen der Tabellen/Blätter:\n" + ex.Message);
                 return;
             }
 
             if (eintraege.Count == 0)
             {
-                MessageBox.Show("Es sind keine Lösungen zum Löschen vorhanden " +
-                                "(weder im Sheet 'Lös' noch im Sheet 'Gesichert').");
+                MessageBox.Show("Es sind keine löschbaren Lösungen, Stundenpläne, " +
+                                "NuHo- oder Diag-Einträge vorhanden.");
                 return;
             }
 
             var gewählt = ZeigeMehrfachAuswahlDialog(
-                "Lösungen löschen",
-                "Welche Lösungen sollen gelöscht werden? (Mehrfachauswahl möglich)\n" +
-                "Dieser Vorgang kann nicht rückgängig gemacht werden.\n\n" +
-                "'[Gesichert]' = dauerhaft gesicherte Lösung (Sheet 'Gesichert').\n" +
-                "'[Lös]' = zuletzt berechnete/geschriebene Lösung (Sheet 'Lös').\n\n" +
-                "Hinweis: Fehlt eine gerade gesicherte Lösung, evtl. zuerst die " +
+                "Lösungen / Pläne / Diagnose löschen",
+                "Was soll gelöscht werden? (Mehrfachauswahl möglich)\n" +
+                "Dieser Vorgang kann nicht rückgängig gemacht werden. Es wird " +
+                "jeweils NUR das angewählte Artefakt entfernt (keine Kaskade).\n\n" +
+                "'[Lös]' / '[Gesichert]' = Lösungs-Spalte im jeweiligen Sheet.\n" +
+                "'[KP]' / '[LP]' = Klassen- bzw. Lehrerplan-Blatt.\n" +
+                "'[NuHoKP]' = NuHo-Klassenplan-Blatt.\n" +
+                "'[NuHo-Spalte]' / '[Diag]' = Spalten-/Block-Eintrag in der " +
+                "Sammel-Tabelle (Blatt bleibt erhalten).\n\n" +
+                "Hinweis: Fehlt ein gerade erzeugter Eintrag, evtl. zuerst die " +
                 "Excel-Datei neu laden (Button 1).",
                 eintraege.Select(x => x.display).ToList());
             if (gewählt == null || gewählt.Count == 0) return;
@@ -3349,7 +3371,7 @@ namespace Stundenplan_V2
             var ausgewählt = eintraege.Where(x => gewählt.Contains(x.display)).ToList();
 
             var confirm = MessageBox.Show(
-                $"{ausgewählt.Count} Lösung(en) wirklich endgültig löschen?\n\n" +
+                $"{ausgewählt.Count} Eintrag/Einträge wirklich endgültig löschen?\n\n" +
                 string.Join("\n", ausgewählt.Select(x => "• " + x.display)),
                 "Bestätigung", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (confirm != MessageBoxResult.Yes) return;
@@ -3360,21 +3382,33 @@ namespace Stundenplan_V2
             {
                 try
                 {
-                    if (eintrag.quelle == "Gesichert")
+                    switch (eintrag.quelle)
                     {
-                        LöscheGesicherteLösung(eintrag.name);
-                        EntferneLehrerAbweichungFürGesichert(eintrag.name);
-                        EntferneDiagnoseFuerLabel("[Gesichert] " + eintrag.name);
-                    }
-                    else // "Lös"
-                    {
-                        LöscheSpalteAusSheet("Lös", eintrag.name);
-                        LöscheSpalteAusSheet("LösLehrer", eintrag.name);
-                        // Diagnose-Karte der Lös-Lösung (Label = Rohname) entfernen.
-                        EntferneDiagnoseFuerLabel(eintrag.name);
+                        case "Gesichert":
+                            LöscheGesicherteLösung(eintrag.name);
+                            EntferneLehrerAbweichungFürGesichert(eintrag.name);
+                            break;
+                        case "Lös":
+                            LöscheSpalteAusSheet("Lös", eintrag.name);
+                            LöscheSpalteAusSheet("LösLehrer", eintrag.name);
+                            break;
+                        case "KP":
+                        case "LP":
+                        case "NuHoKP":
+                            // eintrag.name = vollständiger Blattname.
+                            LöscheBlatt(eintrag.name);
+                            break;
+                        case "NuHo":
+                            // eintrag.name = Spalten-Label in der Tabelle "NuHo".
+                            LöscheNuHoSpalte(eintrag.name);
+                            break;
+                        case "Diag":
+                            // eintrag.name = Block-Label in "Diag" (+ "Dstd-F").
+                            EntferneDiagnoseFuerLabel(eintrag.name);
+                            break;
                     }
                     erfolg++;
-                    Log($"Lösung gelöscht: {eintrag.display}");
+                    Log($"Gelöscht: {eintrag.display}");
                 }
                 catch (Exception ex)
                 {
@@ -3389,9 +3423,9 @@ namespace Stundenplan_V2
             catch (Exception ex) { Log($"Hinweis: Neuladen nach Löschen fehlgeschlagen: {ex.Message}"); }
 
             if (fehler.Count == 0)
-                MessageBox.Show($"{erfolg} Lösung(en) gelöscht.");
+                MessageBox.Show($"{erfolg} Eintrag/Einträge gelöscht.");
             else
-                MessageBox.Show($"{erfolg} Lösung(en) gelöscht, {fehler.Count} fehlgeschlagen:\n\n" +
+                MessageBox.Show($"{erfolg} Eintrag/Einträge gelöscht, {fehler.Count} fehlgeschlagen:\n\n" +
                                 string.Join("\n", fehler));
         }
 
@@ -3720,6 +3754,113 @@ namespace Stundenplan_V2
             wb.Save();
         }
 
+        // Blattnamen mit einem bestimmten Präfix (z.B. "KP_", "LP_", "NuHoKP_").
+        // Ordinaler StartsWith-Vergleich: "NuHoKP_..." matcht bewusst NICHT "KP_".
+        private List<string> LeseBlattnamenMitPrefix(string prefix)
+        {
+            using var wb = new XLWorkbook(excelPfad);
+            return wb.Worksheets
+                     .Select(ws => ws.Name)
+                     .Where(n => n.StartsWith(prefix, StringComparison.Ordinal))
+                     .OrderBy(n => n)
+                     .ToList();
+        }
+
+        // Löscht ein komplettes Tabellenblatt (Stundenpläne / NuHo-Klassenpläne).
+        private void LöscheBlatt(string sheetName)
+        {
+            using var wb = new XLWorkbook(excelPfad);
+            if (!wb.Worksheets.Any(ws => ws.Name == sheetName)) return;
+            wb.Worksheets.Delete(sheetName);
+            wb.Save();
+        }
+
+        // Liest die Spalten-Labels (Anker in Zeile 1, ab Spalte 2) der Sammel-
+        // Tabelle "NuHo". Nur die jeweils erste (gemergte) Zelle je Block trägt
+        // das Label, daher genügt das Abklappern der Kopfzeile.
+        private List<string> LeseNuHoSpaltenLabels()
+        {
+            var namen = new List<string>();
+            using var wb = new XLWorkbook(excelPfad);
+            if (!wb.Worksheets.Any(ws => ws.Name == "NuHo")) return namen;
+
+            var sheet = wb.Worksheet("NuHo");
+            var headerRow = sheet.Row(1);
+            int maxCol = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 1;
+            for (int c = 2; c <= maxCol; c++)
+            {
+                string label = headerRow.Cell(c).GetString().Trim();
+                if (!string.IsNullOrEmpty(label))
+                    namen.Add(label);
+            }
+            return namen;
+        }
+
+        // Entfernt in der Tabelle "NuHo" den 4-spaltigen Block einer Lösung
+        // (3 Datenspalten "Vber Wstd | NuHo Wstd | Std.Folge" + 1 Trennspalte).
+        // Das Blatt selbst bleibt erhalten (wird beim nächsten Lauf ohnehin neu
+        // aufgebaut). Nachfolgende Blöcke rücken beim Spaltenlöschen nach links.
+        private void LöscheNuHoSpalte(string label)
+        {
+            using var wb = new XLWorkbook(excelPfad);
+            if (!wb.Worksheets.Any(ws => ws.Name == "NuHo")) return;
+
+            var sheet = wb.Worksheet("NuHo");
+            var headerRow = sheet.Row(1);
+            int maxCol = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 1;
+
+            int ankerCol = -1;
+            for (int c = 2; c <= maxCol; c++)
+            {
+                if (headerRow.Cell(c).GetString().Trim() == label)
+                {
+                    ankerCol = c;
+                    break;
+                }
+            }
+            if (ankerCol < 0) { wb.Save(); return; }
+
+            const int blockBreite = 4; // 3 Datenspalten + 1 Trennspalte
+
+            // Etwaige Kopf-Merges des Blocks vorher auflösen, damit das
+            // Spaltenlöschen keine "hängende" Merge-Referenz hinterlässt.
+            foreach (var mr in sheet.MergedRanges.ToList())
+            {
+                int r  = mr.RangeAddress.FirstAddress.RowNumber;
+                int cc = mr.RangeAddress.FirstAddress.ColumnNumber;
+                if (r == 1 && cc >= ankerCol && cc <= ankerCol + blockBreite - 1)
+                    mr.Unmerge();
+            }
+
+            // Immer dieselbe Spalte löschen: nachrückende Spalten schließen die
+            // Lücke, sodass nach blockBreite Durchläufen der ganze Block weg ist.
+            for (int k = 0; k < blockBreite; k++)
+                sheet.Column(ankerCol).Delete();
+
+            wb.Save();
+        }
+
+        // Liest die Block-Labels (Anker in Zeile 1, ab Spalte 2) der Tabelle
+        // "Diag" — analog zu LeseNuHoSpaltenLabels. Löschung erfolgt über das
+        // bestehende EntferneDiagnoseFuerLabel (räumt Diag + Dstd-F auf).
+        private List<string> LeseDiagLabels()
+        {
+            var namen = new List<string>();
+            using var wb = new XLWorkbook(excelPfad);
+            if (!wb.Worksheets.Any(ws => ws.Name == "Diag")) return namen;
+
+            var sheet = wb.Worksheet("Diag");
+            var headerRow = sheet.Row(1);
+            int maxCol = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 1;
+            for (int c = 2; c <= maxCol; c++)
+            {
+                string label = headerRow.Cell(c).GetString().Trim();
+                if (!string.IsNullOrEmpty(label))
+                    namen.Add(label);
+            }
+            return namen;
+        }
+
         // Modaler Mehrfach-Auswahl-Dialog (Checkbox-Liste + OK/Abbrechen), rein in
         // C# aufgebaut. Gibt die Anzeige-Strings der angehakten Einträge zurück,
         // oder null bei Abbruch. Enthält "Alle" / "Keine" als Bequemlichkeit.
@@ -3728,19 +3869,29 @@ namespace Stundenplan_V2
             var fenster = new Window
             {
                 Title = titel,
-                Width = 460,
-                MaxHeight = 560,
-                SizeToContent = SizeToContent.Height,
+                Width = 470,
+                Height = 620,
+                MinWidth = 380,
+                MinHeight = 360,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 Owner = this,
-                ResizeMode = ResizeMode.NoResize
+                ResizeMode = ResizeMode.CanResize
             };
 
-            var panel = new System.Windows.Controls.StackPanel { Margin = new Thickness(16) };
-            panel.Children.Add(new System.Windows.Controls.TextBlock
+            // DockPanel: Text oben, Knöpfe unten fest verankert, Scroll-Liste
+            // dazwischen flexibel. So bleiben die unteren Knöpfe immer klickbar,
+            // egal wie lang Infotext und Auswahlliste sind.
+            var root = new System.Windows.Controls.DockPanel
+            { Margin = new Thickness(16), LastChildFill = true };
+
+            var info = new System.Windows.Controls.TextBlock
             {
-                Text = frage, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10)
-            });
+                Text = frage,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+            System.Windows.Controls.DockPanel.SetDock(info, System.Windows.Controls.Dock.Top);
+            root.Children.Add(info);
 
             var checkBoxes = new List<System.Windows.Controls.CheckBox>();
             var listenPanel = new System.Windows.Controls.StackPanel();
@@ -3752,20 +3903,27 @@ namespace Stundenplan_V2
                 listenPanel.Children.Add(cb);
             }
 
-            var scroll = new System.Windows.Controls.ScrollViewer
+            // OK/Abbrechen ganz unten (zuerst bottom-docked = unterste Zeile).
+            var btnPanel = new System.Windows.Controls.StackPanel
             {
-                Content = listenPanel,
-                VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
-                MaxHeight = 340,
-                Margin = new Thickness(0, 0, 0, 10)
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 10, 0, 0)
             };
-            panel.Children.Add(scroll);
+            var btnOk = new System.Windows.Controls.Button
+            { Content = "Löschen", Width = 90, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+            var btnAbbrechen = new System.Windows.Controls.Button
+            { Content = "Abbrechen", Width = 90, IsCancel = true };
+            btnPanel.Children.Add(btnOk);
+            btnPanel.Children.Add(btnAbbrechen);
+            System.Windows.Controls.DockPanel.SetDock(btnPanel, System.Windows.Controls.Dock.Bottom);
+            root.Children.Add(btnPanel);
 
-            // Alle / Keine
+            // Alle / Keine – knapp über den OK/Abbrechen-Knöpfen.
             var togglePanel = new System.Windows.Controls.StackPanel
             {
                 Orientation = System.Windows.Controls.Orientation.Horizontal,
-                Margin = new Thickness(0, 0, 0, 12)
+                Margin = new Thickness(0, 10, 0, 0)
             };
             var btnAlle = new System.Windows.Controls.Button
             { Content = "Alle", Width = 70, Margin = new Thickness(0, 0, 8, 0) };
@@ -3775,22 +3933,19 @@ namespace Stundenplan_V2
             btnKeine.Click += (s, e) => { foreach (var cb in checkBoxes) cb.IsChecked = false; };
             togglePanel.Children.Add(btnAlle);
             togglePanel.Children.Add(btnKeine);
-            panel.Children.Add(togglePanel);
+            System.Windows.Controls.DockPanel.SetDock(togglePanel, System.Windows.Controls.Dock.Bottom);
+            root.Children.Add(togglePanel);
 
-            var btnPanel = new System.Windows.Controls.StackPanel
+            // Scroll-Liste füllt den verbleibenden Platz (LastChildFill) und
+            // scrollt, sobald die Liste höher als der Bereich wird.
+            var scroll = new System.Windows.Controls.ScrollViewer
             {
-                Orientation = System.Windows.Controls.Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right
+                Content = listenPanel,
+                VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto
             };
-            var btnOk = new System.Windows.Controls.Button
-            { Content = "Löschen", Width = 90, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
-            var btnAbbrechen = new System.Windows.Controls.Button
-            { Content = "Abbrechen", Width = 90, IsCancel = true };
-            btnPanel.Children.Add(btnOk);
-            btnPanel.Children.Add(btnAbbrechen);
-            panel.Children.Add(btnPanel);
+            root.Children.Add(scroll);
 
-            fenster.Content = panel;
+            fenster.Content = root;
 
             bool ok = false;
             btnOk.Click += (s, e) => { ok = true; fenster.DialogResult = true; };
