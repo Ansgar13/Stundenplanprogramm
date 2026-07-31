@@ -428,6 +428,11 @@ namespace Stundenplan_V2
             var ausgenommeneSpaetFaecher = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var spaetSchwelle = new Dictionary<int, int>();
 
+            // "Fächer-Doppelstd. nicht am selben Tag": kommaseparierte Fächerliste
+            // (Spalte B) + zugehöriges Strafgewicht (eigene PM-Zeile, Default 5).
+            var doppelSelberTagFaecher = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int strafeDoppelSelberTag = 5;
+
             // Hinweise auf PM-Werte, die sich nicht sauber lesen ließen.
             var pmWarnungen = new List<string>();
 
@@ -453,6 +458,26 @@ namespace Stundenplan_V2
                     {
                         if (!string.IsNullOrWhiteSpace(wert))
                             ausgenommeneSpaetFaecher = new HashSet<string>(
+                                wert.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)),
+                                StringComparer.OrdinalIgnoreCase);
+                    }
+                    // "Strafe Fächer-Doppelstd. selber Tag" — Gewicht zur Regel
+                    // unten. ZUERST prüfen (spezifischer), da beide Labels "dopp"
+                    // und "tag" enthalten. Enthält kein "spät"/"verbot", kollidiert
+                    // also nicht mit den bestehenden Doppelstunden-Zweigen.
+                    else if (label.Contains("strafe") && label.Contains("dopp") &&
+                             (label.Contains("selber tag") || label.Contains("selben tag") ||
+                              label.Contains("gleichen tag")))
+                        LiesPmInt(wert, labelRoh, ref strafeDoppelSelberTag, pmWarnungen);
+                    // "Fächer-Doppelstd. nicht am selben Tag": kommaseparierte
+                    // Fächerliste (Spalte B). Der !"strafe"-Guard trennt sie sicher
+                    // von der Gewichts-Zeile oben.
+                    else if (label.Contains("dopp") && !label.Contains("strafe") &&
+                             (label.Contains("selben tag") || label.Contains("selber tag") ||
+                              label.Contains("gleichen tag")))
+                    {
+                        if (!string.IsNullOrWhiteSpace(wert))
+                            doppelSelberTagFaecher = new HashSet<string>(
                                 wert.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)),
                                 StringComparer.OrdinalIgnoreCase);
                     }
@@ -947,6 +972,8 @@ namespace Stundenplan_V2
                 StdDiagnose = stdDiagnose,
                 AusgenommeneSpaetFaecher = ausgenommeneSpaetFaecher,
                 SpaetSchwelleJeWst = spaetSchwelle,
+                DoppelSelberTagFaecher = doppelSelberTagFaecher,
+                StrafeDoppelSelberTag = strafeDoppelSelberTag,
             };
         }
 

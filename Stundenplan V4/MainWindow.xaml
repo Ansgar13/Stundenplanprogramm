@@ -23,6 +23,8 @@
             <TextBlock x:Name="TxtDatei" Text="Keine Datei geladen" FontSize="17"
                        FontWeight="Bold" Foreground="#333" HorizontalAlignment="Center"
                        TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/>
+            <Button Content="Ausgabe-Fenster anzeigen" HorizontalAlignment="Center"
+                    Margin="0,8,0,0" Padding="12,4" Click="BtnAusgabeFenster_Click"/>
         </StackPanel>
 
         <!-- Buttons: schmaler, zweispaltig statt einer langen Reihe -> gibt dem

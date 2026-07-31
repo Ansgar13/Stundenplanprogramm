@@ -103,5 +103,15 @@ public class StundenplanInput
     // "spät/bad" gilt) aus Sheet "SpätSchwelle". Fehlt eine Wst, gilt 2.
     public Dictionary<int, int> SpaetSchwelleJeWst { get; set; }
         = new Dictionary<int, int>();
+
+    // "Fächer-Doppelstd. nicht am selben Tag" (PM, Spalte B kommasepariert):
+    // pro Klasse und Tag soll höchstens EINES dieser Fächer eine Doppelstunde
+    // haben. Weiche Regel – jedes weitere gelistete Fach mit Doppelstunde am
+    // selben Tag (in derselben Klasse) kostet StrafeDoppelSelberTag Punkte.
+    public HashSet<string> DoppelSelberTagFaecher { get; set; }
+        = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+    // Strafgewicht zur obigen Regel (PM-Zeile "Strafe Fächer-Doppelstd. selber
+    // Tag"; Default 5, falls die Zeile fehlt).
+    public int StrafeDoppelSelberTag { get; set; } = 5;
 }
 
