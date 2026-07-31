@@ -3218,7 +3218,13 @@ namespace Stundenplan_V2
         // nicht verschoben werden — ErgaenzeDiagnoseFuerGesicherte fügt direkt
         // danach einen frischen Block mit aktuellen Werten am Ende an.
         // =====================================================
-        private void EntferneDiagnoseFuerLabel(string label)
+        // spaltenEntfernen=false (Default): Block nur LEEREN — für den Re-Save-
+        // Pfad, damit ein direkt danach angehängter frischer Block nicht durch
+        // Verschieben anderer Blöcke verrutscht.
+        // spaltenEntfernen=true: Spalten (Diag) bzw. Zeilen (Dstd-F) wirklich
+        // LÖSCHEN, so dass nachfolgende Inhalte nachrücken und die erste
+        // beschriebene Spalte wieder ganz links steht (Löschen-Dialog).
+        private void EntferneDiagnoseFuerLabel(string label, bool spaltenEntfernen = false)
         {
             try
             {
@@ -3243,7 +3249,8 @@ namespace Stundenplan_V2
                     if (ankerCol > 0)
                     {
                         // Blockende: bis kurz vor die nächste beschriftete Spalte
-                        // (oder Sheet-Ende, falls letzter Block).
+                        // (schließt die 1 leere Trennspalte mit ein) oder Sheet-
+                        // Ende, falls letzter Block.
                         int endCol = maxCol;
                         for (int c = ankerCol + 1; c <= maxCol; c++)
                         {
@@ -3253,8 +3260,25 @@ namespace Stundenplan_V2
                                 break;
                             }
                         }
-                        int lastRow = sheet.LastRowUsed()?.RowNumber() ?? 1;
-                        sheet.Range(1, ankerCol, lastRow, endCol).Clear();
+
+                        if (spaltenEntfernen)
+                        {
+                            // Kopf-Merge des Blocks vorher auflösen, damit das
+                            // Spaltenlöschen keine hängende Merge-Referenz lässt.
+                            foreach (var mr in sheet.MergedRanges.ToList())
+                            {
+                                int r  = mr.RangeAddress.FirstAddress.RowNumber;
+                                int cc = mr.RangeAddress.FirstAddress.ColumnNumber;
+                                if (r == 1 && cc >= ankerCol && cc <= endCol)
+                                    mr.Unmerge();
+                            }
+                            sheet.Columns(ankerCol, endCol).Delete();
+                        }
+                        else
+                        {
+                            int lastRow = sheet.LastRowUsed()?.RowNumber() ?? 1;
+                            sheet.Range(1, ankerCol, lastRow, endCol).Clear();
+                        }
                     }
                 }
 
@@ -3286,7 +3310,11 @@ namespace Stundenplan_V2
                                 break;
                             }
                         }
-                        sheet.Range(kopfZeile, 1, endZeile, 8).Clear();
+
+                        if (spaltenEntfernen)
+                            sheet.Rows(kopfZeile, endZeile).Delete();
+                        else
+                            sheet.Range(kopfZeile, 1, endZeile, 8).Clear();
                     }
                 }
 
@@ -3404,7 +3432,8 @@ namespace Stundenplan_V2
                             break;
                         case "Diag":
                             // eintrag.name = Block-Label in "Diag" (+ "Dstd-F").
-                            EntferneDiagnoseFuerLabel(eintrag.name);
+                            // Spalten wirklich entfernen (nachrücken lassen).
+                            EntferneDiagnoseFuerLabel(eintrag.name, spaltenEntfernen: true);
                             break;
                     }
                     erfolg++;

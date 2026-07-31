@@ -67,6 +67,19 @@ namespace Stundenplan_V2
                 ErzeugeTabelle(workbook, "ZWL", lehrerDaten);
                 ErzeugeTabelle(workbook, "ZWK", klassenDaten);
 
+                // "Spätschwelle" liegt thematisch bei den Zeitwünschen und ist in
+                // der Vorlage viel zu breit. Hier im selben Speichervorgang mit
+                // normalisieren: Inhalt bleibt unberührt, nur die Spaltenbreiten
+                // werden schmal (Default) bzw. an den Inhalt angepasst.
+                if (workbook.Worksheets.Any(ws => ws.Name == "Spätschwelle"))
+                {
+                    var sp = workbook.Worksheet("Spätschwelle");
+                    int letzte = sp.LastColumnUsed()?.ColumnNumber() ?? 0;
+                    sp.ColumnWidth = 10;
+                    if (letzte >= 1)
+                        sp.Columns(1, letzte).AdjustToContents();
+                }
+
                 workbook.Save();
             }
         }
@@ -122,6 +135,12 @@ namespace Stundenplan_V2
 
                 startRow += 2;
             }
+
+            // Schmale Spalten setzen — die Vorlage hat hier eine unnötig große
+            // Default-Breite (~14). Spalte 1 für "Stunde"/Namen, 2–6 für Mo–Fr.
+            sheet.ColumnWidth = 5;
+            sheet.Column(1).Width = 10;
+            sheet.Columns(2, 6).Width = 5;
         }
 
         private static XLColor FarbSkala(int wert)

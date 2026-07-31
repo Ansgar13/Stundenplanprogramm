@@ -596,7 +596,14 @@ namespace Stundenplan_V2
                 }
             }
 
-            sheet.Columns().AdjustToContents();
+            // Diag bewusst SCHMAL halten: alle Spalten – auch die leeren
+            // Trennspalten zwischen den Diagnose-Blöcken, die sonst die große
+            // Default-Breite des Blatts (bis ~36) behalten würden.
+            int letzteDiagSpalte = sheet.LastColumnUsed()?.ColumnNumber() ?? 1;
+            sheet.ColumnWidth = 8;                 // Default für alles weiter rechts
+            sheet.Column(1).Width = 14;            // Lehrer-Namen etwas breiter
+            if (letzteDiagSpalte >= 2)
+                sheet.Columns(2, letzteDiagSpalte).Width = 8;
             wb.Save();
         }
 
