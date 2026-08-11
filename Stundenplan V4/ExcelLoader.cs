@@ -538,7 +538,9 @@ namespace Stundenplan_V2
                         LiesPmInt(wert, labelRoh, ref strafeHohl, pmWarnungen);
                     else if (label.Contains("std.folge") || label.Contains("stdfolge"))
                         LiesPmInt(wert, labelRoh, ref strafeStdFolge, pmWarnungen);
-                    else if (label.Contains("einzelstunde") || label.Contains("einzelstd"))
+                    else if (label.Contains("std./tag") || label.Contains("std/tag") ||
+                             label.Contains("std. /tag") || label.Contains("std tag") ||
+                             label.Contains("einzelstunde") || label.Contains("einzelstd"))
                         LiesPmInt(wert, labelRoh, ref strafeEinzel, pmWarnungen);
                     else if (label.Contains("grenze") &&
                              (label.Contains("lk") || label.Contains("späte lk")))
@@ -650,7 +652,8 @@ namespace Stundenplan_V2
                 // treffen — daher "HohlWoche hart".
                 int colHohlHart     = FindeSpalte(headerSD, "HohlWoche hart");
                 int colFolgeHart    = FindeSpalte(headerSD, "Folge hart");
-                int colEinzelHart   = FindeSpalte(headerSD, "Einzel hart");
+                int colStdTag       = FindeSpalte(headerSD, "Std./Tag", "Std/Tag", "Std. /Tag");
+                int colStdTagHart   = FindeSpalte(headerSD, "Std./Tag hart", "Std/Tag hart", "Einzel hart");
                 int colDoppelHart   = FindeSpalte(headerSD, "DoppelHohl hart");
                 int colDreifachHart = FindeSpalte(headerSD, "DreifachHohl hart");
 
@@ -746,8 +749,34 @@ namespace Stundenplan_V2
                                         "'Std.Folge' -> Flag ignoriert.");
                     }
 
-                    // Diese drei verbieten ein Muster als solches und brauchen keinen Wert.
-                    sd.EinzelHart = IstGesetzt(row, colEinzelHart);
+                    // Std./Tag: Bereich "min-max" (z.B. "2-6"). Wie HohlStd. soll
+                    // datums-tolerant lesen (Excel deutet "2-6" gern als Datum).
+                    if (colStdTag > 0)
+                    {
+                        var stdTagCell = row.Cell(colStdTag);
+                        if (!stdTagCell.IsEmpty())
+                        {
+                            var (mn, mx) = ParseDoppelStd(stdTagCell);
+                            if (!(mn == 0 && mx == 0))   // (0,0) = nicht interpretierbar
+                            {
+                                sd.StdTagMin = mn;
+                                sd.StdTagMax = mx;
+                            }
+                        }
+                    }
+
+                    // "Std./Tag hart": macht den Bereich hart. Ohne Wert in "Std./Tag"
+                    // waere das Flag wirkungslos -> ignorieren und melden (wie bei
+                    // "HohlWoche hart" ohne "HohlStd. soll").
+                    sd.StdTagHart = IstGesetzt(row, colStdTagHart);
+                    if (sd.StdTagHart && !sd.StdTagMax.HasValue)
+                    {
+                        sd.StdTagHart = false;
+                        stdDiagnose.Add($"StD: '{name}' hat 'Std./Tag hart', aber keinen Bereich in " +
+                                        "'Std./Tag' -> Flag ignoriert.");
+                    }
+
+                    // Diese zwei verbieten ein Muster als solches und brauchen keinen Wert.
                     sd.DoppelHohlHart = IstGesetzt(row, colDoppelHart);
                     sd.DreifachHohlHart = IstGesetzt(row, colDreifachHart);
 
@@ -762,7 +791,8 @@ namespace Stundenplan_V2
                         var teile = new List<string>();
                         if (sd.HohlWocheHart) teile.Add($"HohlWoche <= {sd.HohlStdMax.Value}");
                         if (sd.FolgeHart) teile.Add($"Std.Folge <= {sd.StdFolge.Value}");
-                        if (sd.EinzelHart) teile.Add("keine Einzelstunde");
+                        if (sd.StdTagHart)
+                            teile.Add($"Std./Tag {sd.StdTagMin ?? 0}-{sd.StdTagMax ?? 0}");
                         if (sd.DoppelHohlHart) teile.Add("keine Doppel-Hohlstunde");
                         if (sd.DreifachHohlHart) teile.Add("keine Dreifach-Hohlstunde");
                         stdDiagnose.Add($"StD: '{name}' HART: {string.Join(", ", teile)}.");
@@ -861,11 +891,11 @@ namespace Stundenplan_V2
                 // nicht geben — aber eine vorhandene Spalte ohne ein einziges
                 // Kreuz ist einen Hinweis wert, falls jemand die Ueberschrift
                 // vertippt hat und sich wundert, warum nichts passiert.
-                if (colHohlHart <= 0 && colFolgeHart <= 0 && colEinzelHart <= 0 &&
+                if (colHohlHart <= 0 && colFolgeHart <= 0 && colStdTagHart <= 0 &&
                     colDoppelHart <= 0 && colDreifachHart <= 0)
                 {
                     stdDiagnose.Add("StD: keine 'hart'-Spalten gefunden (HohlWoche hart, Folge hart, " +
-                                    "Einzel hart, DoppelHohl hart, DreifachHohl hart) -> alle " +
+                                    "Std./Tag hart, DoppelHohl hart, DreifachHohl hart) -> alle " +
                                     "Hohlstunden-/Folge-Regeln wirken wie bisher nur als Strafe.");
                 }
             }

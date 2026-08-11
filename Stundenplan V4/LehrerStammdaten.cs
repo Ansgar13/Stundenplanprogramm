@@ -42,8 +42,16 @@ namespace Stundenplan_V2
         // Ohne Wert in "Std.Folge" wird das Flag ignoriert.
         public bool FolgeHart { get; set; } = false;
 
-        // "Einzel hart": kein Tag mit genau einer Unterrichtsstunde.
-        public bool EinzelHart { get; set; } = false;
+        // "Std./Tag": erlaubter Bereich Unterrichtsstunden pro Tag (leer = keine Vorgabe).
+        // Wirkt an Unterrichtstagen: StdTagMin <= Stunden <= StdTagMax; freie Tage
+        // (0 Stunden) bleiben immer erlaubt. Loest das fruehere "Einzel hart" ab
+        // (min >= 2 verbietet damit automatisch die Einzelstunde).
+        public int? StdTagMin { get; set; } = null;
+        public int? StdTagMax { get; set; } = null;
+
+        // "Std./Tag hart" (frueher "Einzel hart"): macht den Bereich zum harten
+        // Constraint. Ohne Wert in "Std./Tag" wird das Flag ignoriert (siehe Loader).
+        public bool StdTagHart { get; set; } = false;
 
         // "DoppelHohl hart": keine zwei Hohlstunden in Folge.
         public bool DoppelHohlHart { get; set; } = false;
@@ -64,6 +72,6 @@ namespace Stundenplan_V2
         /// harten Regeln fielen still unter den Tisch.
         /// </summary>
         public bool HatHarteRegel =>
-            HohlWocheHart || FolgeHart || EinzelHart || DoppelHohlHart || DreifachHohlHart;
+            HohlWocheHart || FolgeHart || StdTagHart || DoppelHohlHart || DreifachHohlHart;
     }
 }

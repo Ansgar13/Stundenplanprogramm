@@ -32,7 +32,8 @@ namespace Stundenplan_V2
             Dictionary<string, int> extraFreieStunden = null,
             Dictionary<string, (int von, int bis)> freieStundenBereich = null,
             HashSet<string> lehrerFreieStundenMinus2 = null,
-            HashSet<string> lehrerFreieStundenMinus3 = null)
+            HashSet<string> lehrerFreieStundenMinus3 = null,
+            Dictionary<string, LehrerStammdaten> lehrerStammdaten = null)
         {
             int B = blocks.Count;
             int S = slots.Count;
@@ -584,6 +585,151 @@ namespace Stundenplan_V2
                 }
             }
 
+            // =====================================================
+            // 12. PRO-LEHRER-VORGABEN AUS StD: Std./Tag, HohlWoche, Std.Folge,
+            //     DoppelHohl, DreifachHohl. Hart -> Verletzung, nur Wert gesetzt
+            //     (weiche Strafe) -> "Hinweis". Nur Lehrer mit gesetzter Vorgabe
+            //     werden geprueft. Die Zaehlungen entsprechen EXAKT den harten
+            //     Constraints in StundenplanEngine.AddHarteStdRegeln (positionell
+            //     ueber die nach Stunde sortierten Slots des Tages), damit "Verl"
+            //     keine Faelle meldet, die der Solver gar nicht so behandelt:
+            //       - u[si]      = Lehrer unterrichtet im si-ten Slot des Tages
+            //       - Hohlstunde = freier Slot mit Unterricht davor UND danach
+            //       - DoppelHohl = Muster U,frei,frei,U (Luecke genau 2)
+            //       - DreifachHohl = U,frei,frei,frei,...(danach noch U) (>=3 am Stueck)
+            //       - Std.Folge  = mehr als StdFolge Stunden am Stueck
+            //       - Std./Tag   = Unterrichtstag (>=1 Std) ausserhalb [min,max]
+            //     DoppelHohl/DreifachHohl gibt es nur als hartes Flag (kein
+            //     Wert, kein "Hinweis").
+            // =====================================================
+            if (lehrerStammdaten != null)
+            {
+                void AddStd(bool hart, string kat, string tag, string lehrer, string details)
+                {
+                    if (hart)
+                        verletzungen.Add(new Verletzung(kat, tag, 0, 0, lehrer, "", details));
+                    else
+                        verletzungen.Add(new Verletzung(
+                            "Hinweis: " + kat + " (weich)", tag, 0, 0, lehrer, "",
+                            details + " Im Solver nur weiche Strafe."));
+                }
+
+                var alleLehrerSD = blocks
+                    .SelectMany(b => b.Teile.Select(t => t.Lehrer))
+                    .Distinct();
+                var tageSD = slots.Select(s => s.WTag).Distinct().ToList();
+
+                foreach (var lehrer in alleLehrerSD)
+                {
+                    if (!lehrerStammdaten.TryGetValue(lehrer, out var sd) || sd == null) continue;
+
+                    bool hatStdTag = sd.StdTagMax.HasValue;
+                    bool hatHohl   = sd.HohlStdMax.HasValue;
+                    bool hatFolge  = sd.StdFolge.HasValue;
+                    bool hatDoppel = sd.DoppelHohlHart;    // nur hart, kein Wert
+                    bool hatDrei   = sd.DreifachHohlHart;  // nur hart, kein Wert
+                    if (!hatStdTag && !hatHohl && !hatFolge && !hatDoppel && !hatDrei) continue;
+
+                    var lehrerBlöcke = Enumerable.Range(0, B)
+                        .Where(b => blocks[b].Teile.Any(t => t.Lehrer == lehrer))
+                        .ToList();
+
+                    int hohlWoche = 0;   // fuer HohlWoche ueber die ganze Woche sammeln
+
+                    foreach (var tag in tageSD)
+                    {
+                        // Slots dieses Tages nach Stunde sortiert -> positionsgleich
+                        // zum Solver (u[si]).
+                        var tagesSlots = Enumerable.Range(0, S)
+                            .Where(s => slots[s].WTag == tag)
+                            .OrderBy(s => slots[s].Stunde)
+                            .ToList();
+                        int n = tagesSlots.Count;
+                        if (n == 0) continue;
+
+                        var u = new bool[n];
+                        for (int si = 0; si < n; si++)
+                        {
+                            int sIdx = tagesSlots[si];
+                            u[si] = lehrerBlöcke.Any(b => belegung[b, sIdx] == 1);
+                        }
+
+                        int anzahl = u.Count(x => x);
+                        if (anzahl == 0) continue;   // freier Tag -> nie eine Verletzung
+
+                        int ersteIdx  = Array.FindIndex(u, x => x);
+                        int letzteIdx = Array.FindLastIndex(u, x => x);
+
+                        // ---- Std./Tag: Stundenzahl ausserhalb [min,max] ----
+                        if (hatStdTag)
+                        {
+                            int mn = sd.StdTagMin ?? 0;
+                            int mx = sd.StdTagMax.Value;
+                            bool unter = anzahl < mn;
+                            bool ueber = anzahl > mx;
+                            if (unter || ueber)
+                                AddStd(sd.StdTagHart, "Std./Tag", tag, lehrer,
+                                    $"{tag}: {anzahl} Std unterrichtet, Vorgabe Std./Tag {mn}-{mx} " +
+                                    $"({(unter ? "unterschritten" : "überschritten")}).");
+                        }
+
+                        // ---- HohlWoche: Hohlstunden je Tag sammeln (frei mit
+                        //      Unterricht davor UND danach am selben Tag) ----
+                        if (hatHohl)
+                            for (int p = ersteIdx + 1; p < letzteIdx; p++)
+                                if (!u[p]) hohlWoche++;
+
+                        // ---- Std.Folge: laengste Kette am Stueck > StdFolge ----
+                        if (hatFolge)
+                        {
+                            int limit = sd.StdFolge.Value;
+                            int run = 0, maxRun = 0;
+                            for (int si = 0; si < n; si++)
+                            {
+                                run = u[si] ? run + 1 : 0;
+                                if (run > maxRun) maxRun = run;
+                            }
+                            if (maxRun > limit)
+                                AddStd(sd.FolgeHart, "Std.Folge", tag, lehrer,
+                                    $"{tag}: {maxRun} Std am Stück, erlaubt max {limit} (Std.Folge).");
+                        }
+
+                        // ---- DoppelHohl: Muster U,frei,frei,U (nur hart) ----
+                        if (hatDoppel)
+                            for (int si = 2; si <= n - 2; si++)
+                                if (u[si - 2] && !u[si - 1] && !u[si] && u[si + 1])
+                                {
+                                    AddStd(true, "DoppelHohl", tag, lehrer,
+                                        $"{tag}: 2 Hohlstunden in Folge " +
+                                        $"(Std {slots[tagesSlots[si - 1]].Stunde}-{slots[tagesSlots[si]].Stunde}).");
+                                    break;   // eine Meldung pro Tag genuegt
+                                }
+
+                        // ---- DreifachHohl: >=3 frei am Stueck, danach noch
+                        //      Unterricht (nur hart) ----
+                        if (hatDrei)
+                            for (int si = 1; si + 3 < n; si++)
+                            {
+                                if (!(u[si - 1] && !u[si] && !u[si + 1] && !u[si + 2])) continue;
+                                bool restNachher = false;
+                                for (int k = si + 3; k < n; k++) if (u[k]) { restNachher = true; break; }
+                                if (restNachher)
+                                {
+                                    AddStd(true, "DreifachHohl", tag, lehrer,
+                                        $"{tag}: 3 Hohlstunden in Folge " +
+                                        $"(Std {slots[tagesSlots[si]].Stunde}-{slots[tagesSlots[si + 2]].Stunde}).");
+                                    break;
+                                }
+                            }
+                    }
+
+                    // ---- HohlWoche-Summe der Woche gegen HohlStdMax ----
+                    if (hatHohl && hohlWoche > sd.HohlStdMax.Value)
+                        AddStd(sd.HohlWocheHart, "HohlWoche", "", lehrer,
+                            $"Hohlstunden/Woche: {hohlWoche}, erlaubt {sd.HohlStdMax.Value} (HohlStd. soll).");
+                }
+            }
+
             return verletzungen;
         }
 
@@ -687,6 +833,11 @@ namespace Stundenplan_V2
                     ["Pausen-Verletzung"]= XLColor.Plum,
                     ["Tagesregel"]      = XLColor.LightSalmon,
                     ["Fach pro Klasse/Tag"] = XLColor.LightCoral,
+                    ["Std./Tag"]        = XLColor.Khaki,
+                    ["HohlWoche"]       = XLColor.PowderBlue,
+                    ["Std.Folge"]       = XLColor.Thistle,
+                    ["DoppelHohl"]      = XLColor.Wheat,
+                    ["DreifachHohl"]    = XLColor.PeachPuff,
                 };
 
                 for (int i = 0; i < verletzungen.Count; i++)

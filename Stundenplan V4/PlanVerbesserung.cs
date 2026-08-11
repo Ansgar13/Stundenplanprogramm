@@ -1069,8 +1069,12 @@ namespace Stundenplan_V2
                             if (nochUnterricht) return false;
                         }
 
-                if (sd.EinzelHart && u.Count(v => v) == 1)
-                    return false;
+                if (sd.StdTagHart)
+                {
+                    int cnt = u.Count(v => v);
+                    if (cnt >= 1 && sd.StdTagMin.HasValue && cnt < sd.StdTagMin.Value) return false;
+                    if (sd.StdTagMax.HasValue && cnt > sd.StdTagMax.Value) return false;
+                }
 
                 if (sd.FolgeHart && sd.StdFolge.HasValue)
                 {
@@ -1112,6 +1116,7 @@ namespace Stundenplan_V2
                         input.StrafeSpäteLkStunden,
                         input.StrafeHauptfachSpät,
                         input.HauptfachSpätAnteilProzent,
+                        input.LehrerStammdaten,
                         grenzeSpäteLk: input.GrenzeSpäteLk).Quality
                         - BerechneMinus2Strafe(belegung, blocks, slots, input);
 

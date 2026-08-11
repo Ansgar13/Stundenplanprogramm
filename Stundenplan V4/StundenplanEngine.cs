@@ -885,7 +885,8 @@ namespace Stundenplan_V2
                 teile.Add($"max {sd.HohlStdMax.Value} Hohlstunden/Woche");
             if (sd.FolgeHart && sd.StdFolge.HasValue)
                 teile.Add($"max {sd.StdFolge.Value} Stunden am Stück");
-            if (sd.EinzelHart) teile.Add("keine Einzelstunde");
+            if (sd.StdTagHart)
+                teile.Add($"Std./Tag {sd.StdTagMin ?? 0}-{sd.StdTagMax ?? 0}");
             if (sd.DoppelHohlHart) teile.Add("keine Doppel-Hohlstunde");
             if (sd.DreifachHohlHart) teile.Add("keine Dreifach-Hohlstunde");
             return $"'{sd.Name}': {string.Join(", ", teile)}";
@@ -1032,11 +1033,23 @@ namespace Stundenplan_V2
                         }
                     }
 
-                    if (sd.EinzelHart)
+                    if (sd.StdTagHart)
                     {
                         var sumVar = model.NewIntVar(0, n, $"d_sum_{l}_{dayIdx}");
                         model.Add(sumVar == LinearExpr.Sum(u));
-                        model.Add(sumVar != 1);
+
+                        int mx = sd.StdTagMax ?? n;
+                        if (mx < n) model.Add(sumVar <= mx);           // Obergrenze immer
+
+                        int mn = sd.StdTagMin ?? 0;
+                        if (mn >= 2)
+                        {
+                            // Untergrenze nur an Unterrichtstagen: sumVar == 0 ODER sumVar >= mn.
+                            var teaches = model.NewBoolVar($"d_stdtag_teaches_{l}_{dayIdx}");
+                            model.Add(sumVar >= 1).OnlyEnforceIf(teaches);
+                            model.Add(sumVar == 0).OnlyEnforceIf(teaches.Not());
+                            model.Add(sumVar >= mn).OnlyEnforceIf(teaches);
+                        }
                     }
 
                     if (sd.FolgeHart && sd.StdFolge.HasValue)
@@ -4136,7 +4149,10 @@ namespace Stundenplan_V2
                     // folgeHart nur bei vorhandener Std.Folge.
                     bool hohlHart     = sd?.HohlWocheHart ?? false;
                     bool folgeHart    = sd?.FolgeHart ?? false;
-                    bool einzelHart   = sd?.EinzelHart ?? false;
+                    bool stdTagHart   = sd?.StdTagHart ?? false;
+                    int? stdTagMin    = sd?.StdTagMin;
+                    int? stdTagMax    = sd?.StdTagMax;
+                    bool hatStdTagBereich = stdTagMax.HasValue;
                     bool doppelHart   = sd?.DoppelHohlHart ?? false;
                     bool dreifachHart = sd?.DreifachHohlHart ?? false;
                     // Sammelt ALLE einzelnen Hohlstunden-Variablen dieses Lehrers (ueber alle Tage),
@@ -4323,20 +4339,49 @@ namespace Stundenplan_V2
                             }
                         }
 
-                        // Einzelstunden: genau 1 Unterrichtsstunde am Tag
-                        if (strafeEinzel != 0 || einzelHart)
+                        // Std./Tag: erlaubter Bereich Unterrichtsstunden pro Tag.
+                        // Weiche Strafe (B) bestraft JEDEN Unterrichtstag ausserhalb
+                        // [min,max]; "Std./Tag hart" macht daraus ein Constraint.
+                        // Ohne Bereich (kein Wert in "Std./Tag") passiert nichts.
+                        if ((strafeEinzel != 0 || stdTagHart) && hatStdTagBereich)
                         {
-                            // Summe der u-Werte = 1 → Einzelstunde
-                            var einzelVar = model.NewBoolVar($"einzel_{l}_{dayIdx}");
-                            var sumVar = model.NewIntVar(0, n, $"sum_{l}_{dayIdx}");
-                            model.Add(sumVar == LinearExpr.Sum(u));
-                            model.Add(sumVar == 1).OnlyEnforceIf(einzelVar);
-                            model.Add(sumVar != 1).OnlyEnforceIf(einzelVar.Not());
+                            int mn = stdTagMin ?? 0;
+                            int mx = stdTagMax ?? n;
 
-                            // HART: einzelVar=0 erzwingt ueber die Reifizierung
-                            // sumVar != 1 — der Tag hat also 0 oder >= 2 Stunden.
-                            if (einzelHart) model.Add(einzelVar == 0);
-                            else einzelVars.Add(einzelVar);
+                            var sumVar = model.NewIntVar(0, n, $"stdtag_sum_{l}_{dayIdx}");
+                            model.Add(sumVar == LinearExpr.Sum(u));
+
+                            // Ueberschreitung: mehr als mx Stunden am Tag.
+                            if (mx < n)
+                            {
+                                var ueber = model.NewBoolVar($"stdtag_ueber_{l}_{dayIdx}");
+                                model.Add(sumVar >= mx + 1).OnlyEnforceIf(ueber);
+                                model.Add(sumVar <= mx).OnlyEnforceIf(ueber.Not());
+                                if (stdTagHart) model.Add(ueber == 0);
+                                else            einzelVars.Add(ueber);
+                            }
+
+                            // Unterschreitung: unterrichtet, aber weniger als mn Stunden
+                            // (nur moeglich bei mn >= 2). Freie Tage zaehlen nicht.
+                            if (mn >= 2)
+                            {
+                                var teaches  = model.NewBoolVar($"stdtag_teaches_{l}_{dayIdx}");
+                                model.Add(sumVar >= 1).OnlyEnforceIf(teaches);
+                                model.Add(sumVar == 0).OnlyEnforceIf(teaches.Not());
+
+                                var belowMin = model.NewBoolVar($"stdtag_below_{l}_{dayIdx}");
+                                model.Add(sumVar <= mn - 1).OnlyEnforceIf(belowMin);
+                                model.Add(sumVar >= mn).OnlyEnforceIf(belowMin.Not());
+
+                                // unter = teaches AND belowMin (lineare UND-Reifizierung)
+                                var unter = model.NewBoolVar($"stdtag_unter_{l}_{dayIdx}");
+                                model.Add(unter <= teaches);
+                                model.Add(unter <= belowMin);
+                                model.Add(unter >= teaches + belowMin - 1);
+
+                                if (stdTagHart) model.Add(unter == 0);
+                                else            einzelVars.Add(unter);
+                            }
                         }
 
                         // Stundenfolge: längste aufeinanderfolgende Unterrichtssequenz

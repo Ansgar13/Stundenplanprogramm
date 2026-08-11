@@ -41,7 +41,7 @@ namespace Stundenplan_V2
     /// wird. Importiert wird deshalb nur, was in der Datei tatsaechlich steht.
     /// Ein Wert lässt sich weiterhin von Hand im Dialog leeren.
     ///
-    /// DIE FUENF HART-SPALTEN (HohlWoche hart, Folge hart, Einzel hart,
+    /// DIE FUENF HART-SPALTEN (HohlWoche hart, Folge hart, Std./Tag hart,
     /// DoppelHohl hart, DreifachHohl hart) kennt Untis nicht. Sie werden ueber
     /// die Spalte "Name" aus dem bestehenden Sheet uebernommen; neue Lehrer
     /// starten ohne harte Regeln, was der sichere Default ist.
@@ -94,7 +94,7 @@ namespace Stundenplan_V2
         // wirken die Flags nicht.
         public static readonly string[] HartSpalten =
         {
-            "HohlWoche hart", "Folge hart", "Einzel hart",
+            "HohlWoche hart", "Folge hart", "Std./Tag hart",
             "DoppelHohl hart", "DreifachHohl hart"
         };
 

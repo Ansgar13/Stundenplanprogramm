@@ -15,6 +15,7 @@ namespace Stundenplan_V2
         public int DoppelHohlstunden;
         public int DreifachHohlstunden;
         public int Einzelstunden;
+        public int StdTagVerletzungen;   // Unterrichtstage ausserhalb Std./Tag-Bereich (weiche Strafe (B))
         public int SpäteLkStunden;
         public int HauptfachSpätÜberschuss;
         public List<string> Details = new();
@@ -396,6 +397,12 @@ namespace Stundenplan_V2
                     .Where(b => blocks[b].Teile.Any(t => t.Lehrer == lehrer))
                     .ToList();
 
+                // Std./Tag-Bereich dieses Lehrers (fuer die weiche Strafe (B)).
+                LehrerStammdaten sdL = null;
+                lehrerStammdaten?.TryGetValue(lehrer, out sdL);
+                int? stdTagMin = sdL?.StdTagMin;
+                int? stdTagMax = sdL?.StdTagMax;
+
                 // Hohlstunden dieses Lehrers ueber die ganze Woche sammeln,
                 // damit der Wochen-Freibetrag (HohlStdMax) abgezogen werden kann.
                 int hohlWoche = 0;
@@ -420,9 +427,21 @@ namespace Stundenplan_V2
                     int ersteStd  = mitUnterricht.Min();
                     int letzteStd = mitUnterricht.Max();
 
-                    // Einzelstunden
+                    // Einzelstunden (Diagnose-Metrik: Tage mit genau 1 Stunde)
                     if (mitUnterricht.Count == 1)
                         result.Einzelstunden++;
+
+                    // Std./Tag-Bereichsverletzung (weiche Strafe (B)): Unterrichtstag
+                    // mit Stundenzahl ausserhalb [min,max]. Freie Tage sind oben
+                    // bereits per continue ausgeschlossen. Spiegelt die einzelVars
+                    // des Solvers (StundenplanEngine).
+                    if (stdTagMax.HasValue)
+                    {
+                        int stdProTag = mitUnterricht.Count;
+                        bool unter = stdTagMin.HasValue && stdProTag < stdTagMin.Value;
+                        bool ueber = stdProTag > stdTagMax.Value;
+                        if (unter || ueber) result.StdTagVerletzungen++;
+                    }
 
                     // Hohlstunden
                     int hohlFolge = 0;
@@ -529,7 +548,7 @@ namespace Stundenplan_V2
                 - result.Hohlstunden           *  strafeHohl
                 - result.DoppelHohlstunden     *  strafeDoppelHohl
                 - result.DreifachHohlstunden   *  strafeDreifachHohl
-                - result.Einzelstunden         *  strafeEinzel
+                - result.StdTagVerletzungen    *  strafeEinzel
                 - result.SpäteLkStunden        *  strafeSpäteLk
                 - result.HauptfachSpätÜberschuss * strafeHauptfachSpät;
 
