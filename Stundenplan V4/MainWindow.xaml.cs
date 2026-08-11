@@ -770,6 +770,29 @@ namespace Stundenplan_V2
                 Log($"Hinweis: Gesicherte Lösungen konnten nicht gelesen werden: {ex.Message}");
             }
 
+            // Manuellen UNr-Plan (Sheet "Plan") sofort als Lösung "Plan" verfügbar
+            // machen, damit er direkt nach dem Einlesen (Dropdown, Diag,
+            // Klassenpläne) da ist, ohne dass erst "Plan bewerten" gedrückt werden
+            // muss. Das Sheet "Plan" ist die Quelle der Wahrheit; einen evtl. aus
+            // "Lösungen" gespiegelten, u. U. veralteten "Plan"-Eintrag ersetzen wir
+            // dadurch. quality/badUnits bleiben (0,0) wie beim "Lös"-Laden — die
+            // echten Werte berechnen Ranking/Diag bzw. "Plan bewerten" bei Bedarf.
+            try
+            {
+                var planBelegung = LadeUnrPlanAusExcel();   // liest Sheet "Plan", nutzt frisches input
+                if (planBelegung != null)
+                {
+                    letzteSolutions.RemoveAll(s => s.label == "Plan");
+                    letzteSolutions.Add((0, 0, planBelegung, "Plan", input.Blocks));
+                    if (zeigeWarnungen)
+                        Log("UNr-Plan aus Sheet 'Plan' als Lösung 'Plan' eingelesen.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Hinweis: Sheet 'Plan' konnte nicht gelesen werden: {ex.Message}");
+            }
+
             // Statuszeile und Log-Zeile nur beim manuellen Laden (Button 1)
             // ausgeben — bei stillen Auto-Reloads nach einem Schreibvorgang
             // (zeigeWarnungen=false) soll weder die Statuszeile mit der
@@ -3602,20 +3625,28 @@ namespace Stundenplan_V2
                 SchreibeRanking(letzteSolutions);
                 ErzeugeNuHoAusgaben(letzteSolutions);
 
-                // Diagnose
+                // Diagnose: komplettes Diag/Dstd-F wie bei "Plan bewerten" neu
+                // aufbauen (vorherLöschen:true über ALLE letzteSolutions), damit
+                // die neu gerechneten NK-Lösungen ihre alten, jetzt veralteten
+                // Diag-Spalten sicher überschreiben. Der frühere Anhänge-Modus
+                // (vorherLöschen:false, nur ergebnisse) übersprang bereits
+                // vorhandene NK-Labels und ließ dadurch veraltete Hohlstunden-
+                // Werte stehen — erst ein späteres "Plan bewerten" korrigierte sie.
                 try
                 {
-                    var diagDaten = ergebnisse
-                        .Select(sol => (sol.label,
+                    var diagDaten = letzteSolutions
+                        .Select(sol => (
+                            sol.label,
                             LehrerDiagnose.Berechne(
                                 sol.belegung, sol.blocks, input.Slots,
                                 input.LehrerStammdaten,
                                 input.StrafeHohlstunde, input.StrafeDoppelHohlstunde,
                                 input.StrafeDreifachHohlstunde, input.StrafeStdFolge,
-                                meldeMinus2, input.ExtraFreieTage, input.LehrerFreiTageMinus2, input.ExtraFreieStunden, input.FreieStundenBereich, input.LehrerFreieStundenMinus2)))
+                                meldeMinus2, input.ExtraFreieTage, input.LehrerFreiTageMinus2,
+                                input.ExtraFreieStunden, input.FreieStundenBereich, input.LehrerFreieStundenMinus2)))
                         .ToList();
 
-                    var zusatzDaten = ergebnisse
+                    var zusatzDaten = letzteSolutions
                         .Select(sol =>
                         {
                             var z = BerechneZusatzDiagWerte(sol.belegung, sol.blocks);
@@ -3623,11 +3654,15 @@ namespace Stundenplan_V2
                         })
                         .ToList();
 
-                    LehrerDiagnose.Exportiere(excelPfad, diagDaten, vorherLöschen: false,
+                    LehrerDiagnose.Exportiere(excelPfad, diagDaten, vorherLöschen: true,
                         meldeLeherMinus2: meldeMinus2, zusatzDaten: zusatzDaten);
 
-                    var dstdFDaten = ergebnisse.Select(sol => (sol.label, sol.belegung, sol.blocks)).ToList();
-                    LehrerDiagnose.ExportiereDstdF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: false);
+                    var dstdFDaten = letzteSolutions
+                        .Select(sol => (sol.label, sol.belegung, sol.blocks))
+                        .ToList();
+                    LehrerDiagnose.ExportiereDstdF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: true);
+
+                    ErgaenzeDiagnoseFuerGesicherte();
                 }
                 catch (Exception ex) { Log($"Diagnose-Fehler: {ex.Message}"); }
 
