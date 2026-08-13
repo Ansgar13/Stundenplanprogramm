@@ -25,12 +25,14 @@
         <!-- Algorithmus -->
         <GroupBox Grid.Row="1" Header="Algorithmus" Margin="0,0,0,8">
             <StackPanel Margin="5">
-                <RadioButton x:Name="RbHillClimbing" Content="Hill Climbing" IsChecked="True" Margin="0,2"/>
-                <RadioButton x:Name="RbSimAnnealing" Content="Simulated Annealing" Margin="0,2"/>
-                <RadioButton x:Name="RbLns" Content="Large Neighborhood Search (LNS)" Margin="0,2"/>
+                <RadioButton x:Name="RbHillClimbing" Content="Hill Climbing" Margin="0,2"
+                             ToolTip="Bricht am ersten lokalen Optimum ab – auf einem Solver-Output meist sofort ohne Verbesserung."/>
+                <RadioButton x:Name="RbSimAnnealing" Content="Simulated Annealing" IsChecked="True" Margin="0,2"/>
+                <RadioButton x:Name="RbLns" Content="Large Neighborhood Search (LNS)" Margin="0,2"
+                             ToolTip="Löst ganze Nachbarschaften mit CP-SAT neu – kann Blöcke auch in leere Slots setzen. Für echte Verbesserung eines guten Plans die stärkste Option."/>
                 <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
                     <TextBlock Text="Zeitlimit (Sek.):" VerticalAlignment="Center" Width="120"/>
-                    <TextBox x:Name="TxtZeitlimit" Text="30" Width="60"/>
+                    <TextBox x:Name="TxtZeitlimit" Text="60" Width="60"/>
                 </StackPanel>
             </StackPanel>
         </GroupBox>
@@ -87,9 +89,11 @@
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Starttemperatur:" VerticalAlignment="Center"/>
-                <TextBox Grid.Column="1" x:Name="TxtStartTemp" Text="100" Width="60"/>
+                <TextBox Grid.Column="1" x:Name="TxtStartTemp" Text="18" Width="60"
+                         ToolTip="Skaliert das Delta pro Tausch (Δ≈2–4). ~18 ≙ anfangs ~80% Annahme einer typischen Verschlechterung. Höher = mehr Random Walk."/>
                 <TextBlock Grid.Column="2" Text="Abkühlrate:" VerticalAlignment="Center"/>
-                <TextBox Grid.Column="3" x:Name="TxtAbkühlrate" Text="0.995" Width="60"/>
+                <TextBox Grid.Column="3" x:Name="TxtAbkühlrate" Text="0.99999" Width="60"
+                         ToolTip="An Iterationszahl N (siehe Log) koppeln: Rate = (1/Starttemp.)^(1/N). Gemessen N≈285000 → 0,99999. Weniger Iterationen ⇒ kleinere Rate."/>
             </Grid>
         </GroupBox>
 

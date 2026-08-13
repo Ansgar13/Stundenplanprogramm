@@ -10,9 +10,12 @@ namespace Stundenplan_V2
     // =====================================================
     public class VerbesserungsOptionen
     {
-        public VerbesserungsAlgorithmus Algorithmus { get; set; } = VerbesserungsAlgorithmus.HillClimbing;
+        // SimulatedAnnealing als Default: HillClimbing bricht auf einem
+        // Solver-Output praktisch sofort ab (der Plan ist schon ein lokales
+        // Optimum der Ein-Tausch-Nachbarschaft) und meldet "keine Verbesserung".
+        public VerbesserungsAlgorithmus Algorithmus { get; set; } = VerbesserungsAlgorithmus.SimulatedAnnealing;
         public VerbesserungsZiel Ziel { get; set; } = VerbesserungsZiel.Gesamt;
-        public int ZeitlimitSekunden { get; set; } = 30;
+        public int ZeitlimitSekunden { get; set; } = 60;
 
         // Einschränkungen
         public HashSet<string> NurLehrer { get; set; } = new(); // leer = alle
@@ -20,8 +23,20 @@ namespace Stundenplan_V2
         public bool FixUNrnRespektieren { get; set; } = true;
 
         // Simulated Annealing
-        public double StartTemperatur { get; set; } = 100.0;
-        public double Abkühlrate { get; set; } = 0.995;
+        // Temperatur skaliert das DELTA zweier Bewertungen, nicht den absoluten
+        // Qualitätswert. Ein einzelner Tausch ändert die Straf­summe typisch um
+        // Δ≈2–4 (Hohlstunde=1, Std./Tag & -2-Verstoß=2, Bad-Unit & Fächer-Doppel=4).
+        // StartTemperatur≈18 gibt exp(-4/18)≈0,8 anfängliche Annahme einer
+        // typischen Verschlechterung — echter Temperaturgradient statt Random
+        // Walk (bei T=100 wäre exp(-4/100)=0,96 = "nimm fast alles an").
+        public double StartTemperatur { get; set; } = 18.0;
+        // Abkühlrate an die Iterationszahl N koppeln: Rate = (T_end/T0)^(1/N),
+        // Ziel T_end≈1. Gemessen für dieses Modell (~60 s): N≈285 000 Iterationen
+        // → Rate = (1/18)^(1/285000) ≈ 0,99999 (T fällt über den GANZEN Lauf auf
+        // ~1 statt schon nach ~9 600 Schritten wie bei 0,9997). Ändert sich das
+        // Modell oder Zeitlimit, N neu aus dem Log ("Iterationen: N") ablesen und
+        // Rate neu bestimmen.
+        public double Abkühlrate { get; set; } = 0.99999;
 
         // LNS
         public int LnsZeitlimitSekunden { get; set; } = 10;
