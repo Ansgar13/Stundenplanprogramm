@@ -482,6 +482,117 @@ namespace Stundenplan_V2
             }
 
             // =====================================================
+            // 8b. FACH/KLASSE/TAG (Solver-Regel): spiegelt den HARTEN
+            //     Constraint des Solvers  Sum(x) <= 1 + hatDoppel  exakt.
+            //     Pro (Klasse, Fach, Tag) ist höchstens 1 Stunde erlaubt;
+            //     2 Stunden NUR, wenn sie eine echte, zusammenhängende
+            //     Doppelstunde innerhalb EINER UNr bilden. Zwei getrennte
+            //     Einzelstunden desselben Fachs in einer Klasse am selben
+            //     Tag (auch aus verschiedenen UNrn / Kopplungen) sind
+            //     unzulässig — das meldet die lockere Regel oben (>2) NICHT.
+            //     KKK-gleiche Blöcke zählen pro Slot nur einmal (wie
+            //     BaueFachKlasseTagVars im Solver).
+            // =====================================================
+            {
+                // (Klasse, Fach) -> Blockindizes. Ein Block kann über mehrere
+                // Teile in mehreren (Klasse,Fach)-Mengen landen.
+                var fkBlocks = new Dictionary<(string klasse, string fach), List<int>>();
+                for (int b = 0; b < B; b++)
+                    foreach (var t in blocks[b].Teile)
+                        foreach (var k in t.Klassen)
+                        {
+                            var key = (k, t.Fach);
+                            if (!fkBlocks.TryGetValue(key, out var li)) { li = new List<int>(); fkBlocks[key] = li; }
+                            if (!li.Contains(b)) li.Add(b);
+                        }
+
+                var tageFK = slots.Select(s => s.WTag).Distinct().ToList();
+
+                foreach (var kv in fkBlocks)
+                {
+                    var (klasse, fach) = kv.Key;
+                    var blockIdxs = kv.Value;
+
+                    // KKK-Gruppen bilden (leeres KKK = eigener Einzelblock)
+                    var kkkGruppen = new List<List<int>>();
+                    var vergebenFK = new HashSet<int>();
+                    foreach (var b in blockIdxs)
+                    {
+                        if (vergebenFK.Contains(b)) continue;
+                        string kkk = (blocks[b].KKK ?? "").Trim();
+                        if (string.IsNullOrEmpty(kkk))
+                        {
+                            kkkGruppen.Add(new List<int> { b });
+                            vergebenFK.Add(b);
+                        }
+                        else
+                        {
+                            var gruppe = blockIdxs.Where(b2 => !vergebenFK.Contains(b2) &&
+                                string.Equals((blocks[b2].KKK ?? "").Trim(), kkk, StringComparison.OrdinalIgnoreCase)).ToList();
+                            kkkGruppen.Add(gruppe);
+                            foreach (var b2 in gruppe) vergebenFK.Add(b2);
+                        }
+                    }
+
+                    foreach (var tag in tageFK)
+                    {
+                        var tagSlots = new List<int>();
+                        for (int s = 0; s < S; s++) if (slots[s].WTag == tag) tagSlots.Add(s);
+                        if (tagSlots.Count == 0) continue;
+
+                        // count = Sum über KKK-Gruppen × Tag-Slots (occ=1, sobald
+                        // irgendein Block der Gruppe den Slot belegt)
+                        int count = 0;
+                        foreach (var gruppe in kkkGruppen)
+                            foreach (var s in tagSlots)
+                                if (gruppe.Any(b => belegung[b, s] == 1))
+                                    count++;
+
+                        if (count <= 1) continue; // 0 oder 1 immer zulässig
+
+                        // hatDoppel: echte, zusammenhängende Doppelstunde INNERHALB
+                        // einer einzelnen UNr an diesem Tag
+                        bool hatDoppel = false;
+                        foreach (var b in blockIdxs)
+                        {
+                            foreach (var s in tagSlots)
+                            {
+                                if (s + 1 >= S) continue;
+                                if (belegung[b, s] == 1 && belegung[b, s + 1] == 1 &&
+                                    slots[s].WTag == slots[s + 1].WTag &&
+                                    slots[s].Stunde + 1 == slots[s + 1].Stunde)
+                                { hatDoppel = true; break; }
+                            }
+                            if (hatDoppel) break;
+                        }
+
+                        int limit = hatDoppel ? 2 : 1;
+                        if (count > limit)
+                        {
+                            var beteiligt = blockIdxs.Where(b => tagSlots.Any(s => belegung[b, s] == 1)).ToList();
+                            string unrs = string.Join(", ", beteiligt.Select(b => blocks[b].UNr).Distinct());
+                            string lehrer = string.Join(", ", beteiligt
+                                .SelectMany(b => blocks[b].Teile
+                                    .Where(t => t.Fach == fach && t.Klassen.Contains(klasse))
+                                    .Select(t => t.Lehrer))
+                                .Where(x => !string.IsNullOrWhiteSpace(x)).Distinct());
+
+                            string erlaubtTxt = hatDoppel
+                                ? "max 2 (nur als echte Doppelstunde)"
+                                : "ohne echte Doppelstunde nur 1x/Tag";
+                            verletzungen.Add(new Verletzung(
+                                "Fach/Klasse/Tag (Doppel-Regel)",
+                                tag, 0, 0,
+                                lehrer,
+                                fach,
+                                $"Klasse {klasse}: {count}x {fach} an {tag} — {erlaubtTxt} | UNr: {unrs}",
+                                Klasse: klasse));
+                        }
+                    }
+                }
+            }
+
+            // =====================================================
             // =====================================================
             // 9. FREIE TAGE: harte Prüfung für -3 (und -2 mit Verbot),
             //    -2 ohne Verbot als Hinweis. istFixFrei wie im Solver:
@@ -833,6 +944,8 @@ namespace Stundenplan_V2
                     ["Pausen-Verletzung"]= XLColor.Plum,
                     ["Tagesregel"]      = XLColor.LightSalmon,
                     ["Fach pro Klasse/Tag"] = XLColor.LightCoral,
+                    ["Fach pro Klasse pro Tag"] = XLColor.LightCoral,
+                    ["Fach/Klasse/Tag (Doppel-Regel)"] = XLColor.Coral,
                     ["Std./Tag"]        = XLColor.Khaki,
                     ["HohlWoche"]       = XLColor.PowderBlue,
                     ["Std.Folge"]       = XLColor.Thistle,

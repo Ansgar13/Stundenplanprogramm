@@ -775,5 +775,316 @@ namespace Stundenplan_V2
             sheet.Columns().AdjustToContents();
             wb.Save();
         }
+
+        // =====================================================
+        // TR-F: Sheet mit Tagesregel-Verletzungen
+        // pro Lehrer, UNr, Klasse, Fach, Tag — für alle Lösungen.
+        // Analog zu ExportiereDstdF ("Dstd-F"), nur für die Tagesregel:
+        //   • zu viele Stunden desselben Unterrichts an einem Tag
+        //     (Limit: bei Doppelstunden-Vorgabe maxD>0 → 2, sonst 1)
+        //   • bei maxD>0 und genau 2 Stunden am Tag: zwei getrennte
+        //     Einzelstunden statt einer echten Doppelstunde.
+        // Dieselbe Regel wie PlanValidator.Prüfe §7 (Tagesregel), hier
+        // aber je Lehrer eine Zeile (wie Dstd-F) und für den ECHTEN Plan
+        // jeder Lösung — nicht nur die FixUNrn, die ChkFix abdeckt.
+        // =====================================================
+        /// <summary>
+        /// Schreibt/aktualisiert das Sheet "TR-F" mit allen UNrn, deren
+        /// Slot-Verteilung die Tagesregel verletzt.
+        /// Spalten: Lehrer | UNr | Klasse(n) | Fach | Tag | Std./Tag | max/Tag | Art
+        /// Jede Lösung erhält einen eigenen Block (Lösungsname als fette Überschrift).
+        /// </summary>
+        public static void ExportiereTagesregelF(
+            string excelPfad,
+            List<(string label, int[,] belegung, List<UnterrichtsBlock> blocks)> lösungen,
+            List<ZeitSlot> slots,
+            bool vorherLöschen = false)
+        {
+            if (lösungen == null || lösungen.Count == 0) return;
+
+            using var wb = new XLWorkbook(excelPfad);
+            const string sheetName = "TR-F";
+
+            IXLWorksheet sheet;
+            if (vorherLöschen || !wb.Worksheets.Any(ws => ws.Name == sheetName))
+            {
+                if (wb.Worksheets.Any(ws => ws.Name == sheetName))
+                {
+                    sheet = wb.Worksheet(sheetName);
+                    sheet.Clear();
+                }
+                else
+                {
+                    sheet = wb.Worksheets.Add(sheetName);
+                }
+            }
+            else
+            {
+                sheet = wb.Worksheet(sheetName);
+                // Anfügen: eine Leerzeile nach letzter benutzter Zeile
+            }
+
+            // Aktuelle Schreibzeile ermitteln
+            int zeile = sheet.LastRowUsed()?.RowNumber() ?? 0;
+            if (zeile > 0) zeile += 2; // Abstand zum vorherigen Block
+            else zeile = 1;
+
+            // Spalten: A=Lehrer, B=UNr, C=Klasse(n), D=Fach, E=Tag,
+            //          F=Std./Tag, G=max/Tag, H=Art
+            var headerFarbe   = XLColor.FromArgb(0xD6, 0xDC, 0xE4);
+            var zuVielFarbe   = XLColor.LightPink;                    // zu viele Std./Tag
+            var getrenntFarbe = XLColor.FromArgb(0xFF, 0xCC, 0x99);   // getrennte Einzelstunden
+
+            foreach (var (label, belegung, blocks) in lösungen)
+            {
+                // ── Lösungs-Kopfzeile ───────────────────────────────────
+                var kopf = sheet.Cell(zeile, 1);
+                kopf.Value = label;
+                kopf.Style.Font.Bold = true;
+                kopf.Style.Font.FontSize = 11;
+                kopf.Style.Fill.BackgroundColor = XLColor.LightBlue;
+                sheet.Range(zeile, 1, zeile, 8).Merge();
+                zeile++;
+
+                // ── Spaltenköpfe ─────────────────────────────────────────
+                string[] headers = { "Lehrer", "UNr", "Klasse(n)", "Fach", "Tag", "Std./Tag", "max/Tag", "Art" };
+                for (int c = 0; c < headers.Length; c++)
+                {
+                    var cell = sheet.Cell(zeile, c + 1);
+                    cell.Value = headers[c];
+                    cell.Style.Font.Bold = true;
+                    cell.Style.Fill.BackgroundColor = headerFarbe;
+                }
+                zeile++;
+
+                // ── Belegung pro Block aufbauen ──────────────────────────
+                int B = blocks.Count;
+                int S = slots.Count;
+
+                var blockSlots = new Dictionary<int, List<int>>();
+                for (int b = 0; b < B; b++)
+                {
+                    blockSlots[b] = new List<int>();
+                    for (int s = 0; s < S; s++)
+                        if (belegung[b, s] == 1)
+                            blockSlots[b].Add(s);
+                }
+
+                bool irgendwasGefunden = false;
+
+                for (int b = 0; b < B; b++)
+                {
+                    if (blocks[b].Teile == null || blocks[b].Teile.Count == 0) continue;
+
+                    int maxD  = blocks[b].Teile.Max(t => t.MaxDoppel);
+                    int limit = maxD > 0 ? 2 : 1;
+
+                    // Slots je Tag, Tage nach frühester Stunde sortiert
+                    var proTag = blockSlots[b]
+                        .GroupBy(s => slots[s].WTag)
+                        .OrderBy(g => g.Min(s => slots[s].Stunde))
+                        .ToList();
+
+                    foreach (var tagGruppe in proTag)
+                    {
+                        string tag = tagGruppe.Key;
+                        var tagesSlots = tagGruppe.OrderBy(s => slots[s].Stunde).ToList();
+                        int anzahl = tagesSlots.Count;
+
+                        // Art der Tagesregel-Verletzung bestimmen (analog §7)
+                        string art = null;
+                        if (anzahl > limit)
+                        {
+                            art = "zu viele";
+                        }
+                        else if (maxD > 0 && anzahl == 2)
+                        {
+                            int s1 = tagesSlots[0], s2 = tagesSlots[1];
+                            bool zusammenhaengend =
+                                slots[s1].WTag == slots[s2].WTag &&
+                                slots[s1].Stunde + 1 == slots[s2].Stunde;
+                            if (!zusammenhaengend)
+                                art = "getrennt";
+                        }
+
+                        if (art == null) continue; // an diesem Tag keine Verletzung
+
+                        // Eine Zeile pro beteiligtem Lehrer (wie Dstd-F)
+                        var lehrer = blocks[b].Teile
+                            .Select(t => t.Lehrer)
+                            .Where(l => !string.IsNullOrWhiteSpace(l))
+                            .Distinct()
+                            .ToList();
+                        if (lehrer.Count == 0) lehrer.Add("–");
+
+                        string klassen = string.Join(", ",
+                            blocks[b].Teile.SelectMany(t => t.Klassen).Distinct());
+                        string fächer = string.Join(", ",
+                            blocks[b].Teile.Select(t => t.Fach).Distinct());
+
+                        var farbe = art == "zu viele" ? zuVielFarbe : getrenntFarbe;
+
+                        foreach (var l in lehrer)
+                        {
+                            sheet.Cell(zeile, 1).Value = l;
+                            sheet.Cell(zeile, 2).Value = blocks[b].UNr;
+                            sheet.Cell(zeile, 3).Value = klassen;
+                            sheet.Cell(zeile, 4).Value = fächer;
+                            sheet.Cell(zeile, 5).Value = tag;
+                            sheet.Cell(zeile, 6).Value = anzahl;
+                            sheet.Cell(zeile, 7).Value = limit;
+
+                            var artCell = sheet.Cell(zeile, 8);
+                            artCell.Value = art == "zu viele"
+                                ? $"zu viele ({anzahl} > {limit})"
+                                : "2 Einzelstd. statt Doppel";
+                            artCell.Style.Fill.BackgroundColor = farbe;
+                            artCell.Style.Font.Bold = true;
+
+                            // Std./Tag farbig hervorheben
+                            sheet.Cell(zeile, 6).Style.Fill.BackgroundColor = farbe;
+
+                            zeile++;
+                            irgendwasGefunden = true;
+                        }
+                    }
+                }
+
+                if (!irgendwasGefunden)
+                {
+                    // Platzhalter-Zeile: keine Verletzungen
+                    var ok = sheet.Cell(zeile, 1);
+                    ok.Value = "(keine Tagesregel-Verletzungen)";
+                    ok.Style.Font.Italic = true;
+                    ok.Style.Font.FontColor = XLColor.Gray;
+                    zeile++;
+                }
+
+                zeile++; // Leerzeile zwischen Lösungen
+            }
+
+            sheet.Columns().AdjustToContents();
+            wb.Save();
+        }
+
+        // =====================================================
+        // FPK-F: Sheet mit "Fach/Klasse/Tag"-Kollisionen nach der
+        // ECHTEN Solver-Regel (Sum(x) <= 1 + hatDoppel), für alle Lösungen.
+        // Analog zu ExportiereDstdF / ExportiereTagesregelF. Nutzt direkt
+        // PlanValidator.Prüfe (Kategorie "Fach/Klasse/Tag (Doppel-Regel)"),
+        // damit Tabelle und Validator/Solver garantiert dieselbe Regel
+        // verwenden. Zeigt genau die Kollisionen, die "Fach pro Klasse
+        // pro Tag (max 2)" NICHT meldet (z.B. zwei Einzelstunden desselben
+        // Fachs in einer Klasse am selben Tag, auch über mehrere UNrn).
+        // =====================================================
+        /// <summary>
+        /// Schreibt/aktualisiert das Sheet "FPK-F" mit allen (Klasse, Fach,
+        /// Tag)-Kombinationen, die die harte Solver-Regel verletzen.
+        /// Spalten: Klasse | Fach | Tag | Details
+        /// Jede Lösung erhält einen eigenen Block (Lösungsname als fette Überschrift).
+        /// </summary>
+        public static void ExportiereFachProKlasseF(
+            string excelPfad,
+            List<(string label, int[,] belegung, List<UnterrichtsBlock> blocks)> lösungen,
+            List<ZeitSlot> slots,
+            bool vorherLöschen = false)
+        {
+            if (lösungen == null || lösungen.Count == 0) return;
+
+            using var wb = new XLWorkbook(excelPfad);
+            const string sheetName = "FPK-F";
+
+            IXLWorksheet sheet;
+            if (vorherLöschen || !wb.Worksheets.Any(ws => ws.Name == sheetName))
+            {
+                if (wb.Worksheets.Any(ws => ws.Name == sheetName))
+                {
+                    sheet = wb.Worksheet(sheetName);
+                    sheet.Clear();
+                }
+                else
+                {
+                    sheet = wb.Worksheets.Add(sheetName);
+                }
+            }
+            else
+            {
+                sheet = wb.Worksheet(sheetName);
+                // Anfügen: eine Leerzeile nach letzter benutzter Zeile
+            }
+
+            int zeile = sheet.LastRowUsed()?.RowNumber() ?? 0;
+            if (zeile > 0) zeile += 2;
+            else zeile = 1;
+
+            var headerFarbe = XLColor.FromArgb(0xD6, 0xDC, 0xE4);
+            var trefferFarbe = XLColor.FromArgb(0xFF, 0xB3, 0x8A); // Coral-Ton
+
+            foreach (var (label, belegung, blocks) in lösungen)
+            {
+                // ── Lösungs-Kopfzeile ───────────────────────────────────
+                var kopf = sheet.Cell(zeile, 1);
+                kopf.Value = label;
+                kopf.Style.Font.Bold = true;
+                kopf.Style.Font.FontSize = 11;
+                kopf.Style.Fill.BackgroundColor = XLColor.LightBlue;
+                sheet.Range(zeile, 1, zeile, 8).Merge();
+                zeile++;
+
+                // ── Spaltenköpfe ─────────────────────────────────────────
+                string[] headers = { "Klasse", "Fach", "Tag", "Details" };
+                for (int c = 0; c < headers.Length; c++)
+                {
+                    var cell = sheet.Cell(zeile, c + 1);
+                    cell.Value = headers[c];
+                    cell.Style.Font.Bold = true;
+                    cell.Style.Fill.BackgroundColor = headerFarbe;
+                }
+                zeile++;
+
+                // ── Verletzungen ermitteln (dieselbe Regel wie Solver) ───
+                List<PlanValidator.Verletzung> fpk;
+                try
+                {
+                    fpk = PlanValidator.Prüfe(belegung, blocks, slots, null)
+                        .Where(v => v.Kategorie == "Fach/Klasse/Tag (Doppel-Regel)")
+                        .OrderBy(v => v.Klasse).ThenBy(v => v.Fach).ThenBy(v => v.Tag)
+                        .ToList();
+                }
+                catch
+                {
+                    fpk = new List<PlanValidator.Verletzung>();
+                }
+
+                if (fpk.Count == 0)
+                {
+                    var ok = sheet.Cell(zeile, 1);
+                    ok.Value = "(keine Fach/Klasse/Tag-Kollisionen)";
+                    ok.Style.Font.Italic = true;
+                    ok.Style.Font.FontColor = XLColor.Gray;
+                    zeile++;
+                }
+                else
+                {
+                    foreach (var v in fpk)
+                    {
+                        sheet.Cell(zeile, 1).Value = v.Klasse;
+                        sheet.Cell(zeile, 2).Value = v.Fach;
+                        sheet.Cell(zeile, 3).Value = v.Tag;
+                        sheet.Cell(zeile, 4).Value = v.Details;
+
+                        for (int c = 1; c <= 4; c++)
+                            sheet.Cell(zeile, c).Style.Fill.BackgroundColor = trefferFarbe;
+
+                        zeile++;
+                    }
+                }
+
+                zeile++; // Leerzeile zwischen Lösungen
+            }
+
+            sheet.Columns().AdjustToContents();
+            wb.Save();
+        }
     }
 }

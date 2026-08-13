@@ -1013,6 +1013,12 @@ namespace Stundenplan_V2
                     .ToList();
                 LehrerDiagnose.ExportiereDstdF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: true);
 
+                // TR-F: Tagesregel-Verletzungen je Lehrer / UNr (echter Plan)
+                LehrerDiagnose.ExportiereTagesregelF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: true);
+
+                // FPK-F: Fach/Klasse/Tag-Kollisionen nach echter Solver-Regel
+                LehrerDiagnose.ExportiereFachProKlasseF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: true);
+
                 // Gesicherte Lösungen wurden durch das Leeren oben aus dem
                 // Diag-/Dstd-F-Sheet entfernt — hier sofort wieder anhängen,
                 // damit sie dauerhaft zum Vergleich verfügbar bleiben.
@@ -1313,6 +1319,12 @@ namespace Stundenplan_V2
                         .ToList();
                     LehrerDiagnose.ExportiereDstdF(excelPfad, dstdFDaten6, input.Slots, vorherLöschen: true);
 
+                    // TR-F: Tagesregel-Verletzungen je Lehrer / UNr (echter Plan)
+                    LehrerDiagnose.ExportiereTagesregelF(excelPfad, dstdFDaten6, input.Slots, vorherLöschen: true);
+
+                    // FPK-F: Fach/Klasse/Tag-Kollisionen nach echter Solver-Regel
+                    LehrerDiagnose.ExportiereFachProKlasseF(excelPfad, dstdFDaten6, input.Slots, vorherLöschen: true);
+
                     ErgaenzeDiagnoseFuerGesicherte();
                 }
                 catch { /* Diagnose-Fehler ignorieren */ }
@@ -1538,6 +1550,12 @@ namespace Stundenplan_V2
                         .Select(sol => (sol.label, sol.belegung, sol.blocks))
                         .ToList();
                     LehrerDiagnose.ExportiereDstdF(excelPfad, dstdFDaten9, input.Slots, vorherLöschen: true);
+
+                    // TR-F: Tagesregel-Verletzungen je Lehrer / UNr (echter Plan)
+                    LehrerDiagnose.ExportiereTagesregelF(excelPfad, dstdFDaten9, input.Slots, vorherLöschen: true);
+
+                    // FPK-F: Fach/Klasse/Tag-Kollisionen nach echter Solver-Regel
+                    LehrerDiagnose.ExportiereFachProKlasseF(excelPfad, dstdFDaten9, input.Slots, vorherLöschen: true);
 
                     ErgaenzeDiagnoseFuerGesicherte();
                 }
@@ -2694,6 +2712,20 @@ namespace Stundenplan_V2
                         new List<(string, int[,], List<UnterrichtsBlock>)> { (neuLabel, belegung, blocks) },
                         input.Slots,
                         vorherLöschen: false);
+
+                    // TR-F: nur die neu hinzugefügte Lösung anhängen
+                    LehrerDiagnose.ExportiereTagesregelF(
+                        excelPfad,
+                        new List<(string, int[,], List<UnterrichtsBlock>)> { (neuLabel, belegung, blocks) },
+                        input.Slots,
+                        vorherLöschen: false);
+
+                    // FPK-F: nur die neu hinzugefügte Lösung anhängen
+                    LehrerDiagnose.ExportiereFachProKlasseF(
+                        excelPfad,
+                        new List<(string, int[,], List<UnterrichtsBlock>)> { (neuLabel, belegung, blocks) },
+                        input.Slots,
+                        vorherLöschen: false);
                 }
                 catch (Exception ex)
                 {
@@ -3224,6 +3256,12 @@ namespace Stundenplan_V2
                     .Select(sol => (sol.label, sol.belegung, sol.blocks))
                     .ToList();
                 LehrerDiagnose.ExportiereDstdF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: false);
+
+                // TR-F: Tagesregel-Verletzungen der gesicherten Lösungen anhängen
+                LehrerDiagnose.ExportiereTagesregelF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: false);
+
+                // FPK-F: Fach/Klasse/Tag-Kollisionen der gesicherten Lösungen anhängen
+                LehrerDiagnose.ExportiereFachProKlasseF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: false);
             }
             catch (Exception ex)
             {
@@ -3325,6 +3363,76 @@ namespace Stundenplan_V2
                     {
                         // Blockende: bis zur nächsten Leerzeile (Trennzeile
                         // zwischen Lösungsblöcken) oder Sheet-Ende.
+                        int endZeile = lastRow;
+                        for (int r = kopfZeile + 1; r <= lastRow; r++)
+                        {
+                            if (sheet.Cell(r, 1).IsEmpty())
+                            {
+                                endZeile = r - 1;
+                                break;
+                            }
+                        }
+
+                        if (spaltenEntfernen)
+                            sheet.Rows(kopfZeile, endZeile).Delete();
+                        else
+                            sheet.Range(kopfZeile, 1, endZeile, 8).Clear();
+                    }
+                }
+
+                // ---- "TR-F": vertikaler Block, Label fett in Spalte A ----
+                //      (identisches Layout wie Dstd-F, siehe ExportiereTagesregelF)
+                if (wb.Worksheets.Any(ws => ws.Name == "TR-F"))
+                {
+                    var sheet = wb.Worksheet("TR-F");
+                    int lastRow = sheet.LastRowUsed()?.RowNumber() ?? 1;
+                    int kopfZeile = -1;
+                    for (int r = 1; r <= lastRow; r++)
+                    {
+                        var z = sheet.Cell(r, 1);
+                        if (z.Style.Font.Bold && z.GetString().Trim() == label)
+                        {
+                            kopfZeile = r;
+                            break;
+                        }
+                    }
+                    if (kopfZeile > 0)
+                    {
+                        int endZeile = lastRow;
+                        for (int r = kopfZeile + 1; r <= lastRow; r++)
+                        {
+                            if (sheet.Cell(r, 1).IsEmpty())
+                            {
+                                endZeile = r - 1;
+                                break;
+                            }
+                        }
+
+                        if (spaltenEntfernen)
+                            sheet.Rows(kopfZeile, endZeile).Delete();
+                        else
+                            sheet.Range(kopfZeile, 1, endZeile, 8).Clear();
+                    }
+                }
+
+                // ---- "FPK-F": vertikaler Block, Label fett in Spalte A ----
+                //      (identisches Layout wie Dstd-F, siehe ExportiereFachProKlasseF)
+                if (wb.Worksheets.Any(ws => ws.Name == "FPK-F"))
+                {
+                    var sheet = wb.Worksheet("FPK-F");
+                    int lastRow = sheet.LastRowUsed()?.RowNumber() ?? 1;
+                    int kopfZeile = -1;
+                    for (int r = 1; r <= lastRow; r++)
+                    {
+                        var z = sheet.Cell(r, 1);
+                        if (z.Style.Font.Bold && z.GetString().Trim() == label)
+                        {
+                            kopfZeile = r;
+                            break;
+                        }
+                    }
+                    if (kopfZeile > 0)
+                    {
                         int endZeile = lastRow;
                         for (int r = kopfZeile + 1; r <= lastRow; r++)
                         {
@@ -3661,6 +3769,12 @@ namespace Stundenplan_V2
                         .Select(sol => (sol.label, sol.belegung, sol.blocks))
                         .ToList();
                     LehrerDiagnose.ExportiereDstdF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: true);
+
+                    // TR-F: Tagesregel-Verletzungen je Lehrer / UNr (echter Plan)
+                    LehrerDiagnose.ExportiereTagesregelF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: true);
+
+                    // FPK-F: Fach/Klasse/Tag-Kollisionen nach echter Solver-Regel
+                    LehrerDiagnose.ExportiereFachProKlasseF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: true);
 
                     ErgaenzeDiagnoseFuerGesicherte();
                 }

@@ -7610,7 +7610,8 @@ namespace Stundenplan_V2
                 // Nicht an eine einzelne UNr gebundene Verletzung (UNr = 0),
                 // z.B. "Fach pro Klasse pro Tag": über Fach + Klasse + Tag zuordnen,
                 // damit sie auch bei Aufteilung auf mehrere UNrn markiert wird.
-                if (v.UNr == 0 && v.Kategorie == "Fach pro Klasse pro Tag")
+                if (v.UNr == 0 && (v.Kategorie == "Fach pro Klasse pro Tag"
+                                   || v.Kategorie == "Fach/Klasse/Tag (Doppel-Regel)"))
                     return v.Tag == tag
                         && block.Teile.Any(t => t.Fach == v.Fach
                                                 && t.Klassen.Contains(v.Klasse));
