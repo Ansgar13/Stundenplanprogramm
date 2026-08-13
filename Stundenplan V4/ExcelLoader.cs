@@ -915,7 +915,7 @@ namespace Stundenplan_V2
             {
                 // KEIN Ignore-Filter: ignorierte Zeilen zaehlen hier bewusst mit.
                 string fach = GetOptional(row, header1, "Fach").Trim();
-                if (!fach.Equals("Vber", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!IstVberFach(fach)) continue;
 
                 string lehrer = GetOptional(row, header1, "Lehrer").Trim();
                 if (string.IsNullOrEmpty(lehrer)) continue;
@@ -1147,6 +1147,18 @@ namespace Stundenplan_V2
         // So verschwinden -3/-2-Markierungen nicht mehr still, nur weil die Zelle
         // als Dezimalzahl dargestellt wird. Rückgabe: true, wenn eine Zahl gelesen
         // wurde.
+        // Erkennt das Fach "Vber" der Vertretungsbereitschaft, mit optionaler
+        // laufender Nummer: "Vber", "Vber1", … "Vber65" (case-insensitiv).
+        // Bewusst KEIN StartsWith allein — "Vberatung" o. Ä. soll nicht greifen;
+        // nach "Vber" darf nur noch eine reine Ziffernfolge (oder nichts) folgen.
+        private static bool IstVberFach(string fach)
+        {
+            if (string.IsNullOrEmpty(fach)) return false;
+            if (!fach.StartsWith("Vber", StringComparison.OrdinalIgnoreCase)) return false;
+            string rest = fach.Substring(4);
+            return rest.Length == 0 || rest.All(c => c >= '0' && c <= '9');
+        }
+
         private static bool LiesGanzzahlTolerant(IXLCell cell, out int wert)
         {
             wert = 0;
