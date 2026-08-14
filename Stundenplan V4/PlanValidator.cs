@@ -363,11 +363,15 @@ namespace Stundenplan_V2
                         for (int b = 0; b < B; b++)
                         {
                             if (belegung[b, s] != 1) continue;
-                            if (!blocks[b].Teile.Any(t => t.FachGruppe == kv.Key)) continue;
+                            // bedarf = Teile dieser Fachgruppe im Block (0 = nicht
+                            // beteiligt). Jeder Teil zaehlt einzeln, siehe
+                            // UnterrichtsBlock.FachraumBedarf.
+                            int bedarf = blocks[b].FachraumBedarf(kv.Key);
+                            if (bedarf == 0) continue;
                             string wg = (blocks[b].WochenGruppe ?? "").Trim();
                             if (wg == "A" || wg == "B") hatWochenTrennung = true;
-                            if (wg != "B") anzahlA++; // A-Woche + ohne Wochengruppe
-                            if (wg != "A") anzahlB++; // B-Woche + ohne Wochengruppe
+                            if (wg != "B") anzahlA += bedarf; // A-Woche + ohne Wochengruppe
+                            if (wg != "A") anzahlB += bedarf; // B-Woche + ohne Wochengruppe
                         }
 
                         if (!hatWochenTrennung)
@@ -378,7 +382,7 @@ namespace Stundenplan_V2
                                 verletzungen.Add(new Verletzung(
                                     "Fachraum-Limit", slots[s].WTag, slots[s].Stunde, 0,
                                     "", kv.Key,
-                                    $"{anzahlA} Blöcke der Fachgruppe '{kv.Key}' gleichzeitig in {TagStunde(s)} (max {kv.Value})"));
+                                    $"{anzahlA} Fachraum-Belegungen der Fachgruppe '{kv.Key}' gleichzeitig in {TagStunde(s)} (max {kv.Value})"));
                             continue;
                         }
 
@@ -386,12 +390,12 @@ namespace Stundenplan_V2
                             verletzungen.Add(new Verletzung(
                                 "Fachraum-Limit", slots[s].WTag, slots[s].Stunde, 0,
                                 "", kv.Key,
-                                $"{anzahlA} Blöcke der Fachgruppe '{kv.Key}' gleichzeitig in {TagStunde(s)} (A-Woche, max {kv.Value})"));
+                                $"{anzahlA} Fachraum-Belegungen der Fachgruppe '{kv.Key}' gleichzeitig in {TagStunde(s)} (A-Woche, max {kv.Value})"));
                         if (anzahlB > kv.Value)
                             verletzungen.Add(new Verletzung(
                                 "Fachraum-Limit", slots[s].WTag, slots[s].Stunde, 0,
                                 "", kv.Key,
-                                $"{anzahlB} Blöcke der Fachgruppe '{kv.Key}' gleichzeitig in {TagStunde(s)} (B-Woche, max {kv.Value})"));
+                                $"{anzahlB} Fachraum-Belegungen der Fachgruppe '{kv.Key}' gleichzeitig in {TagStunde(s)} (B-Woche, max {kv.Value})"));
                     }
             }
 

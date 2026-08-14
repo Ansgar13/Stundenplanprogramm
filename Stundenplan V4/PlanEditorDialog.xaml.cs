@@ -1921,7 +1921,7 @@ namespace Stundenplan_V2
                 var bloecke = BloeckeDerFachgruppeImSlot(s, gruppe);
                 if (bloecke.Count == 0) continue;
                 stunden += bloecke.Count;
-                var (anzahlA, anzahlB, _) = ZaehleFachgruppe(bloecke);
+                var (anzahlA, anzahlB, _) = ZaehleFachgruppe(bloecke, gruppe);
                 if (limit.HasValue && (anzahlA > limit.Value || anzahlB > limit.Value))
                     ueberbucht++;
             }
@@ -2026,7 +2026,7 @@ namespace Stundenplan_V2
             border.Background = Brushes.White;
 
             var bloecke = BloeckeDerFachgruppeImSlot(slotIdx, gruppe);
-            var (anzahlA, anzahlB, hatWochenTrennung) = ZaehleFachgruppe(bloecke);
+            var (anzahlA, anzahlB, hatWochenTrennung) = ZaehleFachgruppe(bloecke, gruppe);
             int? limit = FachgruppenLimit(gruppe);
 
             bool ueberbucht = limit.HasValue && (anzahlA > limit.Value || anzahlB > limit.Value);
@@ -2235,7 +2235,7 @@ namespace Stundenplan_V2
             if (bloecke.Count == 0) return;
 
             int? limit = FachgruppenLimit(gruppe);
-            var (anzahlA, anzahlB, _) = ZaehleFachgruppe(bloecke);
+            var (anzahlA, anzahlB, _) = ZaehleFachgruppe(bloecke, gruppe);
             int belegt = Math.Max(anzahlA, anzahlB);
             bool ueberbucht = limit.HasValue && (anzahlA > limit.Value || anzahlB > limit.Value);
 
@@ -2321,8 +2321,32 @@ namespace Stundenplan_V2
         // unabhaengig vom KKK, da es um die physische Raumkapazitaet geht.
         // hatWochenTrennung = false bedeutet anzahlA == anzahlB; dann genuegt
         // eine einzige Zahl im Badge.
-        private (int anzahlA, int anzahlB, bool hatWochenTrennung) ZaehleFachgruppe(List<int> bloecke)
-            => ZaehleAB(bloecke, _blocks);
+        //
+        // GEWICHTET nach Teilen der Fachgruppe (UnterrichtsBlock.FachraumBedarf):
+        // ein Block mit zwei Sport-Teilen unter einer UNr zaehlt hier 2 Raeume,
+        // exakt wie im Solver (RoomConstraint) und in PlanValidator. Deshalb
+        // braucht die Zaehlung die Fachgruppe und nutzt NICHT mehr das generische
+        // ZaehleAB (das je Block 1 zaehlt und weiterhin fuer die Parallel-Badges
+        // der Lehrer-/Klassenansicht gilt).
+        private (int anzahlA, int anzahlB, bool hatWochenTrennung) ZaehleFachgruppe(
+            List<int> bloecke, string gruppe)
+        {
+            int anzahlA = 0, anzahlB = 0;
+            bool hatWochenTrennung = false;
+            if (bloecke == null || _blocks == null || gruppe == null)
+                return (0, 0, false);
+
+            foreach (int b in bloecke)
+            {
+                int bedarf = _blocks[b].FachraumBedarf(gruppe);
+                if (bedarf == 0) continue;
+                string wg = (_blocks[b].WochenGruppe ?? "").Trim();
+                if (wg == "A" || wg == "B") hatWochenTrennung = true;
+                if (wg != "B") anzahlA += bedarf;
+                if (wg != "A") anzahlB += bedarf;
+            }
+            return (anzahlA, anzahlB, hatWochenTrennung);
+        }
 
         // Raum-Limit der Gruppe aus Spalte B des Sheets FGR. null = kein
         // Eintrag: die Gruppe stammt dann aus der Fallback-Zuordnung in
@@ -4345,7 +4369,7 @@ namespace Stundenplan_V2
                 int enge = int.MinValue;
                 foreach (int s in blockSlots)
                 {
-                    var (anzahlA, anzahlB, _) = ZaehleFachgruppe(BloeckeDerFachgruppeImSlot(s, g));
+                    var (anzahlA, anzahlB, _) = ZaehleFachgruppe(BloeckeDerFachgruppeImSlot(s, g), g);
                     enge = Math.Max(enge, Math.Max(anzahlA, anzahlB) - limit.Value);
                 }
                 if (enge > besteEnge) { besteEnge = enge; beste = g; }
@@ -7499,15 +7523,17 @@ namespace Stundenplan_V2
                 foreach (var fg in block.Teile.Select(t => t.FachGruppe).Where(f => !string.IsNullOrEmpty(f)).Distinct())
                 {
                     if (!_fachraumLimit.TryGetValue(fg, out int limit)) continue;
-                    // zähle Blöcke dieser FachGruppe im Slot (A/B getrennt)
+                    // zähle Fachraum-Bedarf dieser FachGruppe im Slot (A/B getrennt),
+                    // je Teil einzeln (UnterrichtsBlock.FachraumBedarf)
                     int anzahlA = 0, anzahlB = 0;
                     for (int b2 = 0; b2 < _blocks.Count; b2++)
                     {
                         if (probe[b2, s] != 1) continue;
-                        if (!_blocks[b2].Teile.Any(t => t.FachGruppe == fg)) continue;
+                        int bedarf = _blocks[b2].FachraumBedarf(fg);
+                        if (bedarf == 0) continue;
                         string wg2 = (_blocks[b2].WochenGruppe ?? "").Trim();
-                        if (wg2 != "B") anzahlA++;
-                        if (wg2 != "A") anzahlB++;
+                        if (wg2 != "B") anzahlA += bedarf;
+                        if (wg2 != "A") anzahlB += bedarf;
                     }
                     if (anzahlA > limit || anzahlB > limit)
                         return "Fachraum '" + fg + "' ueberbelegt in " + _slots[s].WTag + " Std" + _slots[s].Stunde

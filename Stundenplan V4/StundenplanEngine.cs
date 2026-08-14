@@ -4925,22 +4925,26 @@ namespace Stundenplan_V2
                         {
                             var beteiligte = slot.FixUNrn
                                 .Select(unr => blocks.FirstOrDefault(b => b.UNr == unr))
-                                .Where(b => b != null && b.Teile.Any(t => t.FachGruppe == fg.Key))
+                                .Where(b => b != null && b.FachraumBedarf(fg.Key) > 0)
                                 .ToList();
                             if (beteiligte.Count == 0) continue;
 
                             var beteiligteA = beteiligte.Where(b => (b.WochenGruppe ?? "").Trim() != "B").ToList();
                             var beteiligteB = beteiligte.Where(b => (b.WochenGruppe ?? "").Trim() != "A").ToList();
 
-                            if (beteiligteA.Count > fg.Value)
+                            // Summierter Raumbedarf (je Teil einzeln), nicht Blockanzahl.
+                            int bedarfA = beteiligteA.Sum(b => b.FachraumBedarf(fg.Key));
+                            int bedarfB = beteiligteB.Sum(b => b.FachraumBedarf(fg.Key));
+
+                            if (bedarfA > fg.Value)
                                 DiagLog(log,
                                     $"  [Diagnose] Fix-Fachraum-Konflikt: {slot.WTag} Std.{slot.Stunde}: " +
-                                    $"{beteiligteA.Count} fixierte Blöcke der Fachgruppe '{fg.Key}' gleichzeitig " +
+                                    $"{bedarfA} Fachraum-Belegungen der Fachgruppe '{fg.Key}' gleichzeitig " +
                                     $"(A-Woche, max {fg.Value}) → {string.Join(", ", beteiligteA.Select(b => $"UNr{b.UNr}"))}");
-                            if (beteiligteB.Count > fg.Value)
+                            if (bedarfB > fg.Value)
                                 DiagLog(log,
                                     $"  [Diagnose] Fix-Fachraum-Konflikt: {slot.WTag} Std.{slot.Stunde}: " +
-                                    $"{beteiligteB.Count} fixierte Blöcke der Fachgruppe '{fg.Key}' gleichzeitig " +
+                                    $"{bedarfB} Fachraum-Belegungen der Fachgruppe '{fg.Key}' gleichzeitig " +
                                     $"(B-Woche, max {fg.Value}) → {string.Join(", ", beteiligteB.Select(b => $"UNr{b.UNr}"))}");
                         }
                     }

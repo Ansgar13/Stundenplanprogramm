@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Stundenplan_V2
 {
@@ -26,6 +27,19 @@ namespace Stundenplan_V2
 
         public Dictionary<string, int> TagesDoppelstunden { get; set; } = new();
         public List<TeilUnterricht> Teile { get; set; } = new();
+
+        // FACHRAUM-BEDARF dieses Blocks fuer eine Fachgruppe.
+        // Zaehlt JEDEN Teilunterricht dieser Fachgruppe einzeln: zwei
+        // Sportunterrichte unter derselben UNr belegen damit auch zwei
+        // Sport-Fachraeume (frueher zaehlte der Block pauschal 1×, egal
+        // wie viele Teile). Ein Teil mit mehreren Klassen bleibt EIN
+        // Bedarf (= ein Raum), da es ein gemeinsamer Unterricht ist.
+        // Diese Methode ist die EINZIGE Definition der Zaehlung — Solver
+        // (RoomConstraint), Pruefung (PlanValidator), Diagnose
+        // (StundenplanEngine) und Editor (PlanEditorDialog) rufen sie auf,
+        // damit alle vier exakt gleich rechnen.
+        public int FachraumBedarf(string fachGruppe)
+            => Teile.Count(t => t.FachGruppe == fachGruppe);
     }
     public class TeilUnterricht
     {
