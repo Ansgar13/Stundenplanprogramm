@@ -2093,10 +2093,8 @@ namespace Stundenplan_V2
 
         // Auslastungs-Badge fuer die obere rechte Ecke: "2/2", bei A/B-Wochen im
         // Slot "2/2 A · 1/2 B", ohne FGR-Limit "2/–". Farbe: gruen unter Limit,
-        // orange genau am Limit, rot darueber, grau ohne Limit. Anklickbar
-        // (Handzeiger + Klick oeffnet die volle Belegungsliste); sitzt nur in
-        // der oberen rechten Ecke, die Bloecke darunter (Margin 14 px) bleiben
-        // frei klickbar.
+        // orange genau am Limit, rot darueber, grau ohne Limit. Nimmt keine
+        // Mausereignisse an, damit der Klick auf die Bloecke darunter durchgeht.
         private Border BaueFachgruppenBadge(
             int anzahlA, int anzahlB, bool hatWochenTrennung, int? limit, bool ueberbucht, bool voll)
         {
@@ -2119,6 +2117,7 @@ namespace Stundenplan_V2
                 Margin = new Thickness(0, 0, 1, 0),
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Top,
+                IsHitTestVisible = false,
                 Child = new TextBlock
                 {
                     Text = text,
