@@ -845,6 +845,84 @@ namespace Stundenplan_V2
                 }
             }
 
+            // =====================================================
+            // 13. SPÄTER TAG -> SPÄTERER BEGINN AM FOLGETAG (pro Lehrer)
+            // Marker -3 (hart) / -2 (weich) aus dem Sheet StD, Schwellen und
+            // Std./Tag-Gating aus PM — alles über die PlanBewertung-Statics
+            // (beim Einlesen gesetzt), damit Editor-Meldungen exakt dieselbe
+            // Regel abbilden wie Solver und Bewertung. Eine Meldung pro
+            // verletztem Tagespaar; Kategorie "Spät-Früh".
+            // =====================================================
+            {
+                var sfM3 = PlanBewertung.LehrerSpätFrühMinus3;
+                var sfM2 = PlanBewertung.LehrerSpätFrühMinus2;
+                bool sfAktiv = (sfM3 != null && sfM3.Count > 0) || (sfM2 != null && sfM2.Count > 0);
+                var tageSf = slots.Select(s => s.WTag).Distinct().ToList();
+
+                if (sfAktiv && tageSf.Count >= 2)
+                {
+                    int spätGrenze = PlanBewertung.SpätGrenzeFolgetag;
+                    int frühGrenze = PlanBewertung.FrühGrenzeFolgetag;
+                    int schwelle   = PlanBewertung.SchwelleStdTagVortag;
+
+                    var alleLehrerSf = blocks.SelectMany(b => b.Teile.Select(t => t.Lehrer))
+                        .Distinct().ToList();
+
+                    foreach (var lehrer in alleLehrerSf)
+                    {
+                        bool ist3 = sfM3 != null && sfM3.Contains(lehrer);
+                        bool ist2 = sfM2 != null && sfM2.Contains(lehrer);
+                        if (ist3) ist2 = false;      // -3 hat Vorrang
+                        if (!ist3 && !ist2) continue;
+
+                        var lehrerBlöcke = Enumerable.Range(0, B)
+                            .Where(b => blocks[b].Teile.Any(t => t.Lehrer == lehrer))
+                            .ToList();
+                        if (lehrerBlöcke.Count == 0) continue;
+
+                        for (int d = 0; d < tageSf.Count - 1; d++)
+                        {
+                            string tagD = tageSf[d];
+                            string tagN = tageSf[d + 1];
+
+                            // Std./Tag am Vortag (Gating)
+                            if (schwelle > 0)
+                            {
+                                int stdTag = 0;
+                                foreach (var b in lehrerBlöcke)
+                                    for (int s = 0; s < S; s++)
+                                        if (slots[s].WTag == tagD && belegung[b, s] == 1)
+                                            stdTag++;
+                                if (stdTag <= schwelle) continue;
+                            }
+
+                            bool spätTag = false;
+                            for (int s = 0; s < S && !spätTag; s++)
+                            {
+                                if (slots[s].WTag != tagD || slots[s].Stunde < spätGrenze) continue;
+                                foreach (var b in lehrerBlöcke)
+                                    if (belegung[b, s] == 1) { spätTag = true; break; }
+                            }
+                            if (!spätTag) continue;
+
+                            bool frühStart = false;
+                            for (int s = 0; s < S && !frühStart; s++)
+                            {
+                                if (slots[s].WTag != tagN || slots[s].Stunde > frühGrenze) continue;
+                                foreach (var b in lehrerBlöcke)
+                                    if (belegung[b, s] == 1) { frühStart = true; break; }
+                            }
+                            if (!frühStart) continue;
+
+                            verletzungen.Add(new Verletzung(
+                                "Spät-Früh", tagN, 0, 0, lehrer, "",
+                                $"{tagD} späte Stunde (ab Std. {spätGrenze}) → {tagN} früher Beginn " +
+                                $"(bis Std. {frühGrenze}). " + (ist3 ? "-3 (hart)." : "-2 (Wunsch).")));
+                        }
+                    }
+                }
+            }
+
             return verletzungen;
         }
 
@@ -955,6 +1033,7 @@ namespace Stundenplan_V2
                     ["Std.Folge"]       = XLColor.Thistle,
                     ["DoppelHohl"]      = XLColor.Wheat,
                     ["DreifachHohl"]    = XLColor.PeachPuff,
+                    ["Spät-Früh"]       = XLColor.LightSalmon,
                 };
 
                 for (int i = 0; i < verletzungen.Count; i++)

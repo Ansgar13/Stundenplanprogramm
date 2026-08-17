@@ -62,7 +62,13 @@ public class OrToolsSolver : ISolver
             lehrerFreieStundenMinus2: input.LehrerFreieStundenMinus2,
             lehrerFreieStundenMinus3: input.LehrerFreieStundenMinus3,
             doppelSelberTagFaecher: input.DoppelSelberTagFaecher,
-            strafeDoppelSelberTag: input.StrafeDoppelSelberTag
+            strafeDoppelSelberTag: input.StrafeDoppelSelberTag,
+            spätGrenzeFolgetag: input.SpätGrenzeFolgetag,
+            frühGrenzeFolgetag: input.FrühGrenzeFolgetag,
+            strafeSpätFrüh: input.StrafeSpätFrüh,
+            schwelleStdTagVortag: input.SchwelleStdTagVortag,
+            lehrerSpätFrühMinus2: input.LehrerSpätFrühMinus2,
+            lehrerSpätFrühMinus3: input.LehrerSpätFrühMinus3
         );
     }
 }

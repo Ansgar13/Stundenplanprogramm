@@ -35,6 +35,11 @@ namespace Stundenplan_V2
         public int DoppelstundenVerletzungen { get; set; }
         public int TagesregelVerletzungen { get; set; }
 
+        // Verstöße "später Tag -> späterer Beginn am Folgetag" (pro Lehrer).
+        // Zählt sowohl -3- als auch -2-markierte Lehrer (fürs Diag-Bild); die
+        // Strafe fließt nur für -2 in StrafeGesamt ein (-3 ist hart).
+        public int SpätFrühVerstöße { get; set; }
+
         // Anzahl später ("bad") päd. Einheiten, an denen der Lehrer mit
         // mindestens einem Block beteiligt ist (siehe
         // PlanBewertung.SpaetePaedEinheitenJeLehrer).
@@ -272,6 +277,68 @@ namespace Stundenplan_V2
                     }
                 }
 
+                // Spät-Früh-Verstöße (später Tag -> späterer Beginn am Folgetag).
+                // Schwellen/Sets/Gating aus den PlanBewertung-Statics, damit Diag,
+                // Solver und Bewertung dieselbe Regel zählen. -3 und -2 werden fürs
+                // Diag-Bild gezählt; nur -2 fließt in StrafeGesamt (Statik-Strafe).
+                {
+                    var sfM3 = PlanBewertung.LehrerSpätFrühMinus3;
+                    var sfM2 = PlanBewertung.LehrerSpätFrühMinus2;
+                    bool ist3 = sfM3 != null && sfM3.Contains(lehrer);
+                    bool ist2 = sfM2 != null && sfM2.Contains(lehrer);
+                    if (ist3) ist2 = false;
+
+                    if ((ist3 || ist2) && tage.Count >= 2)
+                    {
+                        int spätGrenze = PlanBewertung.SpätGrenzeFolgetag;
+                        int frühGrenze = PlanBewertung.FrühGrenzeFolgetag;
+                        int schwelle   = PlanBewertung.SchwelleStdTagVortag;
+
+                        var lehrerBlöcke = Enumerable.Range(0, blocks.Count)
+                            .Where(b => blocks[b].Teile.Any(t => t.Lehrer == lehrer))
+                            .ToList();
+
+                        var tageL = tage.ToList();
+                        for (int d = 0; d < tageL.Count - 1 && lehrerBlöcke.Count > 0; d++)
+                        {
+                            string tagD = tageL[d];
+                            string tagN = tageL[d + 1];
+
+                            if (schwelle > 0)
+                            {
+                                int stdTag = 0;
+                                foreach (var b in lehrerBlöcke)
+                                    for (int s = 0; s < slots.Count; s++)
+                                        if (slots[s].WTag == tagD && belegung[b, s] == 1)
+                                            stdTag++;
+                                if (stdTag <= schwelle) continue;
+                            }
+
+                            bool spätTag = false;
+                            for (int s = 0; s < slots.Count && !spätTag; s++)
+                            {
+                                if (slots[s].WTag != tagD || slots[s].Stunde < spätGrenze) continue;
+                                foreach (var b in lehrerBlöcke)
+                                    if (belegung[b, s] == 1) { spätTag = true; break; }
+                            }
+                            if (!spätTag) continue;
+
+                            bool frühStart = false;
+                            for (int s = 0; s < slots.Count && !frühStart; s++)
+                            {
+                                if (slots[s].WTag != tagN || slots[s].Stunde > frühGrenze) continue;
+                                foreach (var b in lehrerBlöcke)
+                                    if (belegung[b, s] == 1) { frühStart = true; break; }
+                            }
+                            if (frühStart) diag.SpätFrühVerstöße++;
+                        }
+
+                        // Nur der weiche (-2) Fall trägt zur Strafe bei.
+                        if (ist2 && diag.SpätFrühVerstöße > 0)
+                            diag.StrafeGesamt += diag.SpätFrühVerstöße * PlanBewertung.StrafeSpätFrüh;
+                    }
+                }
+
                 result.Add(diag);
             }
 
@@ -294,8 +361,9 @@ namespace Stundenplan_V2
             IXLWorksheet sheet;
             int startCol = 2;
             // Spalten je Loesung: Basis 8 (+2 fuer -2-Meldung) +2 fuer Dstd-V/TR-V
-            // +1 fuer "Spät päd." (späte päd. Einheiten je Lehrer).
-            int colsProLösung = (meldeLeherMinus2 ? 10 : 8) + 2 + 1;
+            // +1 fuer "Spät päd." (späte päd. Einheiten je Lehrer)
+            // +1 fuer "Spät-Früh" (Verstöße später Tag -> früher Folgetag).
+            int colsProLösung = (meldeLeherMinus2 ? 10 : 8) + 2 + 1 + 1;
             var existierendeLabels = new HashSet<string>();
 
             if (vorherLöschen)
@@ -395,6 +463,7 @@ namespace Stundenplan_V2
                 sheet.Cell(2, col + vOff    ).Value = "Dstd-V";
                 sheet.Cell(2, col + vOff + 1).Value = "TR-V";
                 sheet.Cell(2, col + vOff + 2).Value = "Spät päd.";
+                sheet.Cell(2, col + vOff + 3).Value = "Spät-Früh";
 
                 for (int c = col; c < col + colsProLösung; c++)
                 {
@@ -456,6 +525,11 @@ namespace Stundenplan_V2
                     sheet.Cell(zeile, col + vOff + 2).Value = d.SpaetePaedEinheiten;
                     if (d.SpaetePaedEinheiten > 0)
                         sheet.Cell(zeile, col + vOff + 2).Style.Fill.BackgroundColor = XLColor.LightPink;
+
+                    // Spät-Früh: Verstöße "später Tag -> früher Beginn am Folgetag"
+                    sheet.Cell(zeile, col + vOff + 3).Value = d.SpätFrühVerstöße;
+                    if (d.SpätFrühVerstöße > 0)
+                        sheet.Cell(zeile, col + vOff + 3).Style.Fill.BackgroundColor = XLColor.LightSalmon;
 
                     // Auffälligkeiten rot markieren
                     if (d.HohlstundenZuViel || d.HohlstundenZuWenig)
@@ -553,6 +627,13 @@ namespace Stundenplan_V2
                 sheet.Cell(sumZeile, col + vOffS + 2).Style.Font.Bold = true;
                 sheet.Cell(sumZeile, col + vOffS + 2).Style.Fill.BackgroundColor =
                     sumSpaet > 0 ? XLColor.LightPink : XLColor.LightGray;
+
+                // Summe Spät-Früh-Verstöße
+                int sumSpaetFrueh = diags.Sum(d => d.SpätFrühVerstöße);
+                sheet.Cell(sumZeile, col + vOffS + 3).Value = sumSpaetFrueh;
+                sheet.Cell(sumZeile, col + vOffS + 3).Style.Font.Bold = true;
+                sheet.Cell(sumZeile, col + vOffS + 3).Style.Fill.BackgroundColor =
+                    sumSpaetFrueh > 0 ? XLColor.LightSalmon : XLColor.LightGray;
             }
 
             // Zwei zusätzliche Zeilen direkt unter "Summe": Anzahl der späten

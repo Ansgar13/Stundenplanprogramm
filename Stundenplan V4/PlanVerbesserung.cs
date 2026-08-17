@@ -623,6 +623,15 @@ namespace Stundenplan_V2
             if (aktiveStdRegeln != null && aktiveStdRegeln.Count > 0)
                 StundenplanEngine.AddHarteStdRegeln(model, x, blocks, slots, B, S, aktiveStdRegeln);
 
+            // Harte "Später Tag -> späterer Beginn am Folgetag"-Regel (-3-Lehrer):
+            // dieselbe Formulierung wie im echten Solver, damit die Verbesserung
+            // keine harte -3-Vorgabe verletzt. -2 bleibt weich über die
+            // Zielbewertung (BerechneZiel/BerechneMinus2Strafe).
+            if (input.LehrerSpätFrühMinus3 != null && input.LehrerSpätFrühMinus3.Count > 0)
+                StundenplanEngine.AddHarteSpätFrüh(model, x, blocks, slots, B, S,
+                    input.LehrerSpätFrühMinus3,
+                    input.SpätGrenzeFolgetag, input.FrühGrenzeFolgetag, input.SchwelleStdTagVortag);
+
             var qualExpr = LinearExpr.Sum(earlyVars)
                 - LinearExpr.Sum(lateVars) * input.GewichtSpäteDoppel;
             model.Maximize(qualExpr);
@@ -1133,7 +1142,8 @@ namespace Stundenplan_V2
                         input.HauptfachSpätAnteilProzent,
                         input.LehrerStammdaten,
                         grenzeSpäteLk: input.GrenzeSpäteLk).Quality
-                        - BerechneMinus2Strafe(belegung, blocks, slots, input);
+                        - BerechneMinus2Strafe(belegung, blocks, slots, input)
+                        - BerechneSpätFrühHartStrafe(belegung, blocks, slots, input);
 
                 case VerbesserungsZiel.SpäteDoppelstunden:
                     return -PlanBewertung.Berechne(belegung, blocks, slots, 1, 1, 0).Late;
@@ -1289,13 +1299,80 @@ namespace Stundenplan_V2
         // =====================================================
         // -2-STRAFE: Slot-Verletzungen + fehlende freie Tage
         // =====================================================
-        private static int BerechneMinus2Strafe(
+        // Harte -3-Spät-Früh-Verstöße als sehr hohe Strafe, damit die
+        // heuristischen Verbesserer (SA/HillClimbing) nicht in einen Zustand
+        // wandern, der die harte Regel verletzt. Der Ausgangsplan kommt vom
+        // Solver und ist verstoßfrei; diese Strafe hält ihn so. Der LNS-
+        // Teilsolver erzwingt die Regel zusätzlich als echte Constraint.
+        // -2 (weich) ist hier NICHT enthalten — das läuft bereits über
+        // PlanBewertung.Berechne().Quality (Statik-Strafe).
+        private const int SpätFrühHartStrafe = 1_000_000;
+
+        private static int BerechneSpätFrühHartStrafe(
             int[,] belegung,
             List<UnterrichtsBlock> blocks,
             List<ZeitSlot> slots,
             StundenplanInput input)
         {
-            if (input.StrafeMinus2Verletzungen == 0) return 0;
+            var hart = input.LehrerSpätFrühMinus3;
+            if (hart == null || hart.Count == 0) return 0;
+
+            int B = blocks.Count, S = slots.Count;
+            var tage = slots.Select(s => s.WTag).Distinct().ToList();
+            if (tage.Count < 2) return 0;
+
+            int spätGrenze = input.SpätGrenzeFolgetag;
+            int frühGrenze = input.FrühGrenzeFolgetag;
+            int schwelle   = input.SchwelleStdTagVortag;
+
+            int verstöße = 0;
+            foreach (var lehrer in hart)
+            {
+                var lehrerBlöcke = Enumerable.Range(0, B)
+                    .Where(b => blocks[b].Teile.Any(t => t.Lehrer == lehrer)).ToList();
+                if (lehrerBlöcke.Count == 0) continue;
+
+                for (int d = 0; d < tage.Count - 1; d++)
+                {
+                    string tagD = tage[d], tagN = tage[d + 1];
+
+                    if (schwelle > 0)
+                    {
+                        int stdTag = 0;
+                        foreach (var b in lehrerBlöcke)
+                            for (int s = 0; s < S; s++)
+                                if (slots[s].WTag == tagD && belegung[b, s] == 1) stdTag++;
+                        if (stdTag <= schwelle) continue;
+                    }
+
+                    bool spätTag = false;
+                    for (int s = 0; s < S && !spätTag; s++)
+                    {
+                        if (slots[s].WTag != tagD || slots[s].Stunde < spätGrenze) continue;
+                        foreach (var b in lehrerBlöcke)
+                            if (belegung[b, s] == 1) { spätTag = true; break; }
+                    }
+                    if (!spätTag) continue;
+
+                    bool frühStart = false;
+                    for (int s = 0; s < S && !frühStart; s++)
+                    {
+                        if (slots[s].WTag != tagN || slots[s].Stunde > frühGrenze) continue;
+                        foreach (var b in lehrerBlöcke)
+                            if (belegung[b, s] == 1) { frühStart = true; break; }
+                    }
+                    if (frühStart) verstöße++;
+                }
+            }
+            return verstöße * SpätFrühHartStrafe;
+        }
+
+        private static int BerechneMinus2Strafe(
+            int[,] belegung,
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            StundenplanInput input)
+        {            if (input.StrafeMinus2Verletzungen == 0) return 0;
 
             int strafe = 0;
             int B = blocks.Count;

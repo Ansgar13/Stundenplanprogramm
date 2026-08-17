@@ -18,6 +18,7 @@ namespace Stundenplan_V2
         public int StdTagVerletzungen;   // Unterrichtstage ausserhalb Std./Tag-Bereich (weiche Strafe (B))
         public int SpäteLkStunden;
         public int HauptfachSpätÜberschuss;
+        public int SpätFrühVerstöße;   // -2-Verstöße "später Tag -> späterer Beginn am Folgetag"
         public List<string> Details = new();
     }
 
@@ -53,6 +54,25 @@ namespace Stundenplan_V2
         // ALLE Spät-Funktionen: späte päd. Einheiten, späte LK-Stunden und das
         // Verbot später Doppelstunden.
         public static int ErsteSpaeteStunde { get; set; } = 6;
+
+        // =====================================================
+        // KONFIGURATION "SPÄTER TAG -> SPÄTERER BEGINN AM FOLGETAG"
+        // Wird EINMAL beim Excel-Einlesen gesetzt und von Berechne() gelesen,
+        // damit die angezeigte Qualität die -2-Verstöße identisch zum Solver
+        // bestraft (analog zu den übrigen Spät-Statics). Die -3-Lehrer sind
+        // hart und in einem gültigen Plan verstoßfrei — sie fließen nicht in
+        // die Qualität ein.
+        // =====================================================
+        public static int SpätGrenzeFolgetag { get; set; } = 8;
+        public static int FrühGrenzeFolgetag { get; set; } = 1;
+        public static int StrafeSpätFrüh { get; set; } = 0;
+        // Gating: Regel greift nur bei > SchwelleStdTagVortag Stunden am Vortag.
+        // 0 = kein zusätzliches Gating.
+        public static int SchwelleStdTagVortag { get; set; } = 0;
+        public static HashSet<string> LehrerSpätFrühMinus2 { get; set; }
+            = new HashSet<string>();
+        public static HashSet<string> LehrerSpätFrühMinus3 { get; set; }
+            = new HashSet<string>();
 
         // -------------------------------------------------
         // Eine (zusammengefasste) pädagogische Einheit.
@@ -539,6 +559,73 @@ namespace Stundenplan_V2
             }
 
             // -------------------------------------------------
+            // Später Tag -> späterer Beginn am Folgetag (-2-Verstöße)
+            // Nur die WEICHEN (-2) Verstöße werden gezählt — genau die, die
+            // auch der Solver bestraft. Die -3-Lehrer sind hart und in einem
+            // gültigen Plan verstoßfrei; sie fließen NICHT in die Qualität ein.
+            // Schwellen/Sets kommen aus den statischen Konfigurationsfeldern
+            // (beim Excel-Laden gesetzt), damit Anzeige und Solver-Ziel für
+            // diese Strafe identisch bleiben.
+            // -------------------------------------------------
+            if (StrafeSpätFrüh != 0 && LehrerSpätFrühMinus2 != null &&
+                LehrerSpätFrühMinus2.Count > 0 && tage.Count >= 2)
+            {
+                foreach (var name in LehrerSpätFrühMinus2)
+                {
+                    // -3 hat Vorrang (falls beide gesetzt) und ist hart -> nicht zählen.
+                    if (LehrerSpätFrühMinus3 != null && LehrerSpätFrühMinus3.Contains(name))
+                        continue;
+
+                    var lehrerBlöcke = Enumerable.Range(0, B)
+                        .Where(b => blocks[b].Teile.Any(t => t.Lehrer == name))
+                        .ToList();
+                    if (lehrerBlöcke.Count == 0) continue;
+
+                    for (int d = 0; d < tage.Count - 1; d++)
+                    {
+                        string tagD = tage[d];
+                        string tagN = tage[d + 1];
+
+                        // Gating: Regel gilt nur bei > Schwelle Stunden am Vortag d.
+                        if (SchwelleStdTagVortag > 0)
+                        {
+                            int stdTag = 0;
+                            foreach (var b in lehrerBlöcke)
+                                for (int s = 0; s < S; s++)
+                                    if (slots[s].WTag == tagD && belegung[b, s] == 1)
+                                        stdTag++;
+                            if (stdTag <= SchwelleStdTagVortag) continue;
+                        }
+
+                        bool spätTag = false;
+                        for (int s = 0; s < S && !spätTag; s++)
+                        {
+                            if (slots[s].WTag != tagD || slots[s].Stunde < SpätGrenzeFolgetag) continue;
+                            foreach (var b in lehrerBlöcke)
+                                if (belegung[b, s] == 1) { spätTag = true; break; }
+                        }
+                        if (!spätTag) continue;
+
+                        bool frühStart = false;
+                        for (int s = 0; s < S && !frühStart; s++)
+                        {
+                            if (slots[s].WTag != tagN || slots[s].Stunde > FrühGrenzeFolgetag) continue;
+                            foreach (var b in lehrerBlöcke)
+                                if (belegung[b, s] == 1) { frühStart = true; break; }
+                        }
+
+                        if (frühStart)
+                        {
+                            result.SpätFrühVerstöße++;
+                            result.Details.Add(
+                                $"Spät-Früh: {name} — {tagD} spät (ab Std. {SpätGrenzeFolgetag}), " +
+                                $"{tagN} früher Beginn (bis Std. {FrühGrenzeFolgetag}).");
+                        }
+                    }
+                }
+            }
+
+            // -------------------------------------------------
             // Qualitätsfunktion – vollständig
             // -------------------------------------------------
             result.Quality =
@@ -550,7 +637,8 @@ namespace Stundenplan_V2
                 - result.DreifachHohlstunden   *  strafeDreifachHohl
                 - result.StdTagVerletzungen    *  strafeEinzel
                 - result.SpäteLkStunden        *  strafeSpäteLk
-                - result.HauptfachSpätÜberschuss * strafeHauptfachSpät;
+                - result.HauptfachSpätÜberschuss * strafeHauptfachSpät
+                - result.SpätFrühVerstöße      *  StrafeSpätFrüh;
 
             return result;
         }

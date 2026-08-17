@@ -334,6 +334,11 @@ namespace Stundenplan_V2
             var lehrerFreieStundenMinus2 = new HashSet<string>();
             var lehrerFreieStundenMinus3 = new HashSet<string>();
 
+            // "Später Tag -> späterer Beginn am Folgetag" (pro Lehrer opt-in).
+            // Marker -3 (hart) / -2 (Strafe) aus der StD-Spalte "Gewicht Spät-Früh".
+            var lehrerSpätFrühMinus2 = new HashSet<string>();
+            var lehrerSpätFrühMinus3 = new HashSet<string>();
+
             // Zusaetzliche freie Tage kommen jetzt aus den Spalten "FT" und
             // "FT-Gewicht" im Sheet "StD" (siehe StAMMDATEN-Block weiter unten).
             // Die fruehere eigene Tabelle "FT" wird bewusst NICHT mehr gelesen.
@@ -419,6 +424,11 @@ namespace Stundenplan_V2
             int  strafeMinus2 = 0;
             int hauptfachSpätAnteil = 50;
             int strafeHauptfachSpät = 0;
+            // "Später Tag -> späterer Beginn am Folgetag" — globale Schwellen (PM).
+            int spätGrenzeFolgetag = 8;   // ab dieser Stunde gilt ein Tag als "spät"
+            int frühGrenzeFolgetag = 1;   // bis zu dieser Stunde gilt ein Beginn als "zu früh"
+            int strafeSpätFrüh = 0;       // Strafe je -2-Verstoß
+            int schwelleStdTagVortag = 0; // Regel greift nur bei > Schwelle Stunden am Vortag
             var grossePausen = new List<(int stundeVor, int stundeNach)>();
 
             // Späte-päd.-Einheiten-Konfiguration:
@@ -461,6 +471,39 @@ namespace Stundenplan_V2
                                 wert.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)),
                                 StringComparer.OrdinalIgnoreCase);
                     }
+                    // "Später Tag (Vortag) -> späterer Beginn am Folgetag": PM-Zeilen.
+                    // Semantik der Tag-Bezeichnung:
+                    //   Spätgrenze  gilt am VORTAG   (Tag mit den späten Stunden)
+                    //   Frühgrenze  gilt am FOLGETAG (Tag, der später beginnen soll)
+                    //   Schwelle Std./Tag gilt am VORTAG
+                    // Erkennung akzeptiert bewusst "vortag" UND "folgetag"
+                    // (abwärtskompatibel), unterschieden über spät/früh + grenze
+                    // bzw. std. "Grenze späte LK" hat weder vortag noch folgetag
+                    // und wird daher NICHT hier abgefangen.
+                    //   "Strafe Spät-Früh ..."  -> strafeSpätFrüh
+                    //   "Spätgrenze Vortag"      -> spätGrenzeFolgetag (interner Name)
+                    //   "Frühgrenze Folgetag"    -> frühGrenzeFolgetag
+                    else if (label.Contains("strafe") &&
+                             (label.Contains("folgetag") || label.Contains("vortag") ||
+                              label.Contains("spät-früh") || label.Contains("spaet-frueh") ||
+                              label.Contains("spätfrüh") || label.Contains("spaetfrueh")))
+                        LiesPmInt(wert, labelRoh, ref strafeSpätFrüh, pmWarnungen);
+                    // "Schwelle Std./Tag Vortag" — Gating. Über "vortag" + "std"/
+                    // "stunden" abgegrenzt (enthält kein "grenze", kollidiert also
+                    // nicht mit den Grenze-Zeilen unten).
+                    else if (label.Contains("vortag") &&
+                             (label.Contains("std") || label.Contains("stunden")))
+                        LiesPmInt(wert, labelRoh, ref schwelleStdTagVortag, pmWarnungen);
+                    else if ((label.Contains("folgetag") || label.Contains("vortag")) &&
+                             (label.Contains("spätgrenze") || label.Contains("spaetgrenze") ||
+                              (label.Contains("spät") && label.Contains("grenze")) ||
+                              (label.Contains("spaet") && label.Contains("grenze"))))
+                        LiesPmInt(wert, labelRoh, ref spätGrenzeFolgetag, pmWarnungen);
+                    else if ((label.Contains("folgetag") || label.Contains("vortag")) &&
+                             (label.Contains("frühgrenze") || label.Contains("fruehgrenze") ||
+                              (label.Contains("früh") && label.Contains("grenze")) ||
+                              (label.Contains("frueh") && label.Contains("grenze"))))
+                        LiesPmInt(wert, labelRoh, ref frühGrenzeFolgetag, pmWarnungen);
                     // "Strafe Fächer-Doppelstd. selber Tag" — Gewicht zur Regel
                     // unten. ZUERST prüfen (spezifischer), da beide Labels "dopp"
                     // und "tag" enthalten. Enthält kein "spät"/"verbot", kollidiert
@@ -686,6 +729,14 @@ namespace Stundenplan_V2
                 int colFsTage    = FindeFsTageSpalte(headerSD, colFsGewicht);
                 int colFsBereich = FindeFsBereichSpalte(headerSD, colFsGewicht, colFsTage);
 
+                // ---- Spät-Früh-Marker aus StD ----
+                // Eine Spalte "Gewicht Spät-Früh" mit -3 (hart) / -2 (Strafe)
+                // meldet den Lehrer für die Regel "später Tag -> späterer Beginn
+                // am Folgetag" an. Unmissverständlich anhand beider Tokens
+                // (spät + früh) gesucht, damit sie nicht mit den Gewicht-Spalten
+                // der freien Tage/Stunden verwechselt wird.
+                int colSfGewicht = FindeSfGewichtSpalte(headerSD);
+
                 // Zelle als gesetzt werten: "x", "X", "ja", "1" — wie es
                 // "Sperr." und "( _ )" in diesem Sheet schon handhaben.
                 bool IstGesetzt(IXLRow row, int col)
@@ -884,6 +935,33 @@ namespace Stundenplan_V2
                         }
                     }
 
+                    // ---- Spät-Früh-Marker (später Tag -> späterer Beginn) ----
+                    // -3 = hart, -2 = Strafe. Andere/leere Werte werden ignoriert
+                    // (nur gemeldet, wenn überhaupt etwas Ungültiges eingetragen war).
+                    if (colSfGewicht > 0)
+                    {
+                        bool sfMarkerVorhanden =
+                            LiesGanzzahlTolerant(row.Cell(colSfGewicht), out int sfMarker);
+
+                        if (sfMarkerVorhanden && sfMarker == -3)
+                        {
+                            lehrerSpätFrühMinus3.Add(name);
+                            ftDiagnose.Add($"StD/SF: '{name}' -> später Tag ⇒ späterer Beginn am " +
+                                           "Folgetag, -3 (ZWINGEND/hart).");
+                        }
+                        else if (sfMarkerVorhanden && sfMarker == -2)
+                        {
+                            lehrerSpätFrühMinus2.Add(name);
+                            ftDiagnose.Add($"StD/SF: '{name}' -> später Tag ⇒ späterer Beginn am " +
+                                           "Folgetag, -2 (Wunsch; Strafe).");
+                        }
+                        else if (sfMarkerVorhanden && sfMarker != 0)
+                        {
+                            ftDiagnose.Add($"StD/SF: '{name}' verworfen " +
+                                           $"(Gewicht {sfMarker} ist weder -3 noch -2).");
+                        }
+                    }
+
                     lehrerStammdaten[name] = sd;
                 }
 
@@ -957,6 +1035,16 @@ namespace Stundenplan_V2
             PlanBewertung.AusgenommeneSpaetFaecher = ausgenommeneSpaetFaecher;
             PlanBewertung.SpaetSchwelleJeWst = spaetSchwelle;
 
+            // Spät-Früh-Regel: Schwellen + Marker-Sets für die parallele Zählung
+            // in PlanBewertung.Berechne (damit angezeigte Qualität und Solver-Ziel
+            // für die -2-Verstöße identisch bleiben — analog zu den Spät-Statics).
+            PlanBewertung.SpätGrenzeFolgetag  = spätGrenzeFolgetag;
+            PlanBewertung.FrühGrenzeFolgetag  = frühGrenzeFolgetag;
+            PlanBewertung.StrafeSpätFrüh      = strafeSpätFrüh;
+            PlanBewertung.SchwelleStdTagVortag = schwelleStdTagVortag;
+            PlanBewertung.LehrerSpätFrühMinus2 = lehrerSpätFrühMinus2;
+            PlanBewertung.LehrerSpätFrühMinus3 = lehrerSpätFrühMinus3;
+
             return new StundenplanInput
             {
                 Blocks = unterrichtListe,
@@ -1004,6 +1092,12 @@ namespace Stundenplan_V2
                 SpaetSchwelleJeWst = spaetSchwelle,
                 DoppelSelberTagFaecher = doppelSelberTagFaecher,
                 StrafeDoppelSelberTag = strafeDoppelSelberTag,
+                SpätGrenzeFolgetag = spätGrenzeFolgetag,
+                FrühGrenzeFolgetag = frühGrenzeFolgetag,
+                StrafeSpätFrüh = strafeSpätFrüh,
+                SchwelleStdTagVortag = schwelleStdTagVortag,
+                LehrerSpätFrühMinus2 = lehrerSpätFrühMinus2,
+                LehrerSpätFrühMinus3 = lehrerSpätFrühMinus3,
             };
         }
 
@@ -1490,6 +1584,28 @@ namespace Stundenplan_V2
                 if (k.Contains("gewicht") || k.Contains("gew")) continue;
                 bool hatFsBezug = k.Contains("freiestunden");
                 if (hatFsBezug && (k.Contains("tage") || k.Contains("anzahl"))) return kv.Value;
+            }
+            return -1;
+        }
+
+        // ---- Spät-Früh-Gewicht-Spalte -----------------------------------
+        // Eindeutig über BEIDE Tokens (spät + früh) erkannt, damit sie sich
+        // nicht mit den Gewicht-Spalten der freien Tage/Stunden überschneidet.
+        private static int FindeSfGewichtSpalte(Dictionary<string, int> map)
+        {
+            string[] exakt = { "Gewicht Spät-Früh", "Gewicht SpätFrüh", "Gewicht Spaet-Frueh",
+                               "Spät-Früh", "Spaet-Frueh", "SF-Gewicht", "SF Gewicht" };
+            foreach (var name in exakt)
+                foreach (var kv in map)
+                    if (string.Equals(kv.Key.Trim(), name, StringComparison.OrdinalIgnoreCase))
+                        return kv.Value;
+
+            foreach (var kv in map)
+            {
+                string k = NormHeader(kv.Key);
+                bool hatSpät = k.Contains("spät") || k.Contains("spaet");
+                bool hatFrüh = k.Contains("früh") || k.Contains("frueh");
+                if (hatSpät && hatFrüh) return kv.Value;
             }
             return -1;
         }

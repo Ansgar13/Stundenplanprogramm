@@ -438,7 +438,14 @@ namespace Stundenplan_V2
             // mitFreeHour=false => Band-Constraint nicht im Modell (eigene Stufe).
             Dictionary<string, int> extraFreieStunden = null,
             bool mitFreeHour = false,
-            Dictionary<string, (int von, int bis)> freieStundenBereich = null)
+            Dictionary<string, (int von, int bis)> freieStundenBereich = null,
+            // Spät-Früh (harte -3-Regel) — eigene Diagnosestufe; null/false =
+            // nicht im Modell. spätGrenze/frühGrenze/schwelle wie im echten Solver.
+            bool mitSpätFrüh = false,
+            HashSet<string> lehrerSpätFrühMinus3Hart = null,
+            int spätGrenzeFolgetag = 8,
+            int frühGrenzeFolgetag = 1,
+            int schwelleStdTagVortag = 0)
         {
             // Abbruch VOR dem Modellbau: die Diagnose-Kaskade ruft diese Methode
             // reihum mit über einem Dutzend Flag-Kombinationen auf. Ohne diese
@@ -798,6 +805,11 @@ namespace Stundenplan_V2
                 FreeHourConstraint.Add(model, x, freeBand, blocks, slots, lehrerListeH, tageListeH, freieStundenBereich, B);
             }
 
+            // === OPTIONAL: Spät-Früh (harte -3-Regel) ===
+            if (mitSpätFrüh && lehrerSpätFrühMinus3Hart != null && lehrerSpätFrühMinus3Hart.Count > 0)
+                AddHarteSpätFrüh(model, x, blocks, slots, B, S,
+                    lehrerSpätFrühMinus3Hart, spätGrenzeFolgetag, frühGrenzeFolgetag, schwelleStdTagVortag);
+
             // === OPTIONAL: Fach pro Klasse pro Tag max 2 ===
             if (mitFachProKlasseProTag)
             {
@@ -1063,6 +1075,84 @@ namespace Stundenplan_V2
 
                 if (sd.HohlWocheHart && sd.HohlStdMax.HasValue && hohlVarsLehrer.Count > 0)
                     model.Add(LinearExpr.Sum(hohlVarsLehrer) <= sd.HohlStdMax.Value);
+            }
+        }
+
+        // =====================================================
+        // Harte "Später Tag -> späterer Beginn am Folgetag"-Regel für die
+        // gelisteten Lehrer (nur die -3-/harten). Formulierung IDENTISCH zum
+        // weichen Zweig in PlanenIntern (gleiche Schwellen, gleiches Std./Tag-
+        // Gating), damit Diagnose- und Verbesserungs-Modelle exakt dieselbe
+        // Härte abbilden. Baut eigene Hilfs-Booleans auf dem übergebenen x[B,S].
+        // =====================================================
+        internal static void AddHarteSpätFrüh(
+            CpModel model, BoolVar[,] x,
+            List<UnterrichtsBlock> blocks, List<ZeitSlot> slots, int B, int S,
+            HashSet<string> lehrerHart,
+            int spätGrenzeFolgetag, int frühGrenzeFolgetag, int schwelleStdTagVortag)
+        {
+            if (lehrerHart == null || lehrerHart.Count == 0) return;
+
+            var tageListe = slots.Select(s => s.WTag).Distinct().ToList();
+            if (tageListe.Count < 2) return;
+
+            var lehrerListe = blocks.SelectMany(b => b.Teile)
+                .Select(t => t.Lehrer).Distinct().ToList();
+
+            for (int l = 0; l < lehrerListe.Count; l++)
+            {
+                string name = lehrerListe[l];
+                if (!lehrerHart.Contains(name)) continue;
+
+                var lehrerBlöcke = Enumerable.Range(0, B)
+                    .Where(b => blocks[b].Teile.Any(t => t.Lehrer == name))
+                    .ToList();
+                if (lehrerBlöcke.Count == 0) continue;
+
+                for (int d = 0; d < tageListe.Count - 1; d++)
+                {
+                    string tagD = tageListe[d];
+                    string tagN = tageListe[d + 1];
+
+                    var spätSlots = Enumerable.Range(0, S)
+                        .Where(s => slots[s].WTag == tagD && slots[s].Stunde >= spätGrenzeFolgetag)
+                        .ToList();
+                    var frühSlots = Enumerable.Range(0, S)
+                        .Where(s => slots[s].WTag == tagN && slots[s].Stunde <= frühGrenzeFolgetag)
+                        .ToList();
+                    if (spätSlots.Count == 0 || frühSlots.Count == 0) continue;
+
+                    var spätLits = lehrerBlöcke
+                        .SelectMany(b => spätSlots.Select(s => x[b, s])).ToList();
+                    var spätTag = model.NewBoolVar($"dsf_spaet_{l}_{d}");
+                    model.Add(LinearExpr.Sum(spätLits) >= 1).OnlyEnforceIf(spätTag);
+                    model.Add(LinearExpr.Sum(spätLits) == 0).OnlyEnforceIf(spätTag.Not());
+
+                    var frühLits = lehrerBlöcke
+                        .SelectMany(b => frühSlots.Select(s => x[b, s])).ToList();
+                    var frühStart = model.NewBoolVar($"dsf_frueh_{l}_{d}");
+                    model.Add(LinearExpr.Sum(frühLits) >= 1).OnlyEnforceIf(frühStart);
+                    model.Add(LinearExpr.Sum(frühLits) == 0).OnlyEnforceIf(frühStart.Not());
+
+                    var triggerLits = new List<BoolVar> { spätTag };
+                    if (schwelleStdTagVortag > 0)
+                    {
+                        var stdTagLits = lehrerBlöcke
+                            .SelectMany(b => Enumerable.Range(0, S)
+                                .Where(s => slots[s].WTag == tagD)
+                                .Select(s => x[b, s]))
+                            .ToList();
+                        var stdTagSum = model.NewIntVar(0, stdTagLits.Count, $"dsf_stdtag_{l}_{d}");
+                        model.Add(stdTagSum == LinearExpr.Sum(stdTagLits));
+                        var vieleStdTag = model.NewBoolVar($"dsf_viele_{l}_{d}");
+                        model.Add(stdTagSum >= schwelleStdTagVortag + 1).OnlyEnforceIf(vieleStdTag);
+                        model.Add(stdTagSum <= schwelleStdTagVortag).OnlyEnforceIf(vieleStdTag.Not());
+                        triggerLits.Add(vieleStdTag);
+                    }
+
+                    var alle = new List<BoolVar>(triggerLits) { frühStart };
+                    model.Add(LinearExpr.Sum(alle) <= alle.Count - 1);
+                }
             }
         }
 
@@ -2185,7 +2275,12 @@ namespace Stundenplan_V2
             Dictionary<string, int> extraFreieStunden = null,
             Dictionary<string, (int von, int bis)> freieStundenBereich = null,
             HashSet<string> lehrerFreieStundenMinus2 = null,
-            HashSet<string> lehrerFreieStundenMinus3 = null)
+            HashSet<string> lehrerFreieStundenMinus3 = null,
+            // Spät-Früh (harte -3-Regel) — eigene Diagnosestufe, lehrerspezifisch.
+            HashSet<string> lehrerSpätFrühMinus3 = null,
+            int spätGrenzeFolgetag = 8,
+            int frühGrenzeFolgetag = 1,
+            int schwelleStdTagVortag = 0)
         {
             bool IstOK(CpSolverStatus st) => st == CpSolverStatus.Optimal || st == CpSolverStatus.Feasible;
 
@@ -2321,12 +2416,19 @@ namespace Stundenplan_V2
                 if (extraFreieStundenHart.Count == 0) { extraFreieStundenHart = null; freieStundenBereichHart = null; }
             }
 
+            // Spät-Früh: nur die -3-Lehrer sind hart (einzige Quelle für
+            // Infeasibilität dieser Regel). Leere Menge => Stufe entfällt.
+            HashSet<string> spätFrühHart = null;
+            if (lehrerSpätFrühMinus3 != null && lehrerSpätFrühMinus3.Count > 0)
+                spätFrühHart = new HashSet<string>(lehrerSpätFrühMinus3);
+
             // Jetzt steht fest, welche Stufen überhaupt laufen.
             stufenGesamt = 6
                 + ((grossePausen != null && grossePausen.Count > 0) ? 1 : 0)
                 + (verbotSpäteDoppel ? 1 : 0)
                 + ((stdRegelnHart != null && stdRegelnHart.Count > 0) ? 1 : 0)
                 + (extraFreieStundenHart != null ? 1 : 0)
+                + (spätFrühHart != null ? 1 : 0)
                 + (verbotBadUnitsLehrer != null ? 1 : 0);
 
             // ============================================================
@@ -2361,7 +2463,8 @@ namespace Stundenplan_V2
                 bool mitStdHart = true,
                 bool mitKeine3InFolge = true,
                 bool mitVerbotBadUnits = true,
-                bool mitFreeHourHart = true)
+                bool mitFreeHourHart = true,
+                bool mitSpätFrüh = true)
                 => LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                     mitKlassenSperren: mitKlassenSperren,
                     fachraumLimit: fachraumLimit, mitRäume: mitRäume,
@@ -2378,6 +2481,11 @@ namespace Stundenplan_V2
                     extraFreieStunden: mitFreeHourHart ? extraFreieStundenHart : null,
                     mitFreeHour: mitFreeHourHart && extraFreieStundenHart != null,
                     freieStundenBereich: mitFreeHourHart ? freieStundenBereichHart : null,
+                    mitSpätFrüh: mitSpätFrüh && spätFrühHart != null,
+                    lehrerSpätFrühMinus3Hart: mitSpätFrüh ? spätFrühHart : null,
+                    spätGrenzeFolgetag: spätGrenzeFolgetag,
+                    frühGrenzeFolgetag: frühGrenzeFolgetag,
+                    schwelleStdTagVortag: schwelleStdTagVortag,
                     timeoutSekunden: tVoll);
 
             // Kandidat für den Auslass-Test. 'Rang' sortiert die Ausgabe nach
@@ -2414,6 +2522,11 @@ namespace Stundenplan_V2
                 stellhebel.Add((4, $"Verbot Bad units ({verbotBadUnitsLehrer.Count} Lehrer)",
                     "Sheet StD, Spalte 'Verbot Bad units'",
                     () => VollesModell(mitVerbotBadUnits: false)));
+
+            if (spätFrühHart != null)
+                stellhebel.Add((4, $"Harte Spät-Früh-Regel ({spätFrühHart.Count} Lehrer)",
+                    "Sheet StD, Spalte 'Gewicht Spät-Früh' (-3); Schwellen in Tabelle PM",
+                    () => VollesModell(mitSpätFrüh: false)));
 
             stellhebel.Add((5, "Zusammenhangs-Regel (max. 1 Einzelstunde/Tag)",
                 "greift nur für Unterrichte mit Dopp.Std.-Maximum > 0",
@@ -2971,6 +3084,77 @@ namespace Stundenplan_V2
                 }
             }
 
+            // Stufe: + harte Spät-Früh-Regel (-3-Lehrer). Lehrerspezifische
+            // Ursachensuche: erst die Familie testen, dann jeden -3-Lehrer
+            // einzeln (leave-one-in), um die konkreten Schuldigen zu benennen.
+            if (spätFrühHart != null && spätFrühHart.Count > 0)
+            {
+                var sSf = Schritt(StufenName("Harte Spät-Früh-Regel"), tVoll, () =>
+                    LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                    mitKlassenSperren: true,
+                    fachraumLimit: fachraumLimit, mitRäume: true,
+                    extraFreieTage: extraFreieTageHart, mitFreeDay: extraFreieTageHart != null,
+                    grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel, mitDoppelstunden: true,
+                    mitFachProKlasseProTag: true,
+                    stdRegelnHart: stdRegelnHart,
+                    verbotBadUnitsLehrer: verbotBadUnitsLehrer,
+                    extraFreieStunden: extraFreieStundenHart, mitFreeHour: extraFreieStundenHart != null,
+                    freieStundenBereich: freieStundenBereichHart,
+                    mitSpätFrüh: true, lehrerSpätFrühMinus3Hart: spätFrühHart,
+                    spätGrenzeFolgetag: spätGrenzeFolgetag,
+                    frühGrenzeFolgetag: frühGrenzeFolgetag,
+                    schwelleStdTagVortag: schwelleStdTagVortag,
+                    timeoutSekunden: tVoll));
+                if (StufeIstUrsache(sSf, "Harte Spät-Früh-Regel", tVoll))
+                {
+                    DiagLog(log, "  [Diagnose]    → Die harte Regel 'später Tag ⇒ späterer Beginn am " +
+                                 "Folgetag' (-3) ist für mind. einen Lehrer nicht erfüllbar.");
+
+                    var schuldige = new List<string>();
+                    int lehrerNr = 0;
+                    foreach (var lehrer in spätFrühHart)
+                    {
+                        if (AbbruchAngefordert) break;
+                        lehrerNr++;
+                        var einzeln = new HashSet<string> { lehrer };
+                        var sx = Schritt($"Spät-Früh einzeln {lehrerNr} von {spätFrühHart.Count}: {lehrer}", tVoll, () =>
+                            LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
+                            mitKlassenSperren: true,
+                            fachraumLimit: fachraumLimit, mitRäume: true,
+                            extraFreieTage: extraFreieTageHart, mitFreeDay: extraFreieTageHart != null,
+                            grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel, mitDoppelstunden: true,
+                            mitFachProKlasseProTag: true,
+                            stdRegelnHart: stdRegelnHart,
+                            verbotBadUnitsLehrer: verbotBadUnitsLehrer,
+                            extraFreieStunden: extraFreieStundenHart, mitFreeHour: extraFreieStundenHart != null,
+                            freieStundenBereich: freieStundenBereichHart,
+                            mitSpätFrüh: true, lehrerSpätFrühMinus3Hart: einzeln,
+                            spätGrenzeFolgetag: spätGrenzeFolgetag,
+                            frühGrenzeFolgetag: frühGrenzeFolgetag,
+                            schwelleStdTagVortag: schwelleStdTagVortag,
+                            timeoutSekunden: tVoll));
+                        if (sx == CpSolverStatus.Infeasible)
+                            schuldige.Add(lehrer);
+                    }
+
+                    if (schuldige.Count > 0)
+                    {
+                        DiagLog(log, "  [Diagnose]    Schon allein nicht erfüllbar (Spät-Früh, -3):");
+                        foreach (var z in schuldige)
+                            DiagLog(log, "  [Diagnose]      • " + z);
+                    }
+                    else
+                    {
+                        DiagLog(log, "  [Diagnose]    Kein Lehrer ist für sich allein unerfüllbar — erst die " +
+                                     "Kombination mit anderen Vorgaben blockiert.");
+                    }
+                    DiagLog(log, "  [Diagnose]    Prüfen: Spalte 'Gewicht Spät-Früh' (-3) im Sheet StD sowie " +
+                                 "'Spätgrenze/Frühgrenze/Schwelle Std./Tag Vortag' in Tabelle PM.");
+                    MeldeStellhebel("Harte Spät-Früh-Regel");
+                    return;
+                }
+            }
+
             if (gabUnentschieden)
             {
                 DiagLog(log, "  [Diagnose] ⚠ Keine Stufe konnte als bewiesen unlösbar nachgewiesen werden, " +
@@ -3076,7 +3260,15 @@ namespace Stundenplan_V2
             // "Fächer-Doppelstd. nicht am selben Tag" (weiche Regel, pro Klasse) —
             // optional, damit bestehende Aufrufer unveraendert bleiben.
             HashSet<string> doppelSelberTagFaecher = null,
-            int strafeDoppelSelberTag = 5)
+            int strafeDoppelSelberTag = 5,
+            // "Später Tag -> späterer Beginn am Folgetag" (pro Lehrer opt-in) —
+            // optional, damit bestehende Aufrufer unveraendert bleiben.
+            int spätGrenzeFolgetag = 8,
+            int frühGrenzeFolgetag = 1,
+            int strafeSpätFrüh = 0,
+            int schwelleStdTagVortag = 0,
+            HashSet<string> lehrerSpätFrühMinus2 = null,
+            HashSet<string> lehrerSpätFrühMinus3 = null)
         {
             // Diagnose-Buffer für aktuellen Lauf zurücksetzen
             _infeasibleDetails.Clear();
@@ -3086,6 +3278,8 @@ namespace Stundenplan_V2
             lehrerFreieStundenMinus2 ??= new HashSet<string>();
             lehrerFreieStundenMinus3 ??= new HashSet<string>();
             doppelSelberTagFaecher ??= new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            lehrerSpätFrühMinus2 ??= new HashSet<string>();
+            lehrerSpätFrühMinus3 ??= new HashSet<string>();
 
             // Abbruch-Token für diesen Lauf hinterlegen, damit auch die
             // Diagnose-Hilfsmethoden (LöseModellMitFlags & Co.) darauf
@@ -3190,6 +3384,12 @@ namespace Stundenplan_V2
                 lehrerFreieStundenMinus3: lehrerFreieStundenMinus3,
                 doppelSelberTagFaecher: doppelSelberTagFaecher,
                 strafeDoppelSelberTag: strafeDoppelSelberTag,
+                spätGrenzeFolgetag: spätGrenzeFolgetag,
+                frühGrenzeFolgetag: frühGrenzeFolgetag,
+                strafeSpätFrüh: strafeSpätFrüh,
+                schwelleStdTagVortag: schwelleStdTagVortag,
+                lehrerSpätFrühMinus2: lehrerSpätFrühMinus2,
+                lehrerSpätFrühMinus3: lehrerSpätFrühMinus3,
                 reporter: reporter, abbruch: abbruch, liveState: liveState,
                 darfDiagnose: diagnoseGate);
             if (reporter != null)
@@ -3349,6 +3549,12 @@ namespace Stundenplan_V2
                             lehrerFreieStundenMinus3: lehrerFreieStundenMinus3,
                             doppelSelberTagFaecher: doppelSelberTagFaecher,
                             strafeDoppelSelberTag: strafeDoppelSelberTag,
+                            spätGrenzeFolgetag: spätGrenzeFolgetag,
+                            frühGrenzeFolgetag: frühGrenzeFolgetag,
+                            strafeSpätFrüh: strafeSpätFrüh,
+                            schwelleStdTagVortag: schwelleStdTagVortag,
+                            lehrerSpätFrühMinus2: lehrerSpätFrühMinus2,
+                            lehrerSpätFrühMinus3: lehrerSpätFrühMinus3,
                             reporter: reporter, abbruch: abbruch, liveState: liveState);
                         if (lösungen.Count > 0)
                         {
@@ -3567,6 +3773,16 @@ namespace Stundenplan_V2
             // jedes weitere kostet strafeDoppelSelberTag Punkte.
             HashSet<string> doppelSelberTagFaecher = null,
             int strafeDoppelSelberTag = 5,
+            // "Später Tag -> späterer Beginn am Folgetag" (pro Lehrer opt-in):
+            //   -3 (lehrerSpätFrühMinus3) => harte Implikation
+            //   -2 (lehrerSpätFrühMinus2) => Strafe (strafeSpätFrüh)
+            // Schwellen global (spätGrenzeFolgetag / frühGrenzeFolgetag).
+            int spätGrenzeFolgetag = 8,
+            int frühGrenzeFolgetag = 1,
+            int strafeSpätFrüh = 0,
+            int schwelleStdTagVortag = 0,
+            HashSet<string> lehrerSpätFrühMinus2 = null,
+            HashSet<string> lehrerSpätFrühMinus3 = null,
             // Stabilitätsmodus (Button 11 "Minimale Änderungen"):
             // ausgangsplan  = blockIdx → slotIdx der Referenzlösung
             // stabilitaetsGewicht > 0 aktiviert Belohnung für beibehaltene Slots
@@ -4580,6 +4796,142 @@ namespace Stundenplan_V2
             }
 
             // =====================================================
+            // SPÄTER TAG -> SPÄTERER BEGINN AM FOLGETAG  (pro Lehrer)
+            // Hat ein opt-in-Lehrer an Tag d eine Stunde >= spätGrenzeFolgetag,
+            // soll er an Tag d+1 nicht vor frühGrenzeFolgetag beginnen.
+            //   -3 (lehrerSpätFrühMinus3): harte Implikation spätTag => !frühStart
+            //   -2 (lehrerSpätFrühMinus2): Strafe (strafeSpätFrüh) je Verstoß
+            // Tagespaare NUR innerhalb tageListe (über das Wochenende, also vom
+            // letzten zum ersten Wochentag, wird NICHT verknüpft). Reifizierung
+            // der Tages-Booleans analog späteLkVars; die "und"-Verknüpfung für
+            // den weichen Fall wird linear ausgedrückt (keine AddBoolAnd-API
+            // nötig), passend zum übrigen Modellstil.
+            // =====================================================
+            var spätFrühVars = new List<BoolVar>();
+            {
+                var sfMinus3 = lehrerSpätFrühMinus3 ?? new HashSet<string>();
+                var sfMinus2 = lehrerSpätFrühMinus2 ?? new HashSet<string>();
+                bool habeMinus3 = sfMinus3.Count > 0;
+                bool habeMinus2 = sfMinus2.Count > 0 && strafeSpätFrüh != 0;
+
+                // Unbedingte Diagnose: zeigt, was tatsächlich bei PlanenIntern
+                // ankommt (auch bei leerer Menge -> dann kommt die Regel gar
+                // nicht erst an, Ursache liegt vor dem Solver).
+                log?.Invoke($"  [Spät-Früh] eingehend: -3={sfMinus3.Count}" +
+                            (sfMinus3.Count > 0 ? $" ({string.Join(", ", sfMinus3)})" : "") +
+                            $", -2={sfMinus2.Count}, Strafe={strafeSpätFrüh}. " +
+                            $"Schwellen: Vortag spät ab {spätGrenzeFolgetag}, " +
+                            $"Folgetag früh bis {frühGrenzeFolgetag}, Std./Tag-Vortag > {schwelleStdTagVortag}.");
+
+                if ((habeMinus3 || habeMinus2) && tageListe.Count >= 2)
+                {
+                    for (int l = 0; l < lehrerListe.Count; l++)
+                    {
+                        string name = lehrerListe[l];
+                        bool ist3 = sfMinus3.Contains(name);
+                        bool ist2 = sfMinus2.Contains(name);
+                        // -3 hat Vorrang, falls (versehentlich) beide gesetzt sind.
+                        if (ist3) ist2 = false;
+                        if (!ist3 && !ist2) continue;
+                        if (ist2 && strafeSpätFrüh == 0) continue; // reine -2-Strafe wirkungslos
+
+                        // Blöcke dieses Lehrers (einmal ermittelt)
+                        var lehrerBlöcke = Enumerable.Range(0, B)
+                            .Where(b => blocks[b].Teile.Any(t => t.Lehrer == name))
+                            .ToList();
+                        if (lehrerBlöcke.Count == 0)
+                        {
+                            if (ist3) log?.Invoke($"  [Spät-Früh] {name}: KEINE Blöcke gefunden (Regel wirkungslos).");
+                            continue;
+                        }
+
+                        int sfConstraintsFuerLehrer = 0;   // Diagnose: erzeugte Tagespaar-Constraints
+                        for (int tp = 0; tp < tageListe.Count - 1; tp++)
+                        {
+                            string tagD = tageListe[tp];
+                            string tagN = tageListe[tp + 1];
+
+                            var spätSlots = Enumerable.Range(0, S)
+                                .Where(s => slots[s].WTag == tagD &&
+                                            slots[s].Stunde >= spätGrenzeFolgetag)
+                                .ToList();
+                            var frühSlots = Enumerable.Range(0, S)
+                                .Where(s => slots[s].WTag == tagN &&
+                                            slots[s].Stunde <= frühGrenzeFolgetag)
+                                .ToList();
+                            if (spätSlots.Count == 0 || frühSlots.Count == 0) continue;
+
+                            // spätTag: Lehrer hat >= 1 späte Stunde an Tag tp
+                            var spätLits = lehrerBlöcke
+                                .SelectMany(b => spätSlots.Select(s => x[b, s]))
+                                .ToList();
+                            var spätTag = model.NewBoolVar($"sf_spaet_{l}_{tp}");
+                            model.Add(LinearExpr.Sum(spätLits) >= 1).OnlyEnforceIf(spätTag);
+                            model.Add(LinearExpr.Sum(spätLits) == 0).OnlyEnforceIf(spätTag.Not());
+
+                            // frühStart: Lehrer hat >= 1 frühe Stunde an Tag tp+1
+                            var frühLits = lehrerBlöcke
+                                .SelectMany(b => frühSlots.Select(s => x[b, s]))
+                                .ToList();
+                            var frühStart = model.NewBoolVar($"sf_frueh_{l}_{tp}");
+                            model.Add(LinearExpr.Sum(frühLits) >= 1).OnlyEnforceIf(frühStart);
+                            model.Add(LinearExpr.Sum(frühLits) == 0).OnlyEnforceIf(frühStart.Not());
+
+                            // Optionales Gating: Regel gilt nur, wenn der Lehrer am
+                            // Vortag tp MEHR als schwelleStdTagVortag Stunden hat.
+                            // Bei Schwelle <= 0 entfällt das Gate (Auslöser bleibt
+                            // allein spätTag), sonst wird vieleStdTag Teil der UND-
+                            // Verknüpfung. Die Trigger-Literale werden gesammelt.
+                            var triggerLits = new List<BoolVar> { spätTag };
+                            if (schwelleStdTagVortag > 0)
+                            {
+                                var stdTagLits = lehrerBlöcke
+                                    .SelectMany(b => Enumerable.Range(0, S)
+                                        .Where(s => slots[s].WTag == tagD)
+                                        .Select(s => x[b, s]))
+                                    .ToList();
+                                // Höchstmögliche Stundenzahl am Tag begrenzt die Var.
+                                int maxStd = stdTagLits.Count;
+                                var stdTagSum = model.NewIntVar(0, maxStd, $"sf_stdtag_{l}_{tp}");
+                                model.Add(stdTagSum == LinearExpr.Sum(stdTagLits));
+                                var vieleStdTag = model.NewBoolVar($"sf_viele_{l}_{tp}");
+                                model.Add(stdTagSum >= schwelleStdTagVortag + 1).OnlyEnforceIf(vieleStdTag);
+                                model.Add(stdTagSum <= schwelleStdTagVortag).OnlyEnforceIf(vieleStdTag.Not());
+                                triggerLits.Add(vieleStdTag);
+                            }
+
+                            if (ist3)
+                            {
+                                // Hart: nicht (alle Trigger UND frühStart) zugleich.
+                                // Summe(Trigger + frühStart) <= (#Trigger+1) - 1.
+                                var alle = new List<BoolVar>(triggerLits) { frühStart };
+                                model.Add(LinearExpr.Sum(alle) <= alle.Count - 1);
+                                sfConstraintsFuerLehrer++;
+                            }
+                            else // ist2 (mit strafeSpätFrüh != 0)
+                            {
+                                // verstoß = (alle Trigger) UND frühStart (lineare AND-Reifizierung)
+                                var alle = new List<BoolVar>(triggerLits) { frühStart };
+                                var verstoß = model.NewBoolVar($"sf_verstoss_{l}_{tp}");
+                                foreach (var lit in alle)
+                                    model.Add((IntVar)verstoß <= (IntVar)lit);
+                                model.Add(LinearExpr.Sum(alle) - (alle.Count - 1) <= (IntVar)verstoß);
+                                spätFrühVars.Add(verstoß);
+                                sfConstraintsFuerLehrer++;
+                            }
+                        }
+
+                        if (ist3)
+                            log?.Invoke($"  [Spät-Früh] {name}: {sfConstraintsFuerLehrer} harte " +
+                                        "Tagespaar-Constraint(s) erzeugt" +
+                                        (sfConstraintsFuerLehrer == 0
+                                            ? " — Regel greift NICHT (keine späte Vortag- + frühe Folgetag-Kombination im Raster/Gating)."
+                                            : "."));
+                    }
+                }
+            }
+
+            // =====================================================
             // -2-LEHRER-WUNSCH: weiche Strafe / hartes Verbot
             // (a) Zeitslots mit LehrerWunsch == -2
             // (b) Fehlende freie Tage für Lehrer mit FreiTag-Minus2-Markierung
@@ -4666,7 +5018,9 @@ namespace Stundenplan_V2
                 strafeHohl, strafeDoppelHohl, strafeDreifachHohl, strafeEinzel,
                 strafeStdFolge, strafeSpäteLk, strafeHauptfachSpät, strafeMinus2Lehrer,
                 doppelSelberTagVars: doppelSelberTagVars,
-                strafeDoppelSelberTag: strafeDoppelSelberTag);
+                strafeDoppelSelberTag: strafeDoppelSelberTag,
+                spätFrühVars: spätFrühVars,
+                strafeSpätFrüh: strafeSpätFrüh);
 
             // Stabilitätsmodus: Für jeden Block, der im Ausgangsplan einen
             // bekannten Slot hat, wird das Beibehalten dieses Slots belohnt
@@ -5086,7 +5440,11 @@ namespace Stundenplan_V2
                                 extraFreieStunden: extraFreieStunden,
                                 freieStundenBereich: freieStundenBereich,
                                 lehrerFreieStundenMinus2: lehrerFreieStundenMinus2,
-                                lehrerFreieStundenMinus3: lehrerFreieStundenMinus3);
+                                lehrerFreieStundenMinus3: lehrerFreieStundenMinus3,
+                                lehrerSpätFrühMinus3: lehrerSpätFrühMinus3,
+                                spätGrenzeFolgetag: spätGrenzeFolgetag,
+                                frühGrenzeFolgetag: frühGrenzeFolgetag,
+                                schwelleStdTagVortag: schwelleStdTagVortag);
                         }
                         else
                         {
@@ -5236,7 +5594,11 @@ namespace Stundenplan_V2
                                     extraFreieStunden: extraFreieStunden,
                                     freieStundenBereich: freieStundenBereich,
                                     lehrerFreieStundenMinus2: lehrerFreieStundenMinus2,
-                                    lehrerFreieStundenMinus3: lehrerFreieStundenMinus3);
+                                    lehrerFreieStundenMinus3: lehrerFreieStundenMinus3,
+                                    lehrerSpätFrühMinus3: lehrerSpätFrühMinus3,
+                                    spätGrenzeFolgetag: spätGrenzeFolgetag,
+                                    frühGrenzeFolgetag: frühGrenzeFolgetag,
+                                    schwelleStdTagVortag: schwelleStdTagVortag);
                             }
                         }
                     }
@@ -5949,7 +6311,15 @@ namespace Stundenplan_V2
             // "Fächer-Doppelstd. nicht am selben Tag" — auch im Stabilitätsmodus,
             // damit der Nah-Klon dieselbe weiche Regel berücksichtigt.
             HashSet<string> doppelSelberTagFaecher = null,
-            int strafeDoppelSelberTag = 5)
+            int strafeDoppelSelberTag = 5,
+            // "Später Tag -> späterer Beginn am Folgetag" — auch im
+            // Stabilitätsmodus, damit der Nah-Klon die Regel berücksichtigt.
+            int spätGrenzeFolgetag = 8,
+            int frühGrenzeFolgetag = 1,
+            int strafeSpätFrüh = 0,
+            int schwelleStdTagVortag = 0,
+            HashSet<string> lehrerSpätFrühMinus2 = null,
+            HashSet<string> lehrerSpätFrühMinus3 = null)
         {
             debug = "";
             _infeasibleDetails.Clear();
@@ -6037,6 +6407,12 @@ namespace Stundenplan_V2
                     lehrerFreieStundenMinus3: lehrerFreieStundenMinus3,
                     doppelSelberTagFaecher: doppelSelberTagFaecher,
                     strafeDoppelSelberTag: strafeDoppelSelberTag,
+                    spätGrenzeFolgetag: spätGrenzeFolgetag,
+                    frühGrenzeFolgetag: frühGrenzeFolgetag,
+                    strafeSpätFrüh: strafeSpätFrüh,
+                    schwelleStdTagVortag: schwelleStdTagVortag,
+                    lehrerSpätFrühMinus2: lehrerSpätFrühMinus2,
+                    lehrerSpätFrühMinus3: lehrerSpätFrühMinus3,
                     ausgangsplan: ausgangsCompound,
                     stabilitaetsGewicht: stabilitaetsGewicht);
 

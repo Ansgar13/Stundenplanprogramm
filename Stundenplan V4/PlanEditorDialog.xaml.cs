@@ -6886,21 +6886,40 @@ namespace Stundenplan_V2
                 return null;
             }
 
-            bool IstRelevant(PlanValidator.Verletzung v) =>
-                (v.Kategorie == "Doppelstunden" || v.Kategorie == "Tagesregel") && unrn.Contains(v.UNr);
-
-            // UNr gehoert in den Schluessel: bei mehreren UNrn (Tausch) wuerde
-            // sonst eine schon vorher bestehende Verletzung des einen Blocks
-            // eine gleichlautende neue des anderen verdecken.
-            var vorherKeys = (_aktuelleVerletzungen ?? new List<PlanValidator.Verletzung>())
-                .Where(IstRelevant)
-                .Select(v => v.Kategorie + "|" + v.UNr + "|" + v.Tag + "|" + v.Details)
+            // Lehrer der bewegten Blöcke — für "Spät-Früh", das nicht an einer
+            // UNr, sondern am Lehrer/Tagespaar hängt (Verletzung trägt UNr=0).
+            var bewegteLehrer = _blocks
+                .Where(b => unrn.Contains(b.UNr))
+                .SelectMany(b => b.Teile.Select(t => t.Lehrer))
                 .ToHashSet();
 
-            var neu = nachher.FirstOrDefault(v =>
-                IstRelevant(v) && !vorherKeys.Contains(v.Kategorie + "|" + v.UNr + "|" + v.Tag + "|" + v.Details));
+            bool IstRelevant(PlanValidator.Verletzung v) =>
+                ((v.Kategorie == "Doppelstunden" || v.Kategorie == "Tagesregel") && unrn.Contains(v.UNr))
+                || (v.Kategorie == "Spät-Früh" && bewegteLehrer.Contains(v.Lehrer));
 
-            return neu == null ? null : neu.Kategorie + ": " + neu.Details;
+            // UNr UND Lehrer gehoeren in den Schluessel: bei mehreren UNrn (Tausch)
+            // wuerde sonst eine schon vorher bestehende Verletzung des einen Blocks
+            // eine gleichlautende neue des anderen verdecken; der Lehrer trennt
+            // zusaetzlich die (UNr-losen) Spät-Früh-Verletzungen verschiedener Lehrer.
+            string Key(PlanValidator.Verletzung v) =>
+                v.Kategorie + "|" + v.UNr + "|" + v.Lehrer + "|" + v.Tag + "|" + v.Details;
+
+            var vorherKeys = (_aktuelleVerletzungen ?? new List<PlanValidator.Verletzung>())
+                .Where(IstRelevant)
+                .Select(Key)
+                .ToHashSet();
+
+            // ALLE neuen relevanten Verletzungen sammeln (nicht nur die erste),
+            // damit z.B. eine Verschiebung, die gleichzeitig eine Doppelstunden-
+            // UND eine Spät-Früh-Verletzung auslöst, beide meldet. Duplikate
+            // (gleiche Kategorie+Details) werden zusammengefasst.
+            var neueAlle = nachher
+                .Where(v => IstRelevant(v) && !vorherKeys.Contains(Key(v)))
+                .Select(v => v.Kategorie + ": " + v.Details)
+                .Distinct()
+                .ToList();
+
+            return neueAlle.Count == 0 ? null : string.Join("\n", neueAlle);
         }
 
         private void EntferneKonfliktMarkierung()
@@ -6959,7 +6978,7 @@ namespace Stundenplan_V2
                 var zielSlotsP = new List<int> { zielSlot };
                 var probeP = (int[,])_belegung.Clone();
                 probeP[blockIdxP, zielSlot] = 1;
-                string konfliktP = FindeHartenKonflikt(probeP, blockIdxP, zielSlotsP);
+                string konfliktP = FindeAlleHartenKonflikte(probeP, blockIdxP, zielSlotsP);
 
                 // Belegtes Feld: genau wie beim normalen Ziehen Ausweich-
                 // Vorschlaege suchen. Nur bei Feldwechsel neu rechnen - die
@@ -6991,7 +7010,7 @@ namespace Stundenplan_V2
                         SetStatus("Feld belegt - " + anzP + " Moeglichkeiten; Loslassen "
                                   + "fixiert die einfachste.", false);
                     else
-                        SetStatus("Einplanen gesperrt: " + konfliktP, true);
+                        SetStatus("Einplanen gesperrt: " + konfliktP.Replace("\n", "   ·   "), true);
                 }
                 else
                 {
@@ -7000,7 +7019,7 @@ namespace Stundenplan_V2
                     if (weicheP != null)
                     {
                         MarkiereKonfliktZelle(bd, weicheP, hart: false);
-                        SetStatus("Achtung: " + weicheP, false);
+                        SetStatus("Achtung: " + weicheP.Replace("\n", "   ·   "), false);
                     }
                     else
                     {
@@ -7098,8 +7117,11 @@ namespace Stundenplan_V2
                 foreach (int s in tauschSlots) probe[blockIdx, s] = 1;
                 foreach (int s in quellSlots) probe[tauschBlock, s] = 1;
 
-                konflikt = FindeHartenKonflikt(probe, blockIdx, tauschSlots)
-                           ?? FindeHartenKonflikt(probe, tauschBlock, quellSlots);
+                var kA = FindeAlleHartenKonflikte(probe, blockIdx, tauschSlots);
+                var kB = FindeAlleHartenKonflikte(probe, tauschBlock, quellSlots);
+                konflikt = (kA == null && kB == null)
+                    ? null
+                    : string.Join("\n", new[] { kA, kB }.Where(x => x != null));
             }
             else
             {
@@ -7107,14 +7129,15 @@ namespace Stundenplan_V2
                 // kollidierende Unterrichte im Ziel -> Ko-Platzierung).
                 foreach (int s in quellSlots) probe[blockIdx, s] = 0;
                 foreach (int s in zielSlots) probe[blockIdx, s] = 1;
-                konflikt = FindeHartenKonflikt(probe, blockIdx, zielSlots);
+                konflikt = FindeAlleHartenKonflikte(probe, blockIdx, zielSlots);
             }
 
             if (konflikt != null)
             {
                 e.Effects = DragDropEffects.None;
                 MarkiereKonfliktZelle(bd, konflikt, hart: true);
-                SetStatus((tauschBlock >= 0 ? "Tausch gesperrt: " : "Gesperrt: ") + konflikt, true);
+                SetStatus((tauschBlock >= 0 ? "Tausch gesperrt: " : "Gesperrt: ")
+                          + konflikt.Replace("\n", "   ·   "), true);
             }
             else
             {
@@ -7127,7 +7150,7 @@ namespace Stundenplan_V2
                 if (weiche != null)
                 {
                     MarkiereKonfliktZelle(bd, weiche, hart: false);
-                    SetStatus("Achtung: " + weiche, false);
+                    SetStatus("Achtung: " + weiche.Replace("\n", "   ·   "), false);
                 }
                 else
                 {
@@ -7339,7 +7362,7 @@ namespace Stundenplan_V2
             foreach (int s in quellSlots) probe[blockIdx, s] = 0;
             foreach (int s in zielSlots) probe[blockIdx, s] = 1;
 
-            string konflikt = FindeHartenKonflikt(probe, blockIdx, zielSlots);
+            string konflikt = FindeAlleHartenKonflikte(probe, blockIdx, zielSlots);
             if (konflikt != null)
             {
                 // Der Zielslot ist in der AKTUELL angezeigten Klasse leer (sonst waeren
@@ -7352,7 +7375,7 @@ namespace Stundenplan_V2
                 if (_aktuelleVerschiebungen.Count > 0)
                     SetStatus("Direkte Verschiebung nicht moeglich — siehe 'Verschiebung mit Ausweich'.", false);
                 else
-                    SetStatus("Gesperrt: " + konflikt, true);
+                    SetStatus("Gesperrt: " + konflikt.Replace("\n", "   ·   "), true);
                 return;
             }
 
@@ -7409,11 +7432,12 @@ namespace Stundenplan_V2
             foreach (int s in slotsB) probe[blockA, s] = 1;
             foreach (int s in slotsA) probe[blockB, s] = 1;
 
-            string konfliktA = FindeHartenKonflikt(probe, blockA, slotsB);
-            string konfliktB = FindeHartenKonflikt(probe, blockB, slotsA);
+            string konfliktA = FindeAlleHartenKonflikte(probe, blockA, slotsB);
+            string konfliktB = FindeAlleHartenKonflikte(probe, blockB, slotsA);
             if (konfliktA != null || konfliktB != null)
             {
-                SetStatus("Tausch gesperrt: " + (konfliktA ?? konfliktB), true);
+                string beide = string.Join("\n", new[] { konfliktA, konfliktB }.Where(x => x != null));
+                SetStatus("Tausch gesperrt: " + beide.Replace("\n", "   ·   "), true);
                 return;
             }
 
@@ -7465,6 +7489,25 @@ namespace Stundenplan_V2
         // Gibt null zurück wenn alles ok, sonst Konflikt-Beschreibung.
         private string FindeHartenKonflikt(int[,] probe, int blockIdx, List<int> neueSlots)
         {
+            var l = SammleHarteKonflikte(probe, blockIdx, neueSlots, nurErster: true);
+            return l.Count == 0 ? null : l[0];
+        }
+
+        // Alle harten Konflikte einer Platzierung (fuer die Anzeige beim Ziehen).
+        private string FindeAlleHartenKonflikte(int[,] probe, int blockIdx, List<int> neueSlots)
+        {
+            var l = SammleHarteKonflikte(probe, blockIdx, neueSlots, nurErster: false);
+            return l.Count == 0 ? null : string.Join("\n", l);
+        }
+
+        // Kern: sammelt harte Konflikte. nurErster=true bricht beim ersten ab
+        // (schnell, fuer die vielen Ja/Nein-Pruefungen in der Ausweichsuche);
+        // nurErster=false sammelt ALLE (fuer die Anzeige beim Ziehen).
+        private List<string> SammleHarteKonflikte(int[,] probe, int blockIdx, List<int> neueSlots, bool nurErster)
+        {
+            var alle = new List<string>();
+            void Add(string m) { if (!alle.Contains(m)) alle.Add(m); }
+
             var block = _blocks[blockIdx];
             string wg = (block.WochenGruppe ?? "").Trim();
 
@@ -7476,7 +7519,7 @@ namespace Stundenplan_V2
                     if (string.IsNullOrWhiteSpace(lehrer)) continue;
                     if (_slots[s].LehrerWunsch != null &&
                         _slots[s].LehrerWunsch.TryGetValue(lehrer, out int lw) && lw == -3)
-                        return "Lehrer " + lehrer + " hat Sperre (-3) in " + _slots[s].WTag + " Std" + _slots[s].Stunde;
+                        { Add("Lehrer " + lehrer + " hat Sperre (-3) in " + _slots[s].WTag + " Std" + _slots[s].Stunde); if (nurErster) return alle; }
                 }
 
                 // --- Harte Zeitsperre (-3) fuer Klasse ---
@@ -7484,7 +7527,7 @@ namespace Stundenplan_V2
                 {
                     if (_slots[s].KlassenWunsch != null &&
                         _slots[s].KlassenWunsch.TryGetValue(klasse, out int kw) && kw == -3)
-                        return "Klasse " + klasse + " hat Sperre (-3) in " + _slots[s].WTag + " Std" + _slots[s].Stunde;
+                        { Add("Klasse " + klasse + " hat Sperre (-3) in " + _slots[s].WTag + " Std" + _slots[s].Stunde); if (nurErster) return alle; }
                 }
 
                 // --- Lehrer-Konflikt ---
@@ -7497,7 +7540,8 @@ namespace Stundenplan_V2
                         if (!_blocks[b2].Teile.Any(t => t.Lehrer == lehrer)) continue;
                         string wg2 = (_blocks[b2].WochenGruppe ?? "").Trim();
                         if ((wg == "A" && wg2 == "B") || (wg == "B" && wg2 == "A")) continue; // A/B kollidiert nie
-                        return "Lehrer " + lehrer + " doppelt in " + _slots[s].WTag + " Std" + _slots[s].Stunde;
+                        { Add("Lehrer " + lehrer + " doppelt in " + _slots[s].WTag + " Std" + _slots[s].Stunde); if (nurErster) return alle; }
+                        break;
                     }
                 }
 
@@ -7515,7 +7559,8 @@ namespace Stundenplan_V2
                         if (!string.IsNullOrEmpty(kkk) && kkk == kkk2) continue; // gleiches KKK erlaubt
                         string wg2 = (_blocks[b2].WochenGruppe ?? "").Trim();
                         if ((wg == "A" && wg2 == "B") || (wg == "B" && wg2 == "A")) continue;
-                        return "Klasse " + klasse + " doppelt in " + _slots[s].WTag + " Std" + _slots[s].Stunde;
+                        { Add("Klasse " + klasse + " doppelt in " + _slots[s].WTag + " Std" + _slots[s].Stunde); if (nurErster) return alle; }
+                        break;
                     }
                 }
 
@@ -7536,8 +7581,8 @@ namespace Stundenplan_V2
                         if (wg2 != "A") anzahlB += bedarf;
                     }
                     if (anzahlA > limit || anzahlB > limit)
-                        return "Fachraum '" + fg + "' ueberbelegt in " + _slots[s].WTag + " Std" + _slots[s].Stunde
-                               + " (max " + limit + ")";
+                        { Add("Fachraum '" + fg + "' ueberbelegt in " + _slots[s].WTag + " Std" + _slots[s].Stunde
+                               + " (max " + limit + ")"); if (nurErster) return alle; }
                 }
             }
 
@@ -7562,8 +7607,8 @@ namespace Stundenplan_V2
 
                     int freiNach = ZaehleFreieTage(lehrer, probe);
                     if (freiNach < gefordert)
-                        return "Lehrer " + lehrer + " haette nur " + freiNach
-                               + " statt " + gefordert + " zwingende(r) freie(r) Tag(e)";
+                        { Add("Lehrer " + lehrer + " haette nur " + freiNach
+                               + " statt " + gefordert + " zwingende(r) freie(r) Tag(e)"); if (nurErster) return alle; }
                 }
             }
 
@@ -7591,13 +7636,13 @@ namespace Stundenplan_V2
                     int bandNach = FreieStunden.ZaehleFreieBandTage(
                         lehrer, probe, _blocks, _slots, _tage, bereich.von, bereich.bis);
                     if (bandNach < gefordert)
-                        return "Lehrer " + lehrer + " haette nur " + bandNach
+                        { Add("Lehrer " + lehrer + " haette nur " + bandNach
                                + " statt " + gefordert + " zwingende(r) freie(s) Band-Tag(e) ["
-                               + FreieStunden.FormatBereich(bereich.von, bereich.bis) + "]";
+                               + FreieStunden.FormatBereich(bereich.von, bereich.bis) + "]"); if (nurErster) return alle; }
                 }
             }
 
-            return null;
+            return alle;
         }
         private List<PlanValidator.Verletzung> _aktuelleVerletzungen = new();
 
@@ -7641,6 +7686,29 @@ namespace Stundenplan_V2
                     return v.Tag == tag
                         && block.Teile.Any(t => t.Fach == v.Fach
                                                 && t.Klassen.Contains(v.Klasse));
+
+                // "Spät-Früh" (UNr = 0): hängt an Lehrer + Tagespaar (v.Tag = Folgetag).
+                // NUR die tatsächlich beteiligten Stunden markieren:
+                //   - am Folgetag  die FRÜHEN Stunden (<= Frühgrenze)
+                //   - am Vortag    die SPÄTEN  Stunden (>= Spätgrenze)
+                // (nicht alle Stunden des Lehrers am Folgetag).
+                if (v.UNr == 0 && v.Kategorie == "Spät-Früh")
+                {
+                    if (!block.Teile.Any(t => t.Lehrer == v.Lehrer)) return false;
+                    int frühGrenze = PlanBewertung.FrühGrenzeFolgetag;
+                    int spätGrenze = PlanBewertung.SpätGrenzeFolgetag;
+
+                    // Folgetag früh:
+                    if (tag == v.Tag && stunde <= frühGrenze) return true;
+
+                    // Vortag spät: der Tag direkt VOR v.Tag in der Tagesreihenfolge.
+                    var tageOrder = _slots.Select(s => s.WTag).Distinct().ToList();
+                    int idxN = tageOrder.IndexOf(v.Tag);
+                    string vortag = idxN > 0 ? tageOrder[idxN - 1] : null;
+                    if (vortag != null && tag == vortag && stunde >= spätGrenze) return true;
+
+                    return false;
+                }
 
                 // An eine konkrete UNr gebundene Verletzungen wie bisher.
                 return v.UNr == block.UNr

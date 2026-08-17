@@ -113,5 +113,25 @@ public class StundenplanInput
     // Strafgewicht zur obigen Regel (PM-Zeile "Strafe Fächer-Doppelstd. selber
     // Tag"; Default 5, falls die Zeile fehlt).
     public int StrafeDoppelSelberTag { get; set; } = 5;
+
+    // =====================================================
+    // "Später Tag -> späterer Beginn am Folgetag" (pro Lehrer opt-in).
+    // Hat ein Lehrer an Tag d eine Stunde >= SpätGrenzeFolgetag, soll er
+    // an Tag d+1 nicht vor FrühGrenzeFolgetag beginnen.
+    //   LehrerSpätFrühMinus3 : -3 (zwingend/hart)
+    //   LehrerSpätFrühMinus2 : -2 (Wunsch; hier IMMER Strafe, unabhängig
+    //                          vom globalen "Verbot -2"-Schalter)
+    // Die beiden Schwellen sind global und kommen aus dem PM-Sheet.
+    // =====================================================
+    public int SpätGrenzeFolgetag { get; set; } = 8;   // Stunde, ab der ein Tag als "spät" gilt
+    public int FrühGrenzeFolgetag { get; set; } = 1;   // Stunde, bis zu der ein Beginn als "zu früh" gilt
+    public int StrafeSpätFrüh { get; set; } = 0;       // Strafgewicht für -2-Verstöße
+    // Zusätzliches Gating: Die Regel greift für einen Lehrer an einem Tag NUR,
+    // wenn er an diesem (Vor-)Tag MEHR als SchwelleStdTagVortag Stunden hat.
+    // 0 = keine zusätzliche Schwelle (Regel greift, sobald eine späte Stunde
+    // vorliegt) — so bleibt das Verhalten ohne PM-Eintrag unverändert.
+    public int SchwelleStdTagVortag { get; set; } = 0;
+    public HashSet<string> LehrerSpätFrühMinus2 { get; set; } = new();
+    public HashSet<string> LehrerSpätFrühMinus3 { get; set; } = new();
 }
 
