@@ -100,7 +100,7 @@ Bedingung, die der Solver zwingend einhalten muss.
 - **Lehrer-Stammdatenregeln (StD, „…hart"-Spalten), pro Lehrer einzeln:**
   - **HohlWoche hart** – Wochensumme der Hohlstunden ≤ Sollwert.
   - **Folge hart** – nie mehr als *N* Stunden am Stück.
-  - **Einzel hart** – kein Tag mit genau einer Unterrichtsstunde.
+  - **Std./Tag hart** – kein Tag mit mit mehr oder weniger Unterrichtsstunden als im angegebenen Bereich.
   - **DoppelHohl hart** – keine zwei Hohlstunden in Folge.
   - **DreifachHohl hart** – keine drei oder mehr Hohlstunden in Folge.
   - **Verbot Bad units** – späte pädagogische Einheiten dieses Lehrers hart
