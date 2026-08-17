@@ -97,6 +97,14 @@ Bedingung, die der Solver zwingend einhalten muss.
   analog mit `−3`/`−2`.
 - **Zeitwünsche −2** – global per „Verbot −2-Verletzungen" hart statt nur bestraft.
 - **Späte Doppelstunden** – per „Verbot späte Doppelstunden" ganz untersagen.
+- **Später Tag → späterer Beginn am Folgetag** je Lehrer (StD-Spalte „Gewicht
+  Spät-Früh"): Hat ein Lehrer an einem Tag späte Stunden, soll er am Folgetag
+  nicht zu früh beginnen. `−3` = hart, `−2` = Strafe. Die Schwellen sind global
+  im `PM`-Blatt einstellbar („Spätgrenze Vortag", „Frühgrenze Folgetag") und die
+  Regel greift nur oberhalb einer Stundenzahl am Vortag („Schwelle Std./Tag
+  Vortag"). Verstöße werden in der Infeasibility-Diagnose (lehrerspezifisch), in
+  „Plan prüfen", in der Diag-Tabelle und im Plan-Editor (Warnung beim Ziehen)
+  dokumentiert.
 - **Lehrer-Stammdatenregeln (StD, „…hart"-Spalten), pro Lehrer einzeln:**
   - **HohlWoche hart** – Wochensumme der Hohlstunden ≤ Sollwert.
   - **Folge hart** – nie mehr als *N* Stunden am Stück.
@@ -110,7 +118,8 @@ Bedingung, die der Solver zwingend einhalten muss.
 frühe/späte Doppelstunden, späte pädagogische Einheiten („bad units"), Anzahl
 freier Tage, Hohlstunden / Doppel- / Dreifach-Hohlstunden, Stundenfolge,
 Einzelstunden, späte LK-Stunden, Hauptfächer zu spät, Fächer-Doppelstunden am
-selben Tag sowie zu wenige nutzbare Hohlstunden (NuHo).
+selben Tag, zu früher Beginn nach einem späten Vortag (Spät-Früh, `−2`) sowie
+zu wenige nutzbare Hohlstunden (NuHo).
 
 ---
 
