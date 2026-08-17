@@ -86,13 +86,23 @@
                     </DataGridTextColumn.ElementStyle>
                 </DataGridTextColumn>
                 <DataGridTextColumn Header="ZeilenText-2" Binding="{Binding Zt2}" Width="100" IsReadOnly="True"/>
+                <DataGridTextColumn Header="in FixUnr" Binding="{Binding InFixUNr}" Width="70" IsReadOnly="True">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="HorizontalAlignment" Value="Center"/>
+                            <Setter Property="FontWeight" Value="SemiBold"/>
+                            <Setter Property="Foreground" Value="#104AE0"/>
+                            <Setter Property="ToolTip" Value="Anzahl der Slots, in denen diese UNr tatsächlich im Sheet 'Fix UNrn' fixiert ist – das wertet der Solver aus (unabhängig vom bloßen 'X' in 'Fix (X)')."/>
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
                 <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*"   IsReadOnly="True"/>
             </DataGrid.Columns>
         </DataGrid>
 
         <!-- Fix-UNrn-Übernahme (nur relevant bei Fixieren/Entfixieren) -->
         <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,10">
-            <CheckBox x:Name="ChkFixUNrn" VerticalAlignment="Center"
+            <CheckBox x:Name="ChkFixUNrn" VerticalAlignment="Center" IsChecked="True"
                       Content="Bei Fixieren/Entfixieren zusätzlich in Tabelle 'Fix UNrn' eintragen/entfernen"/>
             <TextBlock Text="Lösung als Quelle:" Margin="20,0,6,0" VerticalAlignment="Center"/>
             <ComboBox x:Name="CboLoesung" Width="220" VerticalAlignment="Center"/>

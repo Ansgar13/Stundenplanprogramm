@@ -51,6 +51,12 @@ namespace Stundenplan_V2
             public string Zt2 { get; set; } = "";
             public string Status { get; set; } = "";
 
+            // Anzeige für die Spalte "in FixUnr": Anzahl der Slots, in denen
+            // diese UNr TATSÄCHLICH im Sheet "Fix UNrn" steht (leer = 0). Das
+            // ist die echte, vom Solver ausgewertete Fixierung – im Gegensatz
+            // zum bloßen "X" der UV-Spalte "Fix (X)", das nur ein Marker ist.
+            public string InFixUNr { get; set; } = "";
+
             // true, wenn die Zeile aktuell ignoriert und/oder fixiert ist (also
             // nicht neutral "–" im Status steht) — Grundlage für die Zeilenfarbe
             // in der Tabelle und für "Eingefärbte auswählen".
@@ -131,6 +137,33 @@ namespace Stundenplan_V2
             return string.Join(",", teile);
         }
 
+        // Zählt je UNr, in wie vielen Slots sie im Sheet "Fix UNrn" steht.
+        // Aufbau des Sheets wie im ExcelLoader: pro Zeile WTag (Sp.1) + Stunde
+        // (Sp.2), danach ab Spalte 3 die fixierten UNrn. Fehlt das Sheet, ist
+        // die Map leer (Spalte "in FixUnr" bleibt dann überall leer). Der
+        // gleiche wb wird bereits in LadeZeilen geöffnet und hier nur mitgelesen.
+        private static Dictionary<int, int> LiesFixUNrCounts(XLWorkbook wb)
+        {
+            var map = new Dictionary<int, int>();
+            if (!wb.Worksheets.Any(ws => ws.Name == "Fix UNrn"))
+                return map;
+
+            var sheet = wb.Worksheet("Fix UNrn");
+            var used = sheet.RangeUsed();
+            if (used == null) return map;
+
+            foreach (var row in used.RowsUsed().Skip(1))
+            {
+                int lastCol = row.LastCellUsed()?.Address.ColumnNumber ?? 0;
+                for (int c = 3; c <= lastCol; c++)
+                {
+                    if (int.TryParse(row.Cell(c).GetString().Trim(), out int unr))
+                        map[unr] = map.TryGetValue(unr, out int n) ? n + 1 : 1;
+                }
+            }
+            return map;
+        }
+
         // Liest alle UV-Zeilen frisch aus der Excel-Datei ein (UNr, Klasse,
         // Fach, Lehrer, aktueller Ignore-/Fix-Status). Wird beim Öffnen und
         // nach jeder ausgeführten Aktion aufgerufen, damit die Statusspalte
@@ -179,6 +212,10 @@ namespace Stundenplan_V2
                     AktualisiereAnzeige();
                     return;
                 }
+
+                // Echte Fixierungen aus dem Sheet "Fix UNrn" (je UNr die Anzahl
+                // der Slots) – Grundlage für die Spalte "in FixUnr".
+                var fixUNrCount = LiesFixUNrCounts(wb);
 
                 foreach (var row in sheet.RangeUsed().RowsUsed().Skip(1))
                 {
@@ -232,6 +269,8 @@ namespace Stundenplan_V2
                         Wst = wst,
                         Zt2 = colZt2 > 0 ? row.Cell(colZt2).GetString().Trim() : "",
                         Status = status,
+                        InFixUNr = fixUNrCount.TryGetValue(unr, out int fixAnz) && fixAnz > 0
+                                   ? fixAnz.ToString() : "",
                         IstEingefärbt = ignoriert || fixiert,
                         ZeilenFarbe = zeilenFarbe
                     };
