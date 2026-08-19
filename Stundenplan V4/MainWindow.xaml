@@ -25,6 +25,13 @@
                        TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/>
             <Button Content="Ausgabe-Fenster anzeigen" HorizontalAlignment="Center"
                     Margin="0,8,0,0" Padding="12,4" Click="BtnAusgabeFenster_Click"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
+                <CheckBox x:Name="ChkSchnellSolver" Content="Schneller Solver (Gap + Greedy-Hint)"
+                          VerticalAlignment="Center"
+                          Checked="ChkSchnellSolver_Changed" Unchecked="ChkSchnellSolver_Changed"/>
+                <Button Content="Optionen…" Margin="10,0,0,0" Padding="10,2"
+                        Click="BtnSchnellOptionen_Click"/>
+            </StackPanel>
         </StackPanel>
 
         <!-- Buttons: schmaler, zweispaltig statt einer langen Reihe -> gibt dem

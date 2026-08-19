@@ -27,6 +27,33 @@ namespace Stundenplan_V2
         private static System.Threading.CancellationToken _laufAbbruch
             = System.Threading.CancellationToken.None;
 
+        // =====================================================
+        // Klassengruppen des laufenden Planen()-Aufrufs.
+        //
+        // Statisch aus demselben Grund wie _laufAbbruch: die Klassenregel
+        // (ClassConstraint.Add) wird aus mehreren tief verschachtelten
+        // Hilfsmethoden (LöseModellMitFlags, PlanenIntern) aufgerufen, deren
+        // Signaturen das Modell sonst alle mitschleifen muessten. Wird zu
+        // Beginn von Planen() gesetzt; pro Prozess ist immer nur EIN Lauf
+        // aktiv. Standard = Leer (kein Gruppen-Feature) = bisheriges Verhalten.
+        // =====================================================
+        private static KlassenGruppen _klassenGruppen = KlassenGruppen.Leer;
+
+        // =====================================================
+        // Optionen des schnellen Solvers (OrToolsSolverSchnell).
+        //
+        // Statisch aus demselben Grund wie _laufAbbruch/_klassenGruppen: die
+        // vier Hebel greifen tief in PlanenIntern, dessen ~50-Argument-Signatur
+        // sonst noch weiter wachsen müsste. Pro Prozess ist immer nur EIN
+        // Planen()-Lauf aktiv. null => Standard-Solver-Verhalten (unverändert).
+        //
+        // _schnellCapsAus schaltet die harten Kappungen (Hebel 3) für den
+        // laufenden Lauf ab – das Sicherheitsnetz, falls die Caps den Grundlauf
+        // unlösbar gemacht haben. Wird zu Beginn jedes Laufs zurückgesetzt.
+        // =====================================================
+        private static SchnellSolverOptionen _schnell = null;
+        private static bool _schnellCapsAus = false;
+
         /// <summary>
         /// True, sobald der Nutzer den Lauf abgebrochen hat. Wird an allen
         /// Schleifengrenzen und vor jedem Solve-Aufruf geprüft, damit nach
@@ -507,7 +534,7 @@ namespace Stundenplan_V2
             }
 
             // Klassenregel
-            ClassConstraint.Add(model, x, blocks, S);
+            ClassConstraint.Add(model, x, blocks, S, _klassenGruppen);
 
             // Klassen-Sperren
             if (mitKlassenSperren)
@@ -3268,10 +3295,29 @@ namespace Stundenplan_V2
             int strafeSpätFrüh = 0,
             int schwelleStdTagVortag = 0,
             HashSet<string> lehrerSpätFrühMinus2 = null,
-            HashSet<string> lehrerSpätFrühMinus3 = null)
+            HashSet<string> lehrerSpätFrühMinus3 = null,
+            // Klassengruppen (Untis-Konzept). null => Leer = kein Feature.
+            KlassenGruppen klassenGruppen = null,
+            // Schneller Solver. null => Standard-Solver-Verhalten (unverändert).
+            SchnellSolverOptionen schnell = null)
         {
             // Diagnose-Buffer für aktuellen Lauf zurücksetzen
             _infeasibleDetails.Clear();
+
+            // Schnellmodus für diesen Lauf hinterlegen (PlanenIntern liest den
+            // statischen Stand). null => wie bisher.
+            _schnell = schnell;
+            _schnellCapsAus = false;
+            if (_schnell != null)
+                log?.Invoke(
+                    $"Schneller Solver aktiv: Gap {_schnell.RelativeGapLimit:P0}, " +
+                    $"Phase-2-Gap {_schnell.Phase2RelativeGapLimit:P0}, " +
+                    $"Greedy-Hint {(_schnell.GreedyStartHint ? "an" : "aus")}, " +
+                    $"harte Kappungen {(_schnell.HatCaps ? "gesetzt" : "keine")}.");
+
+            // Klassengruppen für diesen Lauf hinterlegen (wird von der
+            // Klassenregel ClassConstraint.Add gelesen). Leer = wie bisher.
+            _klassenGruppen = klassenGruppen ?? KlassenGruppen.Leer;
 
             extraFreieStunden ??= new Dictionary<string, int>();
             freieStundenBereich ??= new Dictionary<string, (int von, int bis)>();
@@ -3400,6 +3446,61 @@ namespace Stundenplan_V2
                 (ohneLösungen.Count > 0
                     ? $", beste Qualität: {ohneLösungen[0].quality}"
                     : " – KEINE LÖSUNG OHNE TAUSCH, starte trotzdem Phase 2..."));
+
+            // Schneller Solver – Sicherheitsnetz für Hebel 3 (harte Kappungen):
+            // Hat der Grundlauf durch die Caps KEINE Lösung und ist er BEWIESEN
+            // unlösbar, wird EINMAL ohne Kappungen wiederholt. _schnellCapsAus
+            // bleibt danach true, damit auch die Tauschphase kappungsfrei läuft
+            // (wenn die Caps schon den Grundplan sprengen, blockieren sie den
+            // Tausch ebenso).
+            if (_schnell != null && _schnell.HatCaps && !_schnellCapsAus
+                && ohneLösungen.Count == 0 && phase1Infeasible)
+            {
+                log("Schneller Solver: Grundlauf mit harten Kappungen unlösbar – " +
+                    "wiederhole EINMAL ohne Kappungen.");
+                _schnellCapsAus = true;
+                reporter?.SetzePhase("Phase 1: ohne Tausch (ohne Kappungen)");
+                ohneLösungen = PlanenIntern(
+                    excelPfad, blocks, slots, fachraumLimit, extraFreieTage,
+                    log, maxLösungen: anzahlLösungenOhne, tauschKey: null,
+                    bewiesenInfeasible: out phase1Infeasible,
+                    zeitlimitSekunden: zeitlimitSekunden,
+                    nichtFreieTage: nichtFreieTage,
+                    mindestAbstandBloecke: mindestAbstandBloecke,
+                    gewichtFrüh: gewichtFrüh, gewichtSpät: gewichtSpät,
+                    gewichtPäd: gewichtPäd, gewichtFrei: gewichtFrei,
+                    strafeHohl: strafeHohl, strafeDoppelHohl: strafeDoppelHohl,
+                    strafeDreifachHohl: strafeDreifachHohl, strafeStdFolge: strafeStdFolge,
+                    strafeEinzel: strafeEinzel, strafeSpäteLk: strafeSpäteLk, grenzeSpäteLk: grenzeSpäteLk,
+                    lehrerStammdaten: lehrerStammdaten,
+                    grossePausen: grossePausen,
+                    verbotSpäteDoppel: verbotSpäteDoppel,
+                    hauptfachSpätAnteilProzent: hauptfachSpätAnteilProzent,
+                    strafeHauptfachSpät: strafeHauptfachSpät,
+                    verbotMinus2Lehrer: verbotMinus2Lehrer,
+                    strafeMinus2Lehrer: strafeMinus2Lehrer,
+                    lehrerFreiTageMinus2: lehrerFreiTageMinus2,
+                    lehrerFreiTageMinus3: lehrerFreiTageMinus3,
+                    extraFreieStunden: extraFreieStunden,
+                    freieStundenBereich: freieStundenBereich,
+                    lehrerFreieStundenMinus2: lehrerFreieStundenMinus2,
+                    lehrerFreieStundenMinus3: lehrerFreieStundenMinus3,
+                    doppelSelberTagFaecher: doppelSelberTagFaecher,
+                    strafeDoppelSelberTag: strafeDoppelSelberTag,
+                    spätGrenzeFolgetag: spätGrenzeFolgetag,
+                    frühGrenzeFolgetag: frühGrenzeFolgetag,
+                    strafeSpätFrüh: strafeSpätFrüh,
+                    schwelleStdTagVortag: schwelleStdTagVortag,
+                    lehrerSpätFrühMinus2: lehrerSpätFrühMinus2,
+                    lehrerSpätFrühMinus3: lehrerSpätFrühMinus3,
+                    reporter: reporter, abbruch: abbruch, liveState: liveState,
+                    darfDiagnose: diagnoseGate);
+                if (reporter != null)
+                    foreach (var l in ohneLösungen)
+                        reporter.MeldeGefundeneLösung(l.label, l.quality, l.badUnits);
+                log($"  Ohne Tausch (ohne Kappungen): {ohneLösungen.Count} Lösungen" +
+                    (ohneLösungen.Count > 0 ? $", beste Qualität: {ohneLösungen[0].quality}" : ""));
+            }
 
             // --------------------------------------------------
             // DIAGNOSE bei INFEASIBLE: welche einzelne Klasse / Zeilentext2-
@@ -3722,6 +3823,11 @@ namespace Stundenplan_V2
             // bereits abgebrochenes Token trifft und sofort aussteigt.
             _laufAbbruch = System.Threading.CancellationToken.None;
 
+            // Schnellmodus wieder abschalten, damit ein späterer Standard-Lauf
+            // nicht versehentlich die Hebel erbt.
+            _schnell = null;
+            _schnellCapsAus = false;
+
             return ergebnis;
         }
 
@@ -3986,7 +4092,7 @@ namespace Stundenplan_V2
             // =====================================================
             // KLASSENREGEL
             // =====================================================
-            ClassConstraint.Add(model, x, blocks, S);
+            ClassConstraint.Add(model, x, blocks, S, _klassenGruppen);
 
             // =====================================================
             // FACHRAUMLIMIT
@@ -5022,6 +5128,36 @@ namespace Stundenplan_V2
                 spätFrühVars: spätFrühVars,
                 strafeSpätFrüh: strafeSpätFrüh);
 
+            // =====================================================
+            // SCHNELLER SOLVER – Hebel 3: HARTE KAPPUNGEN
+            // Kappt die teuersten Straf-Terme als Gesamtsumme hart ab. Das
+            // schneidet die schlechteste Region per Propagation weg, statt sie
+            // nur zu bestrafen – genau der beobachtete Effekt "harte Constraints
+            // finden schneller eine Lösung". Nur im Schnellmodus und nur, solange
+            // der Caps-Fallback (siehe Planen) sie nicht deaktiviert hat.
+            // =====================================================
+            if (_schnell != null && !_schnellCapsAus && _schnell.HatCaps)
+            {
+                void Cap(List<BoolVar> vars, int? max, string name)
+                {
+                    if (max is int m && vars != null && vars.Count > 0)
+                    {
+                        model.Add(LinearExpr.Sum(vars) <= m);
+                        log?.Invoke($"  Schneller Solver: harte Kappung {name} <= {m} " +
+                                    $"({vars.Count} Variablen).");
+                    }
+                }
+                Cap(hohlVars,           _schnell.MaxHohlstundenGesamt,    "Hohlstunden");
+                Cap(doppelHohlVars,     _schnell.MaxDoppelHohlGesamt,     "Doppel-Hohlstunden");
+                Cap(dreifachHohlVars,   _schnell.MaxDreifachHohlGesamt,   "Dreifach-Hohlstunden");
+                Cap(stdFolgeVars,       _schnell.MaxStdFolgeGesamt,       "Stundenfolge");
+                Cap(späteLkVars,        _schnell.MaxSpäteLkGesamt,        "späte LK-Stunden");
+                Cap(hauptfachSpätVars,  _schnell.MaxHauptfachSpätGesamt,  "Hauptfach spät");
+                Cap(spätFrühVars,       _schnell.MaxSpätFrühGesamt,       "spät->früh");
+                Cap(doppelSelberTagVars,_schnell.MaxDoppelSelberTagGesamt,"Doppel selber Tag");
+                Cap(badEinheiten,       _schnell.MaxBadUnitsGesamt,       "Bad Units (späte päd. Einheiten)");
+            }
+
             // Stabilitätsmodus: Für jeden Block, der im Ausgangsplan einen
             // bekannten Slot hat, wird das Beibehalten dieses Slots belohnt
             // (x[b,s] == 1 → +stabilitaetsGewicht). Fix-UNrn-Blöcke werden
@@ -5070,11 +5206,42 @@ namespace Stundenplan_V2
             }
 
             // =====================================================
+            // SCHNELLER SOLVER – Hebel 4: GREEDY-START-HINT
+            // Nur wenn KEIN Ausgangsplan-Hint vorliegt (also beim ersten Plan).
+            // Hints sind unverbindlich: eine partielle/nicht perfekte Zuordnung
+            // ist unkritisch, sie gibt CP-SAT nur einen warmen Start und damit
+            // früh eine gute Schranke. Fehler hier dürfen den Lauf nie kippen.
+            // =====================================================
+            if (_schnell != null && _schnell.GreedyStartHint
+                && (ausgangsplan == null || ausgangsplan.Count == 0))
+            {
+                try
+                {
+                    var greedy = BaueGreedyHint(blocks, slots, B, S);
+                    foreach (var (bIdx, sIdx) in greedy)
+                        model.AddHint(x[bIdx, sIdx], 1);
+                    if (greedy.Count > 0)
+                        log?.Invoke($"  Schneller Solver: Greedy-Hint für {greedy.Count} Stunden gesetzt.");
+                }
+                catch (Exception ex)
+                {
+                    log?.Invoke($"  Schneller Solver: Greedy-Hint übersprungen ({ex.Message}).");
+                }
+            }
+
+            // =====================================================
             // SOLVER
             // =====================================================
             var solver = new CpSolver();
-            solver.StringParameters =
+            // Hebel 1: Gap-Limit – Optimalitätsbeweis abbrechen, sobald die
+            // Lücke klein genug ist. InvariantCulture erzwingt den Dezimalpunkt,
+            // den CP-SAT beim Parsen erwartet (nicht das deutsche Komma).
+            string schnellParams =
                 $"max_time_in_seconds:{zeitlimitSekunden} num_search_workers:8 random_seed:{randomSeed} log_search_progress:true";
+            if (_schnell != null)
+                schnellParams += " relative_gap_limit:" +
+                    _schnell.RelativeGapLimit.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            solver.StringParameters = schnellParams;
 
             // Harter Abbruch-Hebel: StopSearch() wird direkt beim Cancel
             // ausgelöst und nicht erst, wenn CP-SAT die nächste Zwischenlösung
@@ -5629,6 +5796,18 @@ namespace Stundenplan_V2
             // Ein "Block-Umzug" ändert i.d.R. 2 Zellen (alter Slot 0, neuer Slot 1),
             // daher Umrechnung Blöcke -> Bits für die Hamming-Abstands-Constraint.
             int mindestAbstandBitsIntern = Math.Max(1, mindestAbstandBloecke * 2);
+
+            // Schneller Solver – Hebel 2: Folgelösungen (Diversität) müssen NICHT
+            // beweisbar optimal sein. Ab hier lockerere Gap-Schranke, damit jede
+            // Runde deutlich schneller ist. Phase 1 (die eigentliche Bestlösung)
+            // behält die schärfere Gap-Schranke von oben.
+            if (_schnell != null && maxLösungen > 1)
+            {
+                solver.StringParameters =
+                    $"max_time_in_seconds:{zeitlimitSekunden} num_search_workers:8 random_seed:{randomSeed} log_search_progress:true" +
+                    " relative_gap_limit:" +
+                    _schnell.Phase2RelativeGapLimit.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
 
             // Phase 2: Weitere diverse Lösungen
             // Statt nur die exakte Vorgänger-Belegung zu verbieten (das führt zu
@@ -6240,6 +6419,74 @@ namespace Stundenplan_V2
             wb.Save();
         }
 
+        // =====================================================
+        // GREEDY-START-HINT (schneller Solver, Hebel 4)
+        // Baut eine einfache, kollisionsfreie Startbelegung als UNVERBINDLICHEN
+        // Hint: fixierte UNr zuerst, dann übrige Blöcke (stundenreichste zuerst)
+        // in Slots, in denen weder ein beteiligter Lehrer noch eine beteiligte
+        // Klasse schon belegt ist. Keine Doppelstunden-/Wunsch-/Fachraumlogik –
+        // das muss der Hint nicht können, er soll CP-SAT nur warm starten. Kann
+        // teilweise/leer bleiben; CP-SAT verwendet, was konsistent ist.
+        // =====================================================
+        private static List<(int b, int s)> BaueGreedyHint(
+            List<UnterrichtsBlock> blocks, List<ZeitSlot> slots, int B, int S)
+        {
+            var hint = new List<(int b, int s)>();
+
+            var lehrerBelegt = new HashSet<string>[S];
+            var klasseBelegt = new HashSet<string>[S];
+            for (int s = 0; s < S; s++)
+            {
+                lehrerBelegt[s] = new HashSet<string>();
+                klasseBelegt[s] = new HashSet<string>();
+            }
+
+            List<string> LehrerVon(UnterrichtsBlock bl) => bl.Teile
+                .Select(t => t.Lehrer)
+                .Where(l => !string.IsNullOrWhiteSpace(l))
+                .Distinct().ToList();
+            List<string> KlassenVon(UnterrichtsBlock bl) => bl.Teile
+                .SelectMany(t => t.Klassen)
+                .Where(k => !string.IsNullOrWhiteSpace(k))
+                .Distinct().ToList();
+
+            var restWst = new int[B];
+            for (int b = 0; b < B; b++) restWst[b] = blocks[b].Wst;
+
+            // 1) Fixierte UNr zuerst (sind ohnehin hart erzwungen).
+            for (int s = 0; s < S; s++)
+                foreach (var unr in slots[s].FixUNrn)
+                    for (int b = 0; b < B; b++)
+                        if (blocks[b].UNr == unr && restWst[b] > 0)
+                        {
+                            hint.Add((b, s));
+                            foreach (var l in LehrerVon(blocks[b])) lehrerBelegt[s].Add(l);
+                            foreach (var k in KlassenVon(blocks[b])) klasseBelegt[s].Add(k);
+                            restWst[b]--;
+                        }
+
+            // 2) Übrige Blöcke greedy – stundenreichste zuerst (schwerer unterzubringen).
+            foreach (int b in Enumerable.Range(0, B).OrderByDescending(i => restWst[i]))
+            {
+                if (restWst[b] <= 0) continue;
+                var lehrer = LehrerVon(blocks[b]);
+                var klassen = KlassenVon(blocks[b]);
+
+                for (int s = 0; s < S && restWst[b] > 0; s++)
+                {
+                    if (lehrer.Any(l => lehrerBelegt[s].Contains(l))) continue;
+                    if (klassen.Any(k => klasseBelegt[s].Contains(k))) continue;
+
+                    hint.Add((b, s));
+                    foreach (var l in lehrer) lehrerBelegt[s].Add(l);
+                    foreach (var k in klassen) klasseBelegt[s].Add(k);
+                    restWst[b]--;
+                }
+            }
+
+            return hint;
+        }
+
         private static int[,] ExtrahiereBelegung(CpSolver solver, BoolVar[,] x, int B, int S)
         {
             var belegung = new int[B, S];
@@ -6319,10 +6566,20 @@ namespace Stundenplan_V2
             int strafeSpätFrüh = 0,
             int schwelleStdTagVortag = 0,
             HashSet<string> lehrerSpätFrühMinus2 = null,
-            HashSet<string> lehrerSpätFrühMinus3 = null)
+            HashSet<string> lehrerSpätFrühMinus3 = null,
+            // Klassengruppen (Untis-Konzept). null => Leer = kein Feature.
+            KlassenGruppen klassenGruppen = null)
         {
             debug = "";
             _infeasibleDetails.Clear();
+
+            // Klassengruppen für diesen Lauf hinterlegen (PlanenIntern liest den
+            // statischen Stand). Leer = wie bisher.
+            _klassenGruppen = klassenGruppen ?? KlassenGruppen.Leer;
+
+            // Stabilitätsmodus nutzt den schnellen Solver NICHT (eigenes Feature).
+            _schnell = null;
+            _schnellCapsAus = false;
 
             // Dieser Einstiegspunkt kennt kein Abbruch-Token. Das Lauf-Token
             // trotzdem zurücksetzen, damit ein zuvor abgebrochener Planen()-Lauf

@@ -17,6 +17,16 @@ namespace Stundenplan_V2
         private readonly StundenplanService service =
             new StundenplanService(new OrToolsSolver());
 
+        // Einstellbare Optionen des schnellen Solvers (über "Optionen…"-Button
+        // im Kopfbereich). Der zugehörige Service wird bei jedem Lauf frisch mit
+        // diesen Werten gebaut, damit Änderungen sofort greifen. Nicht readonly,
+        // weil der Dialog ein neues Optionen-Objekt zurückgibt.
+        private SchnellSolverOptionen schnellOptionen = new SchnellSolverOptionen();
+
+        // Verhindert, dass das Setzen von ChkSchnellSolver.IsChecked WÄHREND des
+        // Ladens aus Excel gleich wieder ein Speichern auslöst (Rückkopplung).
+        private bool _schnellSettingsLaden = false;
+
         // label = "oT_1", "oT_2", "T_5+7_1" usw.
         // blocks = die für diese Lösung gültigen Blöcke (ggf. mit getauschten Lehrern)
         private List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> letzteSolutions = new();
@@ -804,6 +814,30 @@ namespace Stundenplan_V2
                 TxtStatus.Text = $"Excel erfolgreich eingelesen um {DateTime.Now:HH:mm:ss} Uhr.";
                 Log($"Excel-Datei '{System.IO.Path.GetFileName(excelPfad)}' eingelesen um {DateTime.Now:HH:mm:ss} Uhr.");
             }
+
+            // Schnellsolver-Optionen aus dem Sheet "Solver-Set" holen (falls
+            // vorhanden). Das Setzen der Checkbox darf hier NICHT gleich wieder
+            // speichern, daher der Guard.
+            try
+            {
+                var geladen = SchnellSolverSettings.Lade(excelPfad, out bool aktiv, out bool gefunden);
+                _schnellSettingsLaden = true;
+                try
+                {
+                    schnellOptionen = geladen;
+                    if (ChkSchnellSolver != null) ChkSchnellSolver.IsChecked = aktiv;
+                }
+                finally { _schnellSettingsLaden = false; }
+
+                if (gefunden && zeigeWarnungen)
+                    Log($"Schnellsolver-Optionen aus Sheet '{SchnellSolverSettings.SheetName}' geladen " +
+                        $"(aktiv {(aktiv ? "ja" : "nein")}, Gap {schnellOptionen.RelativeGapLimit:P0}, " +
+                        $"Kappungen {(schnellOptionen.HatCaps ? "gesetzt" : "keine")}).");
+            }
+            catch (Exception ex)
+            {
+                Log($"Hinweis: Schnellsolver-Optionen konnten nicht gelesen werden: {ex.Message}");
+            }
         }
 
         // =====================================================
@@ -840,6 +874,43 @@ namespace Stundenplan_V2
         // =====================================================
         // BUTTON 3 – STUNDENPLANERSTELLUNG
         // =====================================================
+        // Öffnet den Optionen-Dialog des schnellen Solvers. Die gewählten Werte
+        // werden in schnellOptionen übernommen und beim nächsten Lauf verwendet.
+        private void BtnSchnellOptionen_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new SchnellSolverDialog(schnellOptionen) { Owner = this };
+            if (dialog.ShowDialog() != true) return;
+
+            schnellOptionen = dialog.Optionen;
+            Log($"Schnellsolver-Optionen aktualisiert: Gap {schnellOptionen.RelativeGapLimit:P0}, " +
+                $"Phase-2-Gap {schnellOptionen.Phase2RelativeGapLimit:P0}, " +
+                $"Greedy-Hint {(schnellOptionen.GreedyStartHint ? "an" : "aus")}, " +
+                $"Kappungen {(schnellOptionen.HatCaps ? "gesetzt" : "keine")}.");
+
+            SpeichereSchnellSettings();
+        }
+
+        // Checkbox "Schneller Solver" an/aus -> Zustand mitpersistieren.
+        // Wird beim Laden aus Excel unterdrückt (Guard), um Rückkopplung zu
+        // vermeiden.
+        private void ChkSchnellSolver_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_schnellSettingsLaden) return;
+            SpeichereSchnellSettings();
+        }
+
+        // Schreibt die aktuellen Optionen samt Checkbox-Zustand in das Sheet
+        // "Solver-Set". Ohne geladene Datei stillschweigend nichts tun.
+        private void SpeichereSchnellSettings()
+        {
+            if (string.IsNullOrEmpty(excelPfad)) return;
+            bool aktiv = ChkSchnellSolver?.IsChecked == true;
+            if (SchnellSolverSettings.Speichere(excelPfad, schnellOptionen, aktiv, out string fehler))
+                Log($"Schnellsolver-Optionen in Sheet '{SchnellSolverSettings.SheetName}' gespeichert.");
+            else
+                Log($"Hinweis: Schnellsolver-Optionen konnten nicht gespeichert werden ({fehler}).");
+        }
+
         private async void BtnSchritt2_Click(object sender, RoutedEventArgs e)
         {
             if (input == null)
@@ -922,10 +993,24 @@ namespace Stundenplan_V2
 
             string debug = "";
             List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> solutions = null;
+
+            // Solver-Wahl: schneller Solver nur, wenn die Checkbox gesetzt ist.
+            // Der schnelle Service wird mit den aktuell eingestellten Optionen
+            // frisch gebaut, damit Änderungen aus dem Options-Dialog sofort wirken.
+            bool schnell = ChkSchnellSolver?.IsChecked == true;
+            var svc = schnell
+                ? new StundenplanService(new OrToolsSolverSchnell(schnellOptionen))
+                : service;
+            Log(schnell
+                ? $"Solver-Modus: SCHNELL (Gap {schnellOptionen.RelativeGapLimit:P0}, " +
+                  $"Phase-2-Gap {schnellOptionen.Phase2RelativeGapLimit:P0}, " +
+                  $"Greedy-Hint {(schnellOptionen.GreedyStartHint ? "an" : "aus")}, " +
+                  $"Kappungen {(schnellOptionen.HatCaps ? "gesetzt" : "keine")})."
+                : "Solver-Modus: Standard.");
             try
             {
                 await System.Threading.Tasks.Task.Run(
-                    () => { solutions = service.Generate(input, logUi, out debug, prog, cts.Token, darfDiagnose); });
+                    () => { solutions = svc.Generate(input, logUi, out debug, prog, cts.Token, darfDiagnose); });
             }
             finally
             {
@@ -1407,7 +1492,8 @@ namespace Stundenplan_V2
                     freieStundenBereich: input.FreieStundenBereich,
                     lehrerFreieStundenMinus2: input.LehrerFreieStundenMinus2,
                     lehrerFreieStundenMinus3: input.LehrerFreieStundenMinus3,
-                    lehrerStammdaten: input.LehrerStammdaten);
+                    lehrerStammdaten: input.LehrerStammdaten,
+                    gruppen: input.KlassenGruppen);
 
                 PlanValidator.SchreibeTabelle(excelPfad, verletzungen);
 
@@ -2758,7 +2844,8 @@ namespace Stundenplan_V2
                 LehrerFreieStundenMinus2 = input.LehrerFreieStundenMinus2,
                 LehrerFreieStundenMinus3 = input.LehrerFreieStundenMinus3,
                 VerbotMinus2 = input.VerbotMinus2Verletzungen,
-                MeldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0
+                MeldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0,
+                KlassenGruppen = input.KlassenGruppen
             };
 
             // Merker: wurde im Editor überhaupt etwas fixiert/entfixiert? Nur dann
@@ -3717,7 +3804,8 @@ namespace Stundenplan_V2
                     strafeSpätFrüh: input.StrafeSpätFrüh,
                     schwelleStdTagVortag: input.SchwelleStdTagVortag,
                     lehrerSpätFrühMinus2: input.LehrerSpätFrühMinus2,
-                    lehrerSpätFrühMinus3: input.LehrerSpätFrühMinus3);
+                    lehrerSpätFrühMinus3: input.LehrerSpätFrühMinus3,
+                    klassenGruppen: input.KlassenGruppen);
 
                 statusFenster.Close();
 
