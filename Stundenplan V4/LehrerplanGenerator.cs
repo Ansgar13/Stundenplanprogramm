@@ -207,6 +207,7 @@ namespace Stundenplan_V2
                 startRow += 2;
             }
 
+            BlattReihenfolge.Anwenden(workbook);
             workbook.Save();
         }
 

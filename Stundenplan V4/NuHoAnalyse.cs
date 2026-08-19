@@ -305,6 +305,7 @@ namespace Stundenplan_V2
             }
 
             sheet.Columns().AdjustToContents();
+            BlattReihenfolge.Anwenden(wb);
             wb.Save();
         }
 
@@ -401,6 +402,7 @@ namespace Stundenplan_V2
             rng.Style.Border.OutsideBorder = XLBorderStyleValues.Thick;
             rng.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
 
+            BlattReihenfolge.Anwenden(wb);
             wb.Save();
         }
 

@@ -2621,6 +2621,7 @@ namespace Stundenplan_V2
             }
 
             sheet.Columns().AdjustToContents();
+            BlattReihenfolge.Anwenden(workbook);
             workbook.Save();
         }
 

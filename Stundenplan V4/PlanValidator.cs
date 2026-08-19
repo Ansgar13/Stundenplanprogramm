@@ -33,11 +33,14 @@ namespace Stundenplan_V2
             Dictionary<string, (int von, int bis)> freieStundenBereich = null,
             HashSet<string> lehrerFreieStundenMinus2 = null,
             HashSet<string> lehrerFreieStundenMinus3 = null,
-            Dictionary<string, LehrerStammdaten> lehrerStammdaten = null)
+            Dictionary<string, LehrerStammdaten> lehrerStammdaten = null,
+            // Klassengruppen (Untis-Konzept). null => Leer = kein Feature.
+            KlassenGruppen gruppen = null)
         {
             int B = blocks.Count;
             int S = slots.Count;
             var verletzungen = new List<Verletzung>();
+            gruppen ??= KlassenGruppen.Leer;
 
             // Hilfsfunktionen
             string TagStunde(int s) => $"{slots[s].WTag} Std{slots[s].Stunde}";
@@ -131,50 +134,68 @@ namespace Stundenplan_V2
             // =====================================================
             for (int s = 0; s < S; s++)
             {
-                // Klasse → Liste (Block-Index, KKK, Wochengruppe)
+                // Baustein → Liste (Block-Index, KKK, Wochengruppe). Ohne
+                // definierte Klassengruppen ist jeder Klassen-Token sein
+                // eigener Baustein — dann exakt die fruehere Token-Pruefung.
                 var klassenInSlot = new Dictionary<string, List<(int b, string kkk, string wg)>>();
                 for (int b = 0; b < B; b++)
                 {
                     if (belegung[b, s] != 1) continue;
                     string kkk = (blocks[b].KKK ?? "").Trim();
                     string wg  = (blocks[b].WochenGruppe ?? "").Trim();
-                    foreach (var k in blocks[b].Teile.SelectMany(t => t.Klassen).Distinct())
+                    foreach (var atom in gruppen.AtomeDesBlocks(blocks[b]))
                     {
-                        if (!klassenInSlot.ContainsKey(k))
-                            klassenInSlot[k] = new List<(int, string, string)>();
-                        klassenInSlot[k].Add((b, kkk, wg));
+                        if (!klassenInSlot.ContainsKey(atom))
+                            klassenInSlot[atom] = new List<(int, string, string)>();
+                        klassenInSlot[atom].Add((b, kkk, wg));
                     }
                 }
+                // Ein Block-Paar kann ueber mehrere geteilte Bausteine mehrfach
+                // auffallen (ganze Klasse ∩ Gruppe) — pro Slot nur EINMAL melden.
+                var gemeldet = new HashSet<string>();
                 foreach (var kv in klassenInSlot.Where(x => x.Value.Count > 1))
                 {
                     // Nur verschiedene UNrn berücksichtigen
                     var unrn = kv.Value.Select(x => blocks[x.b].UNr).Distinct().ToList();
                     if (unrn.Count <= 1) continue;
 
-                    // Prüfe paarweise auf echten Konflikt
+                    // Prüfe paarweise auf echten Konflikt; sammle die
+                    // tatsaechlich konkret verwickelten Bloecke.
                     var liste = kv.Value;
-                    bool echterKonflikt = false;
-                    for (int i = 0; i < liste.Count && !echterKonflikt; i++)
+                    var verwickelt = new SortedSet<int>();
+                    for (int i = 0; i < liste.Count; i++)
                         for (int j = i + 1; j < liste.Count; j++)
                         {
                             var (b1, k1, wg1) = liste[i];
                             var (b2, k2, wg2) = liste[j];
+                            if (b1 == b2) continue;
                             // Gleiches nicht-leeres KKK → kein Konflikt (case-insensitiv)
                             if (!string.IsNullOrEmpty(k1) && string.Equals(k1, k2, StringComparison.OrdinalIgnoreCase)) continue;
                             // A↔B → kein Konflikt
                             if ((wg1 == "A" && wg2 == "B") || (wg1 == "B" && wg2 == "A")) continue;
-                            echterKonflikt = true;
-                            break;
+                            verwickelt.Add(b1);
+                            verwickelt.Add(b2);
                         }
-                    if (!echterKonflikt) continue;
+                    if (verwickelt.Count == 0) continue;
+
+                    // Doppelmeldung desselben Block-Satzes (anderer Baustein) unterdruecken.
+                    string sig = string.Join(",", verwickelt);
+                    if (!gemeldet.Add(sig)) continue;
+
+                    var beteiligte = verwickelt.Select(b => blocks[b]).ToList();
+                    // Anzeige: die tatsaechlichen Klassen-Token der Konfliktbloecke
+                    // (nicht der synthetische Baustein-Schluessel).
+                    string klasseAnzeige = string.Join(" / ", beteiligte
+                        .SelectMany(bl => bl.Teile.SelectMany(t => t.Klassen))
+                        .Where(k => !string.IsNullOrWhiteSpace(k)).Distinct());
 
                     verletzungen.Add(new Verletzung(
                         "Klassen-Konflikt",
                         slots[s].WTag, slots[s].Stunde,
-                        0, kv.Key,
-                        string.Join(" / ", kv.Value.Select(x => FachWert(blocks[x.b])).Distinct()),
-                        $"Blöcke: {string.Join(", ", kv.Value.Select(x => $"UNr{blocks[x.b].UNr}"))}",
-                        ZeilenText: string.Join(" / ", kv.Value.Select(x => blocks[x.b].Zeilentext).Where(z => !string.IsNullOrWhiteSpace(z)).Distinct())));
+                        0, klasseAnzeige,
+                        string.Join(" / ", beteiligte.Select(bl => FachWert(bl)).Distinct()),
+                        $"Blöcke: {string.Join(", ", beteiligte.Select(bl => $"UNr{bl.UNr}"))}",
+                        ZeilenText: string.Join(" / ", beteiligte.Select(bl => bl.Zeilentext).Where(z => !string.IsNullOrWhiteSpace(z)).Distinct())));
                 }
             }
 
@@ -1072,6 +1093,7 @@ namespace Stundenplan_V2
             }
 
             sheet.Columns().AdjustToContents();
+            BlattReihenfolge.Anwenden(wb);
             wb.Save();
         }
     }
