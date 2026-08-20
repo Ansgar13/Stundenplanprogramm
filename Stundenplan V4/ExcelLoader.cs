@@ -692,8 +692,10 @@ namespace Stundenplan_V2
                 // einem Tippfehler auf einen normalisierten Contains-Vergleich
                 // in BEIDE Richtungen zurueck. "Hohl hart" waere z.B. in
                 // "DoppelHohl hart" enthalten und koennte die falsche Spalte
-                // treffen — daher "HohlWoche hart".
-                int colHohlHart     = FindeSpalte(headerSD, "HohlWoche hart");
+                // treffen — daher "Hohlmax Woche hart".
+                // Der alte Name "HohlWoche hart" wird als Alias mitgefuehrt,
+                // damit bestehende Sheets ohne Umbenennen weiter funktionieren.
+                int colHohlHart     = FindeSpalte(headerSD, "Hohlmax Woche hart", "HohlWoche hart");
                 int colFolgeHart    = FindeSpalte(headerSD, "Folge hart");
                 int colStdTag       = FindeSpalte(headerSD, "Std./Tag", "Std/Tag", "Std. /Tag");
                 int colStdTagHart   = FindeSpalte(headerSD, "Std./Tag hart", "Std/Tag hart", "Einzel hart");
@@ -787,7 +789,7 @@ namespace Stundenplan_V2
                     if (sd.HohlWocheHart && !sd.HohlStdMax.HasValue)
                     {
                         sd.HohlWocheHart = false;
-                        stdDiagnose.Add($"StD: '{name}' hat 'HohlWoche hart', aber keinen Wert in " +
+                        stdDiagnose.Add($"StD: '{name}' hat 'Hohlmax Woche hart', aber keinen Wert in " +
                                         "'HohlStd. soll' -> Flag ignoriert (sonst waere gar keine " +
                                         "Hohlstunde erlaubt). Fuer 'keine Hohlstunde' bitte 0-0 eintragen.");
                     }
@@ -818,7 +820,7 @@ namespace Stundenplan_V2
 
                     // "Std./Tag hart": macht den Bereich hart. Ohne Wert in "Std./Tag"
                     // waere das Flag wirkungslos -> ignorieren und melden (wie bei
-                    // "HohlWoche hart" ohne "HohlStd. soll").
+                    // "Hohlmax Woche hart" ohne "HohlStd. soll").
                     sd.StdTagHart = IstGesetzt(row, colStdTagHart);
                     if (sd.StdTagHart && !sd.StdTagMax.HasValue)
                     {
@@ -972,7 +974,7 @@ namespace Stundenplan_V2
                 if (colHohlHart <= 0 && colFolgeHart <= 0 && colStdTagHart <= 0 &&
                     colDoppelHart <= 0 && colDreifachHart <= 0)
                 {
-                    stdDiagnose.Add("StD: keine 'hart'-Spalten gefunden (HohlWoche hart, Folge hart, " +
+                    stdDiagnose.Add("StD: keine 'hart'-Spalten gefunden (Hohlmax Woche hart, Folge hart, " +
                                     "Std./Tag hart, DoppelHohl hart, DreifachHohl hart) -> alle " +
                                     "Hohlstunden-/Folge-Regeln wirken wie bisher nur als Strafe.");
                 }

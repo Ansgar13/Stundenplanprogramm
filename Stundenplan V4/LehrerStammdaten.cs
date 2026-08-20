@@ -31,7 +31,7 @@ namespace Stundenplan_V2
 
         // ---- Hart-Flags aus den Spalten T..X des Sheets "StD" ----
 
-        // "HohlWoche hart": Wochensumme der Hohlstunden <= HohlStdMax.
+        // "Hohlmax Woche hart": Wochensumme der Hohlstunden <= HohlStdMax.
         // Ohne Wert in "HohlStd. soll" wird das Flag ignoriert (sonst wuerde das
         // ?? 0 im Modell stillschweigend "gar keine Hohlstunde" bedeuten).
         // HohlStdMin bleibt auch mit Flag ohne Wirkung im Modell und dient wie

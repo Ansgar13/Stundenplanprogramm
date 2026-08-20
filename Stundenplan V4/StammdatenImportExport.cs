@@ -37,11 +37,11 @@ namespace Stundenplan_V2
     /// LEERES FELD = NICHT ANFASSEN. In einer echten GPU004 sind die Felder
     /// 8-11 bei den meisten Lehrern leer. Wuerde "leer" als "loeschen" gelten,
     /// wischte ein Import fast allen Lehrern "HohlStd. soll" weg — und damit die
-    /// Grundlage fuer das Flag "HohlWoche hart", das ohne diesen Wert wirkungslos
+    /// Grundlage fuer das Flag "Hohlmax Woche hart", das ohne diesen Wert wirkungslos
     /// wird. Importiert wird deshalb nur, was in der Datei tatsaechlich steht.
     /// Ein Wert lässt sich weiterhin von Hand im Dialog leeren.
     ///
-    /// DIE FUENF HART-SPALTEN (HohlWoche hart, Folge hart, Std./Tag hart,
+    /// DIE FUENF HART-SPALTEN (Hohlmax Woche hart, Folge hart, Std./Tag hart,
     /// DoppelHohl hart, DreifachHohl hart) kennt Untis nicht. Sie werden ueber
     /// die Spalte "Name" aus dem bestehenden Sheet uebernommen; neue Lehrer
     /// starten ohne harte Regeln, was der sichere Default ist.
@@ -94,7 +94,7 @@ namespace Stundenplan_V2
         // wirken die Flags nicht.
         public static readonly string[] HartSpalten =
         {
-            "HohlWoche hart", "Folge hart", "Std./Tag hart",
+            "Hohlmax Woche hart", "Folge hart", "Std./Tag hart",
             "DoppelHohl hart", "DreifachHohl hart"
         };
 
@@ -409,7 +409,7 @@ namespace Stundenplan_V2
             if (min.Length == 0 || max.Length == 0)
             {
                 // Nur eine Seite: "2-" waere fuer ParseHohlStdSoll unlesbar und
-                // wuerde das Flag "HohlWoche hart" still wirkungslos machen.
+                // wuerde das Flag "Hohlmax Woche hart" still wirkungslos machen.
                 // Lieber nichts schreiben und den Fall melden.
                 halbLeer = true;
                 return null;

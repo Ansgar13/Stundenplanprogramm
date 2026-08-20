@@ -1040,7 +1040,7 @@ namespace Stundenplan_V2
                             // IRGENDWO und danach IRGENDWO Unterricht. Nicht nur
                             // die direkten Nachbarn: sonst zaehlt eine Luecke von
                             // zwei oder drei Stunden am Stueck als null, und
-                            // "HohlWoche hart" liefe ins Leere. Diese Definition
+                            // "Hohlmax Woche hart" liefe ins Leere. Diese Definition
                             // ist identisch zu der in PlanBewertung.
                             var hohlVar = model.NewBoolVar($"d_hohl_{l}_{dayIdx}_{si}");
                             model.Add(hohlVar >= vorher![si] + rest![si + 1] - u[si] - 1);
@@ -2542,7 +2542,7 @@ namespace Stundenplan_V2
 
             if (stdRegelnHart != null)
                 stellhebel.Add((4, $"Harte StD-Regeln ({stdRegelnHart.Count} Lehrer)",
-                    "Sheet StD, Spalten 'HohlWoche hart' bis 'DreifachHohl hart'",
+                    "Sheet StD, Spalten 'Hohlmax Woche hart' bis 'DreifachHohl hart'",
                     () => VollesModell(mitStdHart: false)));
 
             if (verbotBadUnitsLehrer != null)
@@ -2979,7 +2979,7 @@ namespace Stundenplan_V2
                         DiagLog(log, "  [Diagnose]    Kein Lehrer ist für sich allein unerfüllbar — erst die " +
                                       "Kombination mehrerer harter Regeln blockiert.");
                     }
-                    DiagLog(log, "  [Diagnose]    Prüfen: Spalten 'HohlWoche hart' bis 'DreifachHohl hart' im Sheet StD.");
+                    DiagLog(log, "  [Diagnose]    Prüfen: Spalten 'Hohlmax Woche hart' bis 'DreifachHohl hart' im Sheet StD.");
                     MeldeStellhebel("Harte StD-Regeln");
                     return;
                 }
@@ -4570,7 +4570,7 @@ namespace Stundenplan_V2
                         // also nur die DIREKTEN Nachbarn. Damit zaehlte eine
                         // Luecke von zwei oder drei Stunden am Stueck als NULL
                         // Hohlstunden (bei si ist der rechte Nachbar leer, bei
-                        // si+1 der linke). Folgen: "HohlWoche hart" lief ins Leere
+                        // si+1 der linke). Folgen: "Hohlmax Woche hart" lief ins Leere
                         // — Sum(hohlVars) <= Max war mit 0 trivial erfuellt, der
                         // Solver meldete korrekt nichts — und "Strafe
                         // Hohlstunden" bestrafte nur isolierte Einzelluecken,
@@ -4749,7 +4749,7 @@ namespace Stundenplan_V2
                     // Es wird nur der Ueberschuss ueber dem Freibetrag bestraft.
                     // Pro moeglicher Hohlstunde oberhalb des Limits eine Strafvariable,
                     // die genau dann 1 ist, wenn die Wochensumme >= (Freibetrag + k).
-                    // HART (StD: "HohlWoche hart"): aus dem Freibetrag wird eine
+                    // HART (StD: "Hohlmax Woche hart"): aus dem Freibetrag wird eine
                     // echte Obergrenze. hohlFreibetrag ist hier garantiert der
                     // eingetragene HohlStdMax — der Loader laesst das Flag nur
                     // mit vorhandenem Wert durch, "0-0" ist also der bewusste
