@@ -30,6 +30,34 @@
                   SelectionUnit="Cell" SelectionMode="Extended"
                   PreviewKeyDown="DgStammdaten_PreviewKeyDown"
                   AutoGeneratingColumn="DgStammdaten_AutoGeneratingColumn">
+            <!-- Umbrechende Spaltenköpfe: ohne das erzwingt der Kopftext seine
+                 volle Breite als Mindestbreite, die Spalte lässt sich dann nicht
+                 schmaler ziehen. Mit TextWrapping bricht die Überschrift um, die
+                 Kopfzeile wird bei Bedarf höher, und die Spalte kann so schmal
+                 werden, wie der Zelleninhalt (nicht mehr der Kopf) es zulässt.
+                 Das Kopf-Kontextmenü setzt die Fixiergrenze: FrozenColumnCount
+                 hält immer die ersten n Spalten (in Anzeige-Reihenfolge) fest —
+                 Spalten sind per Drag umsortierbar, damit lässt sich jede
+                 gewünschte Spalte nach vorne in den fixierten Block holen. -->
+            <DataGrid.ColumnHeaderStyle>
+                <Style TargetType="DataGridColumnHeader">
+                    <Setter Property="ContentTemplate">
+                        <Setter.Value>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" TextWrapping="Wrap"
+                                           TextAlignment="Center" VerticalAlignment="Center"/>
+                            </DataTemplate>
+                        </Setter.Value>
+                    </Setter>
+                    <!-- Kopf-Kontextmenü wird in Kopf_ContextMenuOpening im Code
+                         aufgebaut und gezeigt. Bewusst NICHT als ContextMenu-Setter
+                         mit Click-Handlern hier: Event-Handler auf Kind-Elementen
+                         innerhalb eines Style-Setters lassen sich vom kompilierten
+                         XAML nicht verdrahten (XamlParseException "connectionId").
+                         Der EventSetter ist der dafür vorgesehene Weg. -->
+                    <EventSetter Event="ContextMenuOpening" Handler="Kopf_ContextMenuOpening"/>
+                </Style>
+            </DataGrid.ColumnHeaderStyle>
             <DataGrid.ContextMenu>
                 <ContextMenu>
                     <MenuItem x:Name="MnuFuellen" Header="Nach unten füllen (Strg+D)"

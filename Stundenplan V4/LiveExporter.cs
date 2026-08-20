@@ -151,6 +151,16 @@ namespace Stundenplan_V2
 
             try
             {
+                // Zielordner unmittelbar vor dem Schreiben sicherstellen. Der
+                // Ordner wurde zwar beim Anlegen von LiveExportState erzeugt,
+                // kann zwischen Konstruktion und erstem Snapshot aber wieder
+                // verschwinden – z.B. wenn der _live-Ordner in einem von
+                // OneDrive synchronisierten Verzeichnis liegt und der (anfangs
+                // leere) Lauf-Unterordner dehydriert/verschoben wird, oder durch
+                // versehentliches Löschen. CreateDirectory ist ein No-op, falls
+                // der Ordner bereits vorhanden ist.
+                Directory.CreateDirectory(state.LiveOrdner);
+
                 File.Copy(state.ExcelPfad, zielPfad, overwrite: true);
 
                 using (var wb = new XLWorkbook(zielPfad))

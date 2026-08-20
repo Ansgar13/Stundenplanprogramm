@@ -110,6 +110,8 @@ namespace Stundenplan_V2
             public HashSet<string> LehrerFreieStundenMinus3 = new();
             public bool VerbotMinus2 = false;
             public bool MeldeMinus2 = false;
+            // Klassengruppen (Untis-Konzept). Leer = kein Feature.
+            public KlassenGruppen KlassenGruppen = KlassenGruppen.Leer;
         }
 
         private readonly BewertungsParameter _bewParam;
@@ -1195,9 +1197,7 @@ namespace Stundenplan_V2
             for (int b = 0; b < blocks.Count; b++)
             {
                 if (belegung[b, slotIdx] != 1) continue;
-                bool betrifft = lehrerAnsicht
-                    ? blocks[b].Teile.Any(t => t.Lehrer == auswahl)
-                    : blocks[b].Teile.Any(t => t.Klassen.Contains(auswahl));
+                bool betrifft = BlockBetrifftAuswahl(blocks[b], auswahl, lehrerAnsicht);
                 if (betrifft) set.Add(blocks[b].UNr);
             }
             return set;
@@ -1489,9 +1489,7 @@ namespace Stundenplan_V2
             for (int b = 0; b < blocks.Count; b++)
             {
                 if (belegung[b, slotIdx] != 1) continue;
-                bool betrifft = lehrerAnsicht
-                    ? blocks[b].Teile.Any(t => t.Lehrer == auswahl)
-                    : blocks[b].Teile.Any(t => t.Klassen.Contains(auswahl));
+                bool betrifft = BlockBetrifftAuswahl(blocks[b], auswahl, lehrerAnsicht);
                 if (betrifft) betroffene.Add(b);
             }
 
@@ -1723,9 +1721,8 @@ namespace Stundenplan_V2
                 CboLehrer.Items.Add(l);
 
             CboKlasse.Items.Clear();
-            foreach (var k in SortiereKlassen(_blocks.SelectMany(b => b.Teile.SelectMany(t => t.Klassen))
-                                                     .Where(s => !string.IsNullOrWhiteSpace(s))
-                                                     .Distinct()))
+            foreach (var k in BaueKlassenReihenfolge(
+                                  _blocks.SelectMany(b => b.Teile.SelectMany(t => t.Klassen))))
                 CboKlasse.Items.Add(k);
 
             if (CboLehrer.Items.Count > 0)
@@ -1766,7 +1763,8 @@ namespace Stundenplan_V2
                 extraFreieStunden: p?.ExtraFreieStunden,
                 freieStundenBereich: p?.FreieStundenBereich,
                 lehrerFreieStundenMinus2: p?.LehrerFreieStundenMinus2,
-                lehrerFreieStundenMinus3: p?.LehrerFreieStundenMinus3);
+                lehrerFreieStundenMinus3: p?.LehrerFreieStundenMinus3,
+                gruppen: p?.KlassenGruppen);
         }
 
         // Lehrer-Diagnose einer Belegung als Nachschlagetabelle (Lehrer -> Werte).
@@ -1854,6 +1852,79 @@ namespace Stundenplan_V2
         {
             string auswahl = CboLehrer.SelectedItem as string;
             ZeichneEinGrid(LehrerGrid, auswahl, lehrerAnsicht: true);
+        }
+
+        // Gehoert ein Block zur aktuellen Lehrer-/Klassenauswahl? Die
+        // Klassenansicht ist klassengruppen-aware: eine Elternklasse (10a)
+        // zeigt auch die Stunden ihrer Untergruppen (10a_m/10a_w), eine
+        // Untergruppe zeigt zusaetzlich die Stunden der ganzen Klasse (weil
+        // dieselben Schueler daran teilnehmen). Ohne definierte Gruppen bleibt
+        // es beim exakten Klassennamen-Vergleich wie bisher.
+        private bool BlockBetrifftAuswahl(UnterrichtsBlock block, string auswahl, bool lehrerAnsicht)
+        {
+            if (block == null || auswahl == null) return false;
+            if (lehrerAnsicht) return block.Teile.Any(t => t.Lehrer == auswahl);
+            var gr = _bewParam?.KlassenGruppen ?? KlassenGruppen.Leer;
+            if (gr.IstLeer) return block.Teile.Any(t => t.Klassen.Contains(auswahl));
+
+            // Untergruppen-Ansicht (z.B. ein Diff-Kurs): NUR die eigenen Stunden
+            // der Gruppe zeigen, NICHT den Unterricht der Mutterklasse(n). Ein
+            // Block, der die Auswahl bloss ueber eine Elternklasse beruehrt
+            // (z.B. Deutsch der 9a gegenueber Diff_LGe), wird ausgeblendet.
+            if (gr.IstUntergruppe(auswahl))
+            {
+                var eltern = gr.ElternVon(auswahl);
+                foreach (var token in block.Teile.SelectMany(t => t.Klassen)
+                                            .Where(k => !string.IsNullOrWhiteSpace(k))
+                                            .Distinct(StringComparer.Ordinal))
+                {
+                    if (!gr.Überschneiden(token, auswahl)) continue; // teilt keine Schueler
+                    if (eltern.Contains(token)) continue;            // Mutterklasse -> ausblenden
+                    return true;
+                }
+                return false;
+            }
+
+            // Eltern-/Normalklasse: eigene Stunden UND die der Untergruppen.
+            return gr.GehörtZuKlasse(block, auswahl);
+        }
+
+        // Reihenfolge der Klassen-Auswahlliste: jede Elternklasse als Kopf,
+        // ihre Untergruppen direkt darunter. Eine Untergruppe erscheint unter
+        // JEDER ihrer Elternklassen (klassenuebergreifende Kurse also mehrfach).
+        // Ohne definierte Gruppen bleibt es bei der bisherigen Sortierung.
+        private List<string> BaueKlassenReihenfolge(IEnumerable<string> uvKlassen)
+        {
+            var uv = SortiereKlassen(uvKlassen.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct()).ToList();
+            var gr = _bewParam?.KlassenGruppen ?? KlassenGruppen.Leer;
+            if (gr.IstLeer) return uv;
+
+            var uvSet = new HashSet<string>(uv, StringComparer.Ordinal);
+            var ergebnis = new List<string>();
+            var platziert = new HashSet<string>(StringComparer.Ordinal);
+
+            // Kopf-Ebene: alles, was KEINE Untergruppe ist (echte Klassen,
+            // Sammelklassen, gewoehnliche Klassen ohne Gruppen).
+            foreach (var k in uv)
+            {
+                if (gr.IstUntergruppe(k)) continue;
+                ergebnis.Add(k);
+                platziert.Add(k);
+                // Untergruppen dieser Elternklasse direkt darunter.
+                foreach (var u in SortiereKlassen(gr.UntergruppenVon(k)))
+                {
+                    if (!uvSet.Contains(u)) continue; // nur, wenn in der UV benutzt
+                    ergebnis.Add(u);
+                    platziert.Add(u);
+                }
+            }
+
+            // Sicherheitsnetz: Untergruppen, deren Elternklasse gar nicht in der
+            // UV vorkommt, waeren sonst unerreichbar -> ans Ende haengen.
+            foreach (var k in uv)
+                if (!platziert.Contains(k)) ergebnis.Add(k);
+
+            return ergebnis;
         }
 
         private void ZeichneKlasseGrid()
@@ -2743,9 +2814,7 @@ namespace Stundenplan_V2
             for (int b = 0; b < _blocks.Count; b++)
             {
                 if (belegung[b, slotIdx] != 1) continue;
-                bool betrifft = lehrerAnsicht
-                    ? _blocks[b].Teile.Any(t => t.Lehrer == auswahl)
-                    : _blocks[b].Teile.Any(t => t.Klassen.Contains(auswahl));
+                bool betrifft = BlockBetrifftAuswahl(_blocks[b], auswahl, lehrerAnsicht);
                 if (betrifft) blockIdxInSlot.Add(b);
             }
 
@@ -3835,9 +3904,7 @@ namespace Stundenplan_V2
 
             for (int b = 0; b < blocks.Count; b++)
             {
-                bool betrifft = lehrerAnsicht
-                    ? blocks[b].Teile.Any(t => t.Lehrer == auswahl)
-                    : blocks[b].Teile.Any(t => t.Klassen.Contains(auswahl));
+                bool betrifft = BlockBetrifftAuswahl(blocks[b], auswahl, lehrerAnsicht);
                 if (!betrifft) continue;
 
                 int unr = blocks[b].UNr;

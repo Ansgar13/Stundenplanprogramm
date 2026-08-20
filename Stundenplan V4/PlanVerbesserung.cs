@@ -407,8 +407,8 @@ namespace Stundenplan_V2
                         }
             }
 
-            // Klassenregel
-            ClassConstraint.Add(model, x, blocks, S);
+            // Klassenregel (KKK-, A/B- UND Klassengruppen-aware)
+            ClassConstraint.Add(model, x, blocks, S, input.KlassenGruppen);
 
             // Sperrslots (-3 immer, -2 wenn Verbot aktiv)
             TimeConstraint.AddBlockedSlots(model, x, blocks, slots, B, S,
@@ -788,17 +788,20 @@ namespace Stundenplan_V2
                         }
             }
 
-            // Klassenregel (KKK- und A/B-Wochen-aware)
+            // Klassenregel (KKK-, A/B- UND Klassengruppen-aware)
+            var gruppenChk = input.KlassenGruppen ?? KlassenGruppen.Leer;
             for (int s = 0; s < S; s++)
             {
-                // Klasse → Liste (Block-Index, KKK, Wochengruppe)
+                // Baustein → Liste (Block-Index, KKK, Wochengruppe).
+                // Ohne definierte Gruppen ist jeder Klassen-Token sein eigener
+                // Baustein — dann exakt die fruehere Token-Pruefung.
                 var klassen = new Dictionary<string, List<(int b, string kkk, string wg)>>();
                 for (int b = 0; b < B; b++)
                 {
                     if (belegung[b, s] != 1) continue;
                     string kkk = (blocks[b].KKK ?? "").Trim();
                     string wg  = (blocks[b].WochenGruppe ?? "").Trim();
-                    foreach (var k in blocks[b].Teile.SelectMany(t => t.Klassen).Distinct())
+                    foreach (var k in gruppenChk.AtomeDesBlocks(blocks[b]))
                     {
                         if (!klassen.ContainsKey(k))
                             klassen[k] = new List<(int, string, string)>();

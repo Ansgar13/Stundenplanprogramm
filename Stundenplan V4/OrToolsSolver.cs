@@ -68,7 +68,8 @@ public class OrToolsSolver : ISolver
             strafeSpätFrüh: input.StrafeSpätFrüh,
             schwelleStdTagVortag: input.SchwelleStdTagVortag,
             lehrerSpätFrühMinus2: input.LehrerSpätFrühMinus2,
-            lehrerSpätFrühMinus3: input.LehrerSpätFrühMinus3
+            lehrerSpätFrühMinus3: input.LehrerSpätFrühMinus3,
+            klassenGruppen: input.KlassenGruppen
         );
     }
 }

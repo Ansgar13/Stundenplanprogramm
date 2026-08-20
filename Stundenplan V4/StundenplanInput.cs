@@ -4,6 +4,14 @@ public class StundenplanInput
 {
     public List<UnterrichtsBlock> Blocks { get; set; } = new();
     public List<ZeitSlot> Slots { get; set; } = new();
+
+    // Klassengruppen (Untis-Konzept, Vollausbau). Aus dem optionalen Sheet
+    // "Klassengruppen"; fehlt es, bleibt dies die Leer-Instanz und Solver/
+    // Validator verhalten sich exakt wie ohne das Feature.
+    public KlassenGruppen KlassenGruppen { get; set; } = KlassenGruppen.Leer;
+    // Einlese-Protokoll des Klassengruppen-Sheets (Anzeige/Diagnose).
+    public List<string> KlassenGruppenDiagnose { get; set; } = new();
+
     public Dictionary<string, int> Fachraeume { get; set; } = new();
     public Dictionary<string, int> ExtraFreieTage { get; set; } = new();
     public string ExcelPfad { get; set; }

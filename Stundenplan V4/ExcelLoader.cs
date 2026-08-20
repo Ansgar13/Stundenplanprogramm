@@ -1045,10 +1045,17 @@ namespace Stundenplan_V2
             PlanBewertung.LehrerSpätFrühMinus2 = lehrerSpätFrühMinus2;
             PlanBewertung.LehrerSpätFrühMinus3 = lehrerSpätFrühMinus3;
 
+            // Klassengruppen (optionales Sheet "Klassengruppen"). Fehlt es,
+            // liefert der Reader die Leer-Instanz -> unveraendertes Verhalten.
+            var klassenGruppenDiag = new List<string>();
+            var klassenGruppen = LiesKlassenGruppen(workbook, klassenGruppenDiag);
+
             return new StundenplanInput
             {
                 Blocks = unterrichtListe,
                 Slots = zeitRaster,
+                KlassenGruppen = klassenGruppen,
+                KlassenGruppenDiagnose = klassenGruppenDiag,
                 Fachraeume = fachgruppenRaeume,
                 ExtraFreieTage = extraFreieTage,
                 ExcelPfad = excelPfad,
@@ -1376,6 +1383,69 @@ namespace Stundenplan_V2
         // (z.B. steht dort "Anzahl"). Nur dann darf die erste Zeile beim
         // Einlesen als Kopfzeile übersprungen werden – sonst würde die erste
         // Fachgruppe (z.B. "Bio") verschluckt.
+        // =====================================================
+        // Liest das optionale Sheet "Klassengruppen".
+        // Layout (Zeile 1 = Kopfzeile, wird uebersprungen):
+        //   Spalte A : Gruppe    – Token wie in der UV-Spalte "Klasse(n)"
+        //   Spalte B : Klasse    – uebergeordnete Klasse (erbt Bausteine)
+        //   Spalte C..: Bausteine – atomare Schuelersegmente (optional)
+        //
+        // Fuer den einfachen disjunkten Fall (10a in 10a_m/10a_w splitten)
+        // genuegen Spalte A + B; die Bausteine werden dann automatisch
+        // erzeugt. Ueberlappende/klassenuebergreifende Kurse tragen ihre
+        // gemeinsamen Bausteine in Spalte C.. ein (z.B. Frz10 und 10a teilen
+        // den Baustein "10a_F").
+        //
+        // Fehlt das Sheet oder ist es leer, wird KlassenGruppen.Leer geliefert
+        // und der Solver rechnet exakt wie ohne das Feature.
+        // =====================================================
+        private static KlassenGruppen LiesKlassenGruppen(
+            IXLWorkbook workbook, List<string> diagnose)
+        {
+            var sheet = workbook.Worksheets.FirstOrDefault(ws =>
+                string.Equals(ws.Name, "Klassengruppen", StringComparison.OrdinalIgnoreCase));
+            if (sheet == null)
+                return KlassenGruppen.Leer;
+
+            var used = sheet.RangeUsed();
+            if (used == null)
+            {
+                diagnose.Add("Sheet 'Klassengruppen' ist leer — keine Gruppen aktiv.");
+                return KlassenGruppen.Leer;
+            }
+
+            int ersteZeile   = used.RangeAddress.FirstAddress.RowNumber;
+            int letzteZeile  = used.RangeAddress.LastAddress.RowNumber;
+            int letzteSpalte = used.RangeAddress.LastAddress.ColumnNumber;
+
+            var zeilen = new List<(string gruppe, string klasse, List<string> bausteine)>();
+            // Zeile 1 (Kopfzeile) ueberspringen.
+            for (int r = ersteZeile + 1; r <= letzteZeile; r++)
+            {
+                string gruppe = sheet.Cell(r, 1).GetString().Trim();
+                if (string.IsNullOrWhiteSpace(gruppe)) continue;
+
+                string klasse = letzteSpalte >= 2 ? sheet.Cell(r, 2).GetString().Trim() : "";
+
+                var bausteine = new List<string>();
+                for (int c = 3; c <= letzteSpalte; c++)
+                {
+                    string b = sheet.Cell(r, c).GetString().Trim();
+                    if (b.Length > 0) bausteine.Add(b);
+                }
+
+                zeilen.Add((gruppe, klasse, bausteine));
+            }
+
+            if (zeilen.Count == 0)
+            {
+                diagnose.Add("Sheet 'Klassengruppen' enthaelt keine Datenzeilen — keine Gruppen aktiv.");
+                return KlassenGruppen.Leer;
+            }
+
+            return KlassenGruppen.Baue(zeilen, diagnose);
+        }
+
         private static bool FgrHatKopfzeile(IXLWorkbook workbook)
         {
             if (!workbook.Worksheets.Any(ws => ws.Name == "FGR"))

@@ -102,6 +102,11 @@ namespace Stundenplan_V2
                         string k1 = (b1.KKK ?? "").Trim();
                         string k2 = (b2.KKK ?? "").Trim();
                         if (k1.Length > 0 && k1 == k2) continue;
+                        // Disjunkte Klassengruppen (z.B. 10a_m / 10a_w) teilen
+                        // keine Schueler -> keine echte Doppelbelegung, auch wenn
+                        // beide im selben Elternklassen-Feld (10a) erscheinen.
+                        var gr = _bewParam?.KlassenGruppen ?? KlassenGruppen.Leer;
+                        if (!gr.IstLeer && !gr.BloeckeUeberschneiden(b1, b2)) continue;
                     }
 
                     return true;

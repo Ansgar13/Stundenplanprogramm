@@ -41,6 +41,20 @@ namespace Stundenplan_V2
                 }
             }
 
+            // Spalte C: reine Bemerkung/Dokumentation. Wird beim Einlesen der
+            // Excel-Datei nicht ausgewertet, hier nur zur Bearbeitung gehalten.
+            private string _bemerkung = "";
+            public string Bemerkung
+            {
+                get => _bemerkung;
+                set
+                {
+                    if (_bemerkung == value) return;
+                    _bemerkung = value;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Bemerkung)));
+                }
+            }
+
             public event PropertyChangedEventHandler PropertyChanged;
         }
 
@@ -80,7 +94,8 @@ namespace Stundenplan_V2
                     {
                         ExcelZeile = row.RowNumber(),
                         Beschriftung = beschriftung,
-                        Wert = row.Cell(2).GetString().Trim()
+                        Wert = row.Cell(2).GetString().Trim(),
+                        Bemerkung = row.Cell(3).GetString().Trim()
                     });
                 }
             }
@@ -137,7 +152,10 @@ namespace Stundenplan_V2
                 }
 
                 foreach (var z in Zeilen)
+                {
                     sheet.Cell(z.ExcelZeile, 2).Value = z.Wert;
+                    sheet.Cell(z.ExcelZeile, 3).Value = z.Bemerkung;
+                }
 
                 wb.Save();
             }
