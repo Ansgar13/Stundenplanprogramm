@@ -194,13 +194,20 @@ namespace Stundenplan_V2
                 Width = 100,
                 Margin = new Thickness(0, 0, 8, 0),
                 Padding = new Thickness(0, 2, 0, 2),
-                ToolTip = "Liest das Sheet „UV“ frisch aus der Excel-Datei ein und zeigt wieder " +
-                          "genau den Dateistand — nützlich, wenn die UV zwischenzeitlich " +
-                          "anderswo geändert wurde (Excel, anderes UV-Fenster). Betrifft nur die " +
-                          "Anzeige aus der Datei, nicht den gerechneten Plan; Ignore/Fix-Marker " +
-                          "wirken auf einen Plan erst nach Neu-Einlesen (Button 1)/Neu-Rechnen " +
-                          "(Button 10). Die Spalte „in FixUnr“ hängt am aktuellen Plan und wird " +
-                          "auch ohne Neu laden aktualisiert."
+                ToolTip = new TextBlock
+                {
+                    MaxWidth = 320,
+                    TextWrapping = TextWrapping.Wrap,
+                    Text = "Liest das Sheet „UV“ frisch aus der Excel-Datei ein und zeigt wieder " +
+                           "genau den Dateistand.\n\n" +
+                           "Nützlich, wenn die UV zwischenzeitlich anderswo geändert wurde " +
+                           "(Excel, anderes UV-Fenster).\n\n" +
+                           "Betrifft nur die Anzeige aus der Datei, nicht den gerechneten Plan; " +
+                           "Ignore/Fix-Marker wirken auf einen Plan erst nach Neu-Einlesen " +
+                           "(Button 1) / Neu-Rechnen (Button 10).\n\n" +
+                           "Die Spalte „in FixUnr“ hängt am aktuellen Plan und wird auch ohne " +
+                           "Neu laden aktualisiert."
+                }
             };
             btnReload.Click += (s, e) => { LadeZeilen(); AktualisiereAnzeige(); };
             top.Children.Add(btnReload);

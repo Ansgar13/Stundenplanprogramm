@@ -930,7 +930,7 @@ namespace Stundenplan_V2
             fenster.AbbruchGewuenscht += () => { cts.Cancel(); fenster.MarkiereAbbrechend(); };
             fenster.Show();
 
-            Log("Starte Solver...");
+            Log($"Starte Solver... ({DateTime.Now:dd.MM.yyyy HH:mm:ss} Uhr)");
 
             // Log- und Fortschrittsmeldungen kommen vom Hintergrund-Thread und
             // werden auf den UI-Thread marshallt.
