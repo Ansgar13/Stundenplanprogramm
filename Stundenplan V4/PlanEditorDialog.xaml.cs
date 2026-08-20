@@ -212,6 +212,21 @@ namespace Stundenplan_V2
         private const double ZOOM_SCHRITT = 0.05;
         private double _zoomFaktor = 1.0;
 
+        // Basis-Rahmendicke der angeklickten Zelle (hervorgehobene paed. Einheit),
+        // konfigurierbar im Farbcode-Dialog, gemerkt in EdCfg. Default 2.5 =
+        // bisheriges Verhalten der normalen Editier- und Vergleichsansicht.
+        private double _markierungDicke = 2.5;
+
+        // Basis-Rahmendicke der unterschiedlich belegten Slots im Vergleichsmodus,
+        // ebenfalls konfigurierbar im Farbcode-Dialog und gemerkt in EdCfg.
+        // Default 2.0 = bisheriges Verhalten.
+        private double _vergleichDicke = 2.0;
+
+        // Die Ein-Ansicht (Fachgruppen-/Faecherplan) hatte bisher eine etwas
+        // duennere Umrandung (2.0 statt 2.5). Diese Staffelung bleibt als Faktor
+        // erhalten, damit sie sich mit der konfigurierbaren Basisdicke mitzieht.
+        private const double MarkierungFaktorEinAnsicht = 2.0 / 2.5;
+
         public PlanEditorDialog(
             List<(string label, int[,] belegung, List<UnterrichtsBlock> blocks)> loesungen,
             List<ZeitSlot> slots,
@@ -283,6 +298,8 @@ namespace Stundenplan_V2
             WendeEinfacheEinstellungenAn(startCfg);
             WendeFenstergeometrieAn(startCfg);
             SetzeZoom(startCfg?.Zoom ?? 1.0);
+            _markierungDicke = startCfg?.MarkierungDicke ?? 2.5;
+            _vergleichDicke = startCfg?.VergleichDicke ?? 2.0;
 
             _initialisiert = true;
 
@@ -518,6 +535,8 @@ namespace Stundenplan_V2
                     Lehrer             = CboLehrer.SelectedItem as string ?? "",
                     Klasse             = CboKlasse.SelectedItem as string ?? "",
                     Zoom               = _zoomFaktor,
+                    MarkierungDicke    = _markierungDicke,
+                    VergleichDicke     = _vergleichDicke,
                 };
 
                 // Geometrie im "normalen" Zustand sichern; ist das Fenster
@@ -705,7 +724,8 @@ namespace Stundenplan_V2
                                  .ToList();
 
             var dlg = new FarbcodeDialog(_excelPfad, klassen, faecher,
-                                         _farbenKlassen, _farbenFaecher, _farbenSonder)
+                                         _farbenKlassen, _farbenFaecher, _farbenSonder,
+                                         _markierungDicke, _vergleichDicke)
             {
                 Owner = this
             };
@@ -714,6 +734,8 @@ namespace Stundenplan_V2
             _farbenKlassen = dlg.Klassenfarben;
             _farbenFaecher = dlg.Fachfarben;
             _farbenSonder = dlg.Sonderfarben;
+            _markierungDicke = dlg.MarkierungDicke;
+            _vergleichDicke = dlg.VergleichDicke;
             _farbBrushCache.Clear();
 
             ZeichneNachFarbwechsel();
@@ -814,6 +836,19 @@ namespace Stundenplan_V2
         private SolidColorBrush SpaetPaedFixBrush()
             => HoleFarbBrush(Farbcode.Sonderfarbe(
                    _farbenSonder, Farbcode.KeySpaetPaedFix, Farbcode.StandardSpaetPaedFix));
+
+        // Rahmenfarbe der angeklickten Zelle / hervorgehobenen paed. Einheit.
+        // Wie die spaeten paed. Einheiten eine Sonderfarbe: gewaehlter Wert aus
+        // dem Farbcode-Dialog, sonst der kraeftige Rot-Standard.
+        private SolidColorBrush MarkierungBrush()
+            => HoleFarbBrush(Farbcode.Sonderfarbe(
+                   _farbenSonder, Farbcode.KeyMarkierung, Farbcode.StandardMarkierung));
+
+        // Rahmenfarbe der unterschiedlich belegten Slots im Vergleichsmodus.
+        // Sonderfarbe wie oben; sonst der kraeftige Gelb-Standard.
+        private SolidColorBrush VergleichBrush()
+            => HoleFarbBrush(Farbcode.Sonderfarbe(
+                   _farbenSonder, Farbcode.KeyVergleich, Farbcode.StandardVergleich));
 
         private SolidColorBrush HoleFarbBrush(Color farbe)
         {
@@ -1593,8 +1628,8 @@ namespace Stundenplan_V2
             if (gelbSlots != null && gelbSlots.Contains(slotIdx))
             {
                 border.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xF3, 0x9A));
-                border.BorderBrush = new SolidColorBrush(Color.FromRgb(0xF2, 0xC9, 0x00));
-                border.BorderThickness = new Thickness(2);
+                border.BorderBrush = VergleichBrush();
+                border.BorderThickness = new Thickness(_vergleichDicke);
             }
 
             // Zeitwunsch-Gewichtungszahl (wie im normalen Editor)
@@ -1648,9 +1683,9 @@ namespace Stundenplan_V2
                         ? SpaetPaedBrush()
                         : (zweizonig ? randFarbe : (flaecheFarbe ?? Hellblau())),
                     BorderBrush = hervorheben
-                        ? new SolidColorBrush(Color.FromRgb(0xE3, 0x1A, 0x1A))
+                        ? MarkierungBrush()
                         : Brushes.Gray,
-                    BorderThickness = hervorheben ? new Thickness(2.5) : new Thickness(0.5),
+                    BorderThickness = hervorheben ? new Thickness(_markierungDicke) : new Thickness(0.5),
                     Padding = new Thickness(zweizonig ? FarbRandBreite : 2), Cursor = System.Windows.Input.Cursors.Hand,
                     HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch
                 };
@@ -2380,9 +2415,9 @@ namespace Stundenplan_V2
             {
                 Background = hintergrund,
                 BorderBrush = hervorheben
-                    ? new SolidColorBrush(Color.FromRgb(0xE3, 0x1A, 0x1A))
+                    ? MarkierungBrush()
                     : Brushes.Gray,
-                BorderThickness = hervorheben ? new Thickness(2) : new Thickness(0.5),
+                BorderThickness = hervorheben ? new Thickness(_markierungDicke * MarkierungFaktorEinAnsicht) : new Thickness(0.5),
                 Margin = new Thickness(1, 0, 1, 1),
                 Padding = new Thickness(2, 0, 2, 0),
                 Cursor = Cursors.Hand
@@ -3171,9 +3206,9 @@ namespace Stundenplan_V2
             {
                 Background = hintergrund,
                 BorderBrush = hervorheben
-                    ? new SolidColorBrush(Color.FromRgb(0xE3, 0x1A, 0x1A)) // kräftiges Rot (päd. Einheit hervorgehoben)
+                    ? MarkierungBrush() // konfigurierbar (Farbcode-Dialog), Standard = kräftiges Rot
                     : Brushes.Gray,
-                BorderThickness = hervorheben ? new Thickness(2.5) : new Thickness(0.5),
+                BorderThickness = hervorheben ? new Thickness(_markierungDicke) : new Thickness(0.5),
                 Margin = new Thickness(0),
                 // Zweizonig ist der Padding-Rahmen selbst der farbige Rand
                 // (Klasse); sonst wie bisher nur Textabstand.

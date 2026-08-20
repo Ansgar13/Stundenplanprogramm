@@ -101,9 +101,9 @@
                       SelectionChanged="CboVglLoesung2_SelectionChanged" Visibility="Collapsed"/>
             <Button x:Name="BtnNaechsteVglLoesung2" Content="&#9654;" Width="28" VerticalAlignment="Center"
                     ToolTip="Nächste 2. Lösung" Click="BtnNaechsteVglLoesung2_Click" Visibility="Collapsed"/>
-            <CheckBox x:Name="ChkVmUnterschiede" Content="Unterschiede gelb"
+            <CheckBox x:Name="ChkVmUnterschiede" Content="Unterschiede farbig"
                       VerticalAlignment="Center" Margin="16,0,10,0" Visibility="Collapsed"
-                      ToolTip="Markiert Zeitslots, die in den beiden verglichenen Lösungen unterschiedlich belegt sind, gelb (Rahmen bzw. Fläche)."
+                      ToolTip="Markiert Zeitslots, die in den beiden verglichenen Lösungen unterschiedlich belegt sind (Rahmen bzw. Fläche). Rahmenfarbe und -dicke sind im Farbcode-Dialog einstellbar."
                       Checked="ChkVmUnterschiede_Changed" Unchecked="ChkVmUnterschiede_Changed"/>
             <CheckBox x:Name="ChkVmPfeile" Content="Verschiebungspfeile"
                       VerticalAlignment="Center" Margin="0,0,10,0" Visibility="Collapsed"

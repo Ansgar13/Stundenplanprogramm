@@ -46,12 +46,22 @@ namespace Stundenplan_V2
         // =====================================================
         public const string KeySpaetPaed    = "SpaetePaedEinheit";
         public const string KeySpaetPaedFix = "SpaetePaedEinheitFix";
+        public const string KeyMarkierung   = "MarkierungRahmen";
+        public const string KeyVergleich    = "VergleichRahmen";
 
         /// <summary>Spaete paed. Einheit, noch bewegbar (bisher fest verdrahtet).</summary>
         public static readonly Color StandardSpaetPaed = Color.FromRgb(0xFF, 0xC1, 0xC1);
 
         /// <summary>Spaete paed. Einheit, voll fixiert (bisher fest verdrahtet).</summary>
         public static readonly Color StandardSpaetPaedFix = Color.FromRgb(0xFF, 0xDC, 0xDC);
+
+        /// <summary>Rahmen der angeklickten Zelle / hervorgehobenen paed. Einheit
+        /// (bisher fest verdrahtet auf dieses kraeftige Rot).</summary>
+        public static readonly Color StandardMarkierung = Color.FromRgb(0xE3, 0x1A, 0x1A);
+
+        /// <summary>Rahmen der unterschiedlich belegten Slots im Vergleichsmodus
+        /// (bisher fest verdrahtet auf dieses kraeftige Gelb).</summary>
+        public static readonly Color StandardVergleich = Color.FromRgb(0xF2, 0xC9, 0x00);
 
         /// <summary>
         /// Sonderfarbe zu einem Schluessel — oder der Standardton, wenn dafuer

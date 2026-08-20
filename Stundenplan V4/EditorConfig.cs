@@ -72,6 +72,20 @@ namespace Stundenplan_V2
         // Inhalt darin gerendert wird.
         public double Zoom = 1.0;
 
+        // ---- Rahmendicke der angeklickten Zelle (hervorgehobene paed. Einheit) ----
+        // Basiswert fuer die kraeftige Umrandung im Plan-Editor. Die einzelnen
+        // Ansichten behalten ihre relative Staffelung als Faktor (siehe
+        // MarkierungFaktor... im PlanEditorDialog). Default 2.5 = bisheriges
+        // Verhalten. Die zugehoerige Farbe liegt als Sonderfarbe im Sheet
+        // "Farben" (Farbcode.KeyMarkierung), nicht hier.
+        public double MarkierungDicke = 2.5;
+
+        // ---- Rahmendicke der Unterschiede im Vergleichsmodus ----
+        // Basiswert fuer die Umrandung der unterschiedlich belegten Slots (A vs.
+        // B). Default 2.0 = bisheriges Verhalten. Farbe liegt als Sonderfarbe im
+        // Sheet "Farben" (Farbcode.KeyVergleich).
+        public double VergleichDicke = 2.0;
+
         /// <summary>Es liegt eine (mindestens Groessen-) Geometrie zum Wiederherstellen vor.</summary>
         public bool HatGeometrie =>
             !double.IsNaN(FensterBreite) && !double.IsNaN(FensterHoehe) &&
@@ -139,6 +153,17 @@ namespace Stundenplan_V2
                 double zoom = LiesDouble(w, "Zoom");
                 if (!double.IsNaN(zoom) && zoom >= 0.2 && zoom <= 3.0)
                     cfg.Zoom = zoom;
+
+                // Rahmendicke nur uebernehmen, wenn plausibel. Ein Unsinnswert
+                // (0, negativ, riesig) wuerde die Zelle sonst unbrauchbar
+                // umranden; dann lieber still auf dem Default bleiben.
+                double dicke = LiesDouble(w, "MarkierungDicke");
+                if (!double.IsNaN(dicke) && dicke >= 0.5 && dicke <= 8.0)
+                    cfg.MarkierungDicke = dicke;
+
+                double dickeVgl = LiesDouble(w, "VergleichDicke");
+                if (!double.IsNaN(dickeVgl) && dickeVgl >= 0.5 && dickeVgl <= 8.0)
+                    cfg.VergleichDicke = dickeVgl;
             }
             catch
             {
@@ -196,6 +221,8 @@ namespace Stundenplan_V2
             Schreibe("Lehrer", Lehrer ?? "");
             Schreibe("Klasse", Klasse ?? "");
             Schreibe("Zoom", Zoom.ToString("0.00", CultureInfo.InvariantCulture));
+            Schreibe("MarkierungDicke", MarkierungDicke.ToString("0.00", CultureInfo.InvariantCulture));
+            Schreibe("VergleichDicke", VergleichDicke.ToString("0.00", CultureInfo.InvariantCulture));
 
             if (HatGeometrie)
             {

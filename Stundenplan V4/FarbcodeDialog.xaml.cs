@@ -124,17 +124,37 @@ namespace Stundenplan_V2
         public Dictionary<string, Color> Sonderfarben { get; private set; }
             = new(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// Basis-Rahmendicke der angeklickten Zelle. Anders als die Farben (Sheet
+        /// "Farben") wird dieser Wert vom Aufrufer in den Editor-Einstellungen
+        /// (EdCfg) gespeichert — er ist keine Farbe. Nur nach DialogResult == true
+        /// gueltig.
+        /// </summary>
+        public double MarkierungDicke { get; private set; }
+
+        /// <summary>
+        /// Basis-Rahmendicke der unterschiedlich belegten Slots im Vergleichsmodus.
+        /// Wie <see cref="MarkierungDicke"/> keine Farbe; wird vom Aufrufer in den
+        /// Editor-Einstellungen (EdCfg) gespeichert. Nur nach DialogResult == true
+        /// gueltig.
+        /// </summary>
+        public double VergleichDicke { get; private set; }
+
         /// <param name="klassenNamen">Klassen der aktuellen Lösung.</param>
         /// <param name="fachNamen">Fächer der aktuellen Lösung.</param>
         /// <param name="klassenfarben">Bisherige Zuordnung (aus dem Sheet "Farben").</param>
         /// <param name="fachfarben">Bisherige Zuordnung (aus dem Sheet "Farben").</param>
         /// <param name="sonderfarben">Bisherige Sonderfarben (aus dem Sheet "Farben").</param>
+        /// <param name="markierungDicke">Aktuelle Basis-Rahmendicke der angeklickten Zelle.</param>
+        /// <param name="vergleichDicke">Aktuelle Basis-Rahmendicke der Unterschiede im Vergleichsmodus.</param>
         public FarbcodeDialog(string excelPfad,
                               IEnumerable<string> klassenNamen,
                               IEnumerable<string> fachNamen,
                               IDictionary<string, Color> klassenfarben,
                               IDictionary<string, Color> fachfarben,
-                              IDictionary<string, Color> sonderfarben)
+                              IDictionary<string, Color> sonderfarben,
+                              double markierungDicke,
+                              double vergleichDicke)
         {
             InitializeComponent();
 
@@ -149,6 +169,23 @@ namespace Stundenplan_V2
             LstSonder.ItemsSource = _sonder;
 
             BauePalette();
+
+            // Rahmendicke-Regler auf die uebergebenen Werte setzen (auf den
+            // Slider-Bereich begrenzt) und die Wertanzeigen mitfuehren.
+            InitDickeRegler(SldDicke, TxtDickeWert, markierungDicke);
+            InitDickeRegler(SldDickeVgl, TxtDickeVglWert, vergleichDicke);
+        }
+
+        // Regler auf einen Startwert setzen (begrenzt auf Min/Max) und die
+        // zugehoerige Wertanzeige daran koppeln.
+        private static void InitDickeRegler(System.Windows.Controls.Slider slider,
+                                            System.Windows.Controls.TextBlock anzeige,
+                                            double startwert)
+        {
+            double start = Math.Max(slider.Minimum, Math.Min(slider.Maximum, startwert));
+            slider.Value = start;
+            anzeige.Text = start.ToString("0.0");
+            slider.ValueChanged += (s, e) => anzeige.Text = slider.Value.ToString("0.0");
         }
 
         // Anzeigeliste = Namen aus der Lösung UND bereits gespeicherte Namen.
@@ -195,6 +232,10 @@ namespace Stundenplan_V2
                     Farbcode.KeySpaetPaed, Farbcode.StandardSpaetPaed);
             Eintrag("Späte päd. Einheit — voll fixiert",
                     Farbcode.KeySpaetPaedFix, Farbcode.StandardSpaetPaedFix);
+            Eintrag("Rahmen angeklickte Zelle (päd. Einheit)",
+                    Farbcode.KeyMarkierung, Farbcode.StandardMarkierung);
+            Eintrag("Rahmen Unterschiede (Vergleichsmodus)",
+                    Farbcode.KeyVergleich, Farbcode.StandardVergleich);
         }
 
         // Klassen wie "5a"/"10b" sollen nach der führenden Zahl sortiert werden
@@ -333,6 +374,12 @@ namespace Stundenplan_V2
             Klassenfarben = klassen;
             Fachfarben = faecher;
             Sonderfarben = sonder;
+
+            // Rahmendicke ist keine Farbe und wird nicht ins Sheet "Farben"
+            // geschrieben; der Aufrufer merkt sie sich in den Editor-
+            // Einstellungen (EdCfg). Auf eine Nachkommastelle runden.
+            MarkierungDicke = Math.Round(SldDicke.Value, 1);
+            VergleichDicke = Math.Round(SldDickeVgl.Value, 1);
 
             DialogResult = true;
             Close();
