@@ -50,10 +50,23 @@ namespace Stundenplan_V2
             public string Zt2 { get; set; } = "";
             public string Status { get; set; } = "";
 
+            // Getrennte Spalte "in FixUnr" (analog zum Dialog Unterrichte
+            // ignorieren / fixieren): Anzahl der Plan-Positionen der UNr, die
+            // tatsaechlich in der Tabelle "Fix UNrn" stehen (leer = 0). Wird in
+            // BerechneFixStatus aus dem aktuell gewaehlten Plan gesetzt.
+            public string InFixUNr { get; set; } = "";
+
+            // Aus der UV-Spalte "Ignore (i)"/"Fix (X)" abgeleiteter Grundzustand
+            // ("ignoriert"/"fixiert"/"ignoriert + fixiert"/"–"). Die angezeigte
+            // Spalte Status ist genau dieser Wert (der positionsbezogene Zustand
+            // steht getrennt in InFixUNr).
+            public string BasisStatus { get; set; } = "";
+
             // Nicht angezeigt, nur für Filter/Summen
             public int UNrZahl { get; set; }
             public double WstZahl { get; set; }
             public bool Ignoriert { get; set; }
+            public bool Fixiert { get; set; }   // UV-Marker "Fix (X)"
             public List<string> KlassenListe { get; set; } = new();
 
             public Brush ZeilenFarbe { get; set; } = Brushes.Transparent;
@@ -68,6 +81,10 @@ namespace Stundenplan_V2
         private int _colLehrer = -1, _colFach = -1, _colKlassen = -1,
                     _colWst = -1, _colLtkz = -1, _colDopp = -1, _colFachraum = -1, _colZt2 = -1;
 
+        // Spalten der UV-Marker Ignore (i) / Fix (X), fuer das Rechtsklick-Menue
+        // (Ignorieren / Nicht ignorieren / Fixieren / Entfixieren). -1 = fehlt.
+        private int _colIgnore = -1, _colFix = -1;
+
         // Der Warnhinweis-Dialog wird nur einmal pro Fenster-Sitzung gezeigt.
         private bool _warnungGezeigt = false;
 
@@ -76,6 +93,20 @@ namespace Stundenplan_V2
         // stehen). Rückgabe leer = Sprung hat geklappt, sonst der Grund,
         // warum nicht (z.B. Lehrer in dieser Lösung nicht auswählbar).
         private readonly Func<string, string, string> _springeCallback;
+
+        // Positionsbezogene Fixierung (Tabelle "Fix UNrn") gegen den aktuell im
+        // Plan-Editor gewaehlten Plan. Beide duerfen null sein (dann bleibt die
+        // Status-Spalte rein informativ aus den UV-Spalten und ist nicht
+        // umschaltbar).
+        //   _fixInfoCallback(UNr) -> (platziert, davonFixiert, Positionstext):
+        //       platziert  = Anzahl Slots, in denen die UNr im aktuell gewaehlten
+        //                    Plan liegt; davonFixiert = wie viele davon in
+        //                    "Fix UNrn" stehen; Positionstext = z.B. "Mo 3., Di 5.".
+        //   _umschalteFixCallback(UNr) -> Meldung: fixiert die UNr an ihren
+        //       aktuellen Plan-Positionen bzw. entfernt die Fixierung (Toggle);
+        //       Rueckgabe beginnt bei Problemen mit "⚠".
+        private readonly Func<int, (int platziert, int fixiert, string positionen)> _fixInfoCallback;
+        private readonly Func<int, string> _umschalteFixCallback;
 
         private readonly TextBox _txtLehrer;
         private readonly TextBox _txtKlasse;
@@ -92,10 +123,14 @@ namespace Stundenplan_V2
         public bool Gekoppelt => _chkKoppeln.IsChecked == true;
 
         public UvAnzeigeWindow(string excelPfad, string lehrer, string klasse,
-                               Func<string, string, string> springeCallback = null)
+                               Func<string, string, string> springeCallback = null,
+                               Func<int, (int platziert, int fixiert, string positionen)> fixInfoCallback = null,
+                               Func<int, string> umschalteFixCallback = null)
         {
             _excelPfad = excelPfad;
             _springeCallback = springeCallback;
+            _fixInfoCallback = fixInfoCallback;
+            _umschalteFixCallback = umschalteFixCallback;
             Width = 1120;
             Height = 620;
             WindowStartupLocation = WindowStartupLocation.Manual;
@@ -153,7 +188,20 @@ namespace Stundenplan_V2
             };
             top.Children.Add(_chkSpringen);
 
-            var btnReload = new Button { Content = "Neu laden", Width = 100, Margin = new Thickness(0, 0, 8, 0), Padding = new Thickness(0, 2, 0, 2) };
+            var btnReload = new Button
+            {
+                Content = "Neu laden",
+                Width = 100,
+                Margin = new Thickness(0, 0, 8, 0),
+                Padding = new Thickness(0, 2, 0, 2),
+                ToolTip = "Liest das Sheet „UV“ frisch aus der Excel-Datei ein und zeigt wieder " +
+                          "genau den Dateistand — nützlich, wenn die UV zwischenzeitlich " +
+                          "anderswo geändert wurde (Excel, anderes UV-Fenster). Betrifft nur die " +
+                          "Anzeige aus der Datei, nicht den gerechneten Plan; Ignore/Fix-Marker " +
+                          "wirken auf einen Plan erst nach Neu-Einlesen (Button 1)/Neu-Rechnen " +
+                          "(Button 10). Die Spalte „in FixUnr“ hängt am aktuellen Plan und wird " +
+                          "auch ohne Neu laden aktualisiert."
+            };
             btnReload.Click += (s, e) => { LadeZeilen(); AktualisiereAnzeige(); };
             top.Children.Add(btnReload);
 
@@ -168,7 +216,10 @@ namespace Stundenplan_V2
             {
                 Text = "⚠ UV editierbar: Änderungen werden sofort in die Excel-Datei geschrieben, " +
                        "wirken aber erst nach Neu-Einlesen (Button 1) und – bei Lehrer/Fach/Klasse(n)/Wst – " +
-                       "nach Neu-Rechnen (Button 10). Der aktuell angezeigte Plan ändert sich dadurch nicht.",
+                       "nach Neu-Rechnen (Button 10). Der aktuell angezeigte Plan ändert sich dadurch nicht. " +
+                       "Rechtsklick auf markierte Zeile(n): Ignorieren / Nicht ignorieren / Fixieren / Entfixieren " +
+                       "(UV-Marker, wirkt nach Neu-Einlesen/Rechnen). Doppelklick auf die Spalte „in FixUnr“ " +
+                       "fixiert/entfixiert die UNr an ihren Positionen im aktuell gewählten Plan (Tabelle „Fix UNrn“) – das wirkt sofort im Editor.",
                 Foreground = Brushes.DarkRed,
                 FontWeight = FontWeights.SemiBold,
                 TextWrapping = TextWrapping.Wrap,
@@ -220,9 +271,21 @@ namespace Stundenplan_V2
             AddCol("Dopp.Std.", nameof(UvZeile.DoppStd), 75);
             AddCol("Fachraum", nameof(UvZeile.Fachraum), 85);
             AddCol("ZeilenText-2", nameof(UvZeile.Zt2), 120);
-            AddCol("Status", nameof(UvZeile.Status), 120, readOnly: true); // abgeleitet aus Ignore/Fix: nur lesen
+            // Analog zum Dialog "Unterrichte ignorieren / fixieren": Status zeigt
+            // NUR den UV-Grundzustand (ignoriert/fixiert/– aus Ignore(i)/Fix(X)),
+            // die positionsbezogene Fixierung steht getrennt in "in FixUnr".
+            AddCol("Status", nameof(UvZeile.Status), 120, readOnly: true);
+            // "in FixUnr": Anzahl der Plan-Positionen der UNr in der Tabelle
+            // "Fix UNrn" (leer = keine). Doppelklick schaltet die Positions-
+            // fixierung an den aktuellen Plan-Positionen um (Grid_MouseDoubleClick).
+            AddCol("in FixUnr", nameof(UvZeile.InFixUNr), 80, readOnly: true);
 
             dock.Children.Add(_grid);
+
+            // Rechtsklick-Menue mit den vier Marker-Aktionen (wie im Dialog):
+            // wirkt auf die aktuell markierten Zeilen (Maus-Auswahl, Extended).
+            BaueKontextMenu();
+            _grid.PreviewMouseRightButtonDown += Grid_RechtsklickWaehltZeile;
 
             Content = dock;
 
@@ -338,6 +401,7 @@ namespace Stundenplan_V2
                 _colLehrer = colLehrer; _colFach = colFach; _colKlassen = colKlassen;
                 _colWst = colWst; _colLtkz = colLtkz; _colDopp = colDopp;
                 _colFachraum = colFachraum; _colZt2 = colZt2;
+                _colIgnore = colIgnore; _colFix = colFix;
 
                 var bereich = sheet.RangeUsed();
                 if (bereich == null) return;
@@ -353,22 +417,7 @@ namespace Stundenplan_V2
                     bool ignoriert = ignoreW == "i" || ignoreW == "x";
                     bool fixiert = fixW == "x";
 
-                    string status = (ignoriert, fixiert) switch
-                    {
-                        (true, true) => "ignoriert + fixiert",
-                        (true, false) => "ignoriert",
-                        (false, true) => "fixiert",
-                        _ => "–"
-                    };
-
-                    // Farben identisch zum Dialog "Unterrichte ignorieren / fixieren"
-                    Brush farbe = (ignoriert, fixiert) switch
-                    {
-                        (true, true) => new SolidColorBrush(Color.FromRgb(0xE5, 0xD4, 0xF5)),  // violett
-                        (true, false) => new SolidColorBrush(Color.FromRgb(0xFA, 0xE8, 0xB0)), // amber
-                        (false, true) => new SolidColorBrush(Color.FromRgb(0xCF, 0xE2, 0xFF)), // blau
-                        _ => Brushes.Transparent
-                    };
+                    var (status, farbe, _) = StatusUndFarbe(ignoriert, fixiert);
 
                     string klassenRoh = Text(row, colKlassen);
                     var klassenListe = klassenRoh
@@ -397,7 +446,9 @@ namespace Stundenplan_V2
                         Fachraum = Text(row, colFachraum),
                         Zt2 = Text(row, colZt2),
                         Status = status,
+                        BasisStatus = status,
                         Ignoriert = ignoriert,
+                        Fixiert = fixiert,
                         ZeilenFarbe = farbe
                     });
                 }
@@ -406,6 +457,220 @@ namespace Stundenplan_V2
             {
                 MessageBox.Show("Konnte UV nicht lesen: " + ex.Message,
                     "UV anzeigen", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            // Positionsbezogene Fixierung (Tabelle "Fix UNrn", gegen den aktuell
+            // gewaehlten Plan) in die Spalte InFixUNr schreiben. Nur Modell, kein
+            // Grid-Refresh noetig — die anschliessende AktualisiereAnzeige zeigt es.
+            BerechneFixStatus();
+        }
+
+        // =====================================================
+        // Positionsbezogene Fixierung (Tabelle "Fix UNrn")
+        // =====================================================
+
+        // Setzt fuer alle Zeilen die getrennten Anzeigefelder analog zum Dialog
+        // "Unterrichte ignorieren / fixieren":
+        //   Status   = reiner UV-Grundzustand (ignoriert / fixiert / – aus den
+        //              Spalten Ignore (i) / Fix (X)).
+        //   InFixUNr = Anzahl der Plan-Positionen der UNr, die tatsaechlich in der
+        //              Tabelle "Fix UNrn" stehen (leer = 0). Das ist die echte,
+        //              positionsbezogene Fixierung gegen den aktuell gewaehlten
+        //              Plan — getrennt vom bloszen "X"-Marker der Spalte Fix (X).
+        private void BerechneFixStatus()
+        {
+            foreach (var z in _alleZeilen)
+            {
+                z.Status = string.IsNullOrEmpty(z.BasisStatus) ? "–" : z.BasisStatus;
+
+                if (_fixInfoCallback != null)
+                {
+                    var (p, f, _) = _fixInfoCallback(z.UNrZahl);
+                    // Anzahl fixierter Positionen; bei Teilfixierung f/p, damit man
+                    // sieht, dass noch nicht alle Stunden festgenagelt sind.
+                    z.InFixUNr = f <= 0 ? "" : (f >= p ? f.ToString() : $"{f}/{p}");
+                }
+                else z.InFixUNr = "";
+            }
+        }
+
+        // Wie BerechneFixStatus, aktualisiert danach aber auch die sichtbare
+        // Tabelle. Vom Plan-Editor aufgerufen, wenn sich der gewaehlte Plan oder
+        // eine Fixierung geaendert hat, sowie nach eigenem Umschalten.
+        public void AktualisiereFixSpalte()
+        {
+            BerechneFixStatus();
+            // Items.Refresh wirft waehrend einer laufenden Zell-Edit-Transaktion;
+            // in dem Fall ist ein Refresh ohnehin unnoetig.
+            try { _grid?.Items.Refresh(); } catch { /* Edit aktiv */ }
+        }
+
+        // Status-Text und Zeilenfarbe aus den beiden UV-Markern — identisch zum
+        // Dialog "Unterrichte ignorieren / fixieren": ignoriert = amber, fixiert
+        // = blau, beides = amber (ignoriert hat Vorrang), sonst transparent.
+        private static (string status, Brush farbe, bool eingefaerbt) StatusUndFarbe(
+            bool ignoriert, bool fixiert)
+        {
+            string status = (ignoriert, fixiert) switch
+            {
+                (true, true)  => "ignoriert + fixiert",
+                (true, false) => "ignoriert",
+                (false, true) => "fixiert",
+                _             => "–"
+            };
+            Brush farbe = (ignoriert, fixiert) switch
+            {
+                (true, true)  => new SolidColorBrush(Color.FromRgb(0xFA, 0xE8, 0xB0)), // amber
+                (true, false) => new SolidColorBrush(Color.FromRgb(0xFA, 0xE8, 0xB0)), // amber
+                (false, true) => new SolidColorBrush(Color.FromRgb(0xCF, 0xE2, 0xFF)), // blau
+                _             => Brushes.Transparent
+            };
+            return (status, farbe, ignoriert || fixiert);
+        }
+
+        // =====================================================
+        // UV-Marker umschalten (Ignore (i) / Fix (X)) — analog zu den vier
+        // Aktionen des Dialogs "Unterrichte ignorieren / fixieren". Schreibt den
+        // Marker direkt in die Excel-Zeile und faerbt die Tabellenzeile sofort um;
+        // die WIRKUNG auf einen Plan tritt aber — wie beim Dialog — erst nach
+        // Neu-Einlesen (Ignore/Fix-Marker) bzw. Neu-Rechnen ein. Die
+        // positionsbezogene Fixierung (Spalte InFixUNr / Tabelle "Fix UNrn") ist
+        // davon unabhaengig und wird ueber Doppelklick auf InFixUNr geschaltet.
+        // =====================================================
+        private enum MarkerAktion { Ignorieren, NichtIgnorieren, Fixieren, Entfixieren }
+
+        private void WendeMarkerAktionAn(List<UvZeile> zeilen, MarkerAktion art)
+        {
+            if (zeilen == null || zeilen.Count == 0)
+            {
+                _txtMeldung.Foreground = Brushes.DarkRed;
+                _txtMeldung.Text = "⚠ Keine Zeile markiert (Zeile(n) mit der Maus auswaehlen, dann Rechtsklick).";
+                return;
+            }
+            if (_colIgnore < 0 || _colFix < 0)
+            {
+                _txtMeldung.Foreground = Brushes.DarkRed;
+                _txtMeldung.Text = "⚠ Spalte 'Ignore (i)' bzw. 'Fix (X)' in UV nicht gefunden.";
+                return;
+            }
+
+            int geaendert = 0;
+            try
+            {
+                using var wb = new XLWorkbook(_excelPfad);
+                if (!wb.Worksheets.Any(w => w.Name == "UV"))
+                {
+                    MessageBox.Show("Kein Sheet „UV“ in der Datei gefunden.",
+                        "UV bearbeiten", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                var sheet = wb.Worksheet("UV");
+
+                foreach (var z in zeilen)
+                {
+                    var row = sheet.Row(z.ExcelZeile);
+                    switch (art)
+                    {
+                        case MarkerAktion.Ignorieren:
+                            row.Cell(_colIgnore).Value = "i";
+                            z.Ignoriert = true;
+                            geaendert++;
+                            break;
+                        case MarkerAktion.NichtIgnorieren:
+                            {
+                                string a = row.Cell(_colIgnore).GetString().Trim().ToLower();
+                                if (a == "i" || a == "x") row.Cell(_colIgnore).Value = "";
+                                z.Ignoriert = false;
+                                geaendert++;
+                                break;
+                            }
+                        case MarkerAktion.Fixieren:
+                            row.Cell(_colFix).Value = "X";
+                            z.Fixiert = true;
+                            geaendert++;
+                            break;
+                        case MarkerAktion.Entfixieren:
+                            {
+                                string a = row.Cell(_colFix).GetString().Trim().ToLower();
+                                if (a == "x") row.Cell(_colFix).Value = "";
+                                z.Fixiert = false;
+                                geaendert++;
+                                break;
+                            }
+                    }
+                }
+                wb.Save();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    "Speichern fehlgeschlagen – ist die Datei gerade in Excel geöffnet?\n\n" + ex.Message,
+                    "UV bearbeiten", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // Modell/Anzeige nachziehen (BasisStatus + Farbe aus den neuen Markern).
+            foreach (var z in zeilen)
+            {
+                var (status, farbe, _) = StatusUndFarbe(z.Ignoriert, z.Fixiert);
+                z.BasisStatus = status;
+                z.ZeilenFarbe = farbe;
+            }
+
+            AktualisiereAnzeige();   // Fußzeile (ignorierte Zahl, Σ Wst) + Zeilenfarben
+            AktualisiereFixSpalte(); // Status/InFixUNr + Grid-Refresh
+
+            string wort = art switch
+            {
+                MarkerAktion.Ignorieren     => "ignoriert ('i' gesetzt)",
+                MarkerAktion.NichtIgnorieren => "nicht mehr ignoriert ('i' entfernt)",
+                MarkerAktion.Fixieren       => "fixiert ('X' gesetzt)",
+                MarkerAktion.Entfixieren    => "entfixiert ('X' entfernt)",
+                _ => ""
+            };
+            _txtMeldung.Foreground = Brushes.DarkGreen;
+            _txtMeldung.Text = $"{geaendert} Zeile(n) {wort}. Wirkt im Plan erst nach Neu-Einlesen/Rechnen.";
+        }
+
+        // Baut das Rechtsklick-Menue der Tabelle mit den vier Marker-Aktionen.
+        // Jede Aktion wirkt auf die aktuell markierten Zeilen (Maus-Auswahl).
+        private void BaueKontextMenu()
+        {
+            var cm = new ContextMenu();
+
+            MenuItem Eintrag(string kopf, MarkerAktion art)
+            {
+                var mi = new MenuItem { Header = kopf };
+                mi.Click += (s, e) =>
+                    WendeMarkerAktionAn(_grid.SelectedItems.Cast<UvZeile>().ToList(), art);
+                return mi;
+            }
+
+            cm.Items.Add(Eintrag("Ignorieren ('i' setzen)", MarkerAktion.Ignorieren));
+            cm.Items.Add(Eintrag("Nicht ignorieren ('i' entfernen)", MarkerAktion.NichtIgnorieren));
+            cm.Items.Add(new Separator());
+            cm.Items.Add(Eintrag("Fixieren ('X' setzen)", MarkerAktion.Fixieren));
+            cm.Items.Add(Eintrag("Entfixieren ('X' entfernen)", MarkerAktion.Entfixieren));
+
+            _grid.ContextMenu = cm;
+        }
+
+        // Rechtsklick markiert die getroffene Zeile, falls sie nicht ohnehin Teil
+        // der aktuellen Auswahl ist — damit das Kontextmenue auf die "gemeinte"
+        // Zeile wirkt und nicht auf eine zufaellig noch markierte andere.
+        private void Grid_RechtsklickWaehltZeile(object sender, MouseButtonEventArgs e)
+        {
+            var dep = e.OriginalSource as DependencyObject;
+            while (dep != null && dep is not DataGridRow)
+                dep = VisualTreeHelper.GetParent(dep);
+
+            if (dep is DataGridRow row && row.Item is UvZeile z)
+            {
+                if (!_grid.SelectedItems.Contains(z))
+                {
+                    _grid.SelectedItems.Clear();
+                    _grid.SelectedItem = z;
+                }
             }
         }
 
@@ -425,8 +690,6 @@ namespace Stundenplan_V2
         // =====================================================
         private void Grid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
-            if (_springeCallback == null || _chkSpringen.IsChecked != true) return;
-
             // Angeklickte Zelle aus dem Visual Tree heraussuchen (die
             // DataGridTextColumn erzeugt einen TextBlock als OriginalSource).
             var dep = e.OriginalSource as DependencyObject;
@@ -437,6 +700,32 @@ namespace Stundenplan_V2
             if (zelle.DataContext is not UvZeile zeile) return;
 
             string spalte = zelle.Column?.Header as string ?? "";
+
+            // Spalte "in FixUnr": Positionsfixierung an den aktuellen Plan-
+            // Positionen umschalten (unabhaengig vom Sprung-Schalter, der nur
+            // fuer Lehrer/Klasse gilt). Die UV-Marker (Status) laufen dagegen
+            // ueber das Rechtsklick-Menue.
+            if (spalte == "in FixUnr")
+            {
+                if (_umschalteFixCallback == null) return;
+                string meldung;
+                try { meldung = _umschalteFixCallback(zeile.UNrZahl); }
+                catch (Exception ex) { meldung = "⚠ Fehler bei Fixierung: " + ex.Message; }
+
+                AktualisiereFixSpalte();
+
+                if (!string.IsNullOrWhiteSpace(meldung))
+                {
+                    bool problem = meldung.StartsWith("⚠");
+                    _txtMeldung.Foreground = problem ? Brushes.DarkRed : Brushes.DarkGreen;
+                    _txtMeldung.Text = meldung;
+                }
+                e.Handled = true;
+                return;
+            }
+
+            // Lehrer/Klasse: im Editor auf diese Auswahl springen.
+            if (_springeCallback == null || _chkSpringen.IsChecked != true) return;
 
             if (spalte == "Lehrer")
             {

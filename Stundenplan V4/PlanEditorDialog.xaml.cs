@@ -141,9 +141,30 @@ namespace Stundenplan_V2
 
         // Welcher Plantyp in einer Kachel/einem Grid steckt. Lehrer und Klasse
         // sind die beiden editierbaren Pläne (siehe ZeichneEinGrid mit dem
-        // bisherigen bool-Schalter lehrerAnsicht); Fachgruppe ist eine reine
-        // Ansicht mit eigenem Zellaufbau (ZeichneEinFachgruppenGrid).
-        private enum PlanArt { Lehrer, Klasse, Fachgruppe }
+        // bisherigen bool-Schalter lehrerAnsicht); Fachgruppe und Fach sind reine
+        // Ansichten mit gemeinsamem Zellaufbau (ZeichneEinAnsichtGrid), die sich
+        // nur im AnsichtsSchluessel (nach was gruppiert wird) unterscheiden.
+        private enum PlanArt { Lehrer, Klasse, Fachgruppe, Fach }
+
+        // Beschreibt einen der beiden reinen Ansichts-Plaene, indem er die drei
+        // Dinge buendelt, in denen sich Fachgruppen- und Faecherplan ueberhaupt
+        // unterscheiden: WONACH je Teilunterricht gruppiert wird (Selektor),
+        // ob/welches Raum-Limit gilt (Limit; null = keins -> reiner Zaehler) und
+        // die Kopf-Beschriftung. Alles andere (Zellaufbau, Badge, Tooltip, Popup,
+        // Klick-Sprung) ist identisch und in den generischen Methoden gebuendelt.
+        private sealed class AnsichtsSchluessel
+        {
+            public readonly Func<TeilUnterricht, string> Sel;
+            public readonly Func<string, int?> Limit;
+            public readonly string KopfPrefix;
+            public AnsichtsSchluessel(
+                Func<TeilUnterricht, string> sel, Func<string, int?> limit, string kopfPrefix)
+            { Sel = sel; Limit = limit; KopfPrefix = kopfPrefix; }
+        }
+
+        // In der Loesung initialisiert (brauchen die Instanzmethode FachgruppenLimit).
+        private readonly AnsichtsSchluessel _schlFachgruppe;
+        private readonly AnsichtsSchluessel _schlFach;
 
         // ---- Angeheftete Pläne (mehrere Lehrer-/Klassenpläne gleichzeitig
         // sichtbar und bearbeitbar, zusätzlich zu den normalen Lehrer-/
@@ -213,6 +234,19 @@ namespace Stundenplan_V2
             _bewParam = bewParam ?? new BewertungsParameter();
             _ignorierteUnterrichte = ignorierteUnterrichte ?? new List<IgnorierterUnterricht>();
             _excelPfad = excelPfad;
+
+            // Schluessel fuer die beiden reinen Ansichts-Plaene (Fachgruppen-
+            // und Faecherplan). Beide teilen sich denselben Zell-/Badge-/Popup-
+            // Aufbau (ZeichneEinAnsichtGrid & Co.); der Schluessel legt nur fest,
+            // WONACH je Slot gruppiert und gezaehlt wird und ob es ein Limit gibt.
+            //   Fachgruppe: nach t.FachGruppe, Limit aus Sheet FGR -> Auslastungs-
+            //               Badge "belegt/Limit" mit Ueberbuchungs-Faerbung.
+            //   Fach:       nach t.Fach, KEIN Limit -> Badge ist ein reiner
+            //               Parallelitaets-Zaehler, immer neutral.
+            _schlFachgruppe = new AnsichtsSchluessel(
+                t => t.FachGruppe, FachgruppenLimit, "FACHGRUPPENPLAN");
+            _schlFach = new AnsichtsSchluessel(
+                t => t.Fach, _ => null, "FAECHERPLAN");
 
             // Farbcode aus dem Sheet "Farben" lesen. Rein optisch: fehlt die
             // Datei oder das Sheet, bleibt der Farbcode leer und der Editor
@@ -328,6 +362,9 @@ namespace Stundenplan_V2
 
             if (cfg.Fachgruppenplan && ChkFachgruppenPlan.IsChecked != true)
                 ChkFachgruppenPlan.IsChecked = true;
+
+            if (cfg.Faecherplan && ChkFaecherPlan.IsChecked != true)
+                ChkFaecherPlan.IsChecked = true;
 
             if (cfg.Vergleichsmodus)
             {
@@ -469,6 +506,7 @@ namespace Stundenplan_V2
                     SpaetePaedFix      = ChkSpaetePaedFix.IsChecked == true,
                     Klassenvergleich   = ChkKlassenVergleich.IsChecked == true,
                     Fachgruppenplan    = ChkFachgruppenPlan.IsChecked == true,
+                    Faecherplan        = ChkFaecherPlan.IsChecked == true,
                     Vergleichsmodus    = ChkVergleichsModus.IsChecked == true,
                     IgnorierteZeigen   = ChkIgnorierteZeigen.IsChecked == true,
                     FilterVerletzungen = ChkFilterVerletzungen.IsChecked == true,
@@ -563,6 +601,7 @@ namespace Stundenplan_V2
             PruefeUndZeigeWarnungen();
             SetStatus("Lösung '" + label + "' geladen.", false);
             AktualisiereDiagFenster();
+            AktualisiereUvFenster();
         }
 
         private void CboLehrer_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -850,7 +889,7 @@ namespace Stundenplan_V2
             }
 
             var fenster = new UvAnzeigeWindow(_excelPfad, AktuellerDiagLehrer(), AktuelleUvKlasse(),
-                                              SpringeZuLehrerKlasse)
+                                              SpringeZuLehrerKlasse, UvFixInfo, UvUmschalteFix)
             {
                 Owner = this
             };
@@ -865,16 +904,97 @@ namespace Stundenplan_V2
             fenster.Show();
         }
 
-        // Aktualisiert nur die UV-Fenster, die "an Auswahl koppeln" angehakt
-        // haben. Alle übrigen behalten ihren beim Öffnen gesetzten Filter.
+        // Aktualisiert die UV-Fenster. Den Lehrer-/Klassen-Filter ziehen nur die
+        // gekoppelten Fenster nach; die positionsbezogene Status-Spalte ("Fix
+        // UNrn" gegen den aktuell gewaehlten Plan) wird dagegen in ALLEN Fenstern
+        // aufgefrischt, weil sie vom Plan abhaengt und nicht vom Filter.
         private void AktualisiereUvFenster()
         {
             if (_uvFenster.Count == 0) return;
             string lehrer = AktuellerDiagLehrer();
             string klasse = AktuelleUvKlasse();
             foreach (var f in _uvFenster.ToList())
+            {
                 if (f.Gekoppelt)
                     f.Zeige(lehrer, klasse);
+                f.AktualisiereFixSpalte();
+            }
+        }
+
+        // Positionsbezogene Fix-Info einer UNr gegen den aktuell gewaehlten Plan
+        // (_belegung/_slots). platziert = Zahl der Slots, in denen die UNr liegt;
+        // fixiert = wie viele davon in "Fix UNrn" stehen; positionen = Klartext.
+        private (int platziert, int fixiert, string positionen) UvFixInfo(int unr)
+        {
+            var slots = PlatzierteSlotsDerUNr(unr);
+            int fixiert = slots.Count(s => _slots[s].FixUNrn.Contains(unr));
+            string pos = string.Join(", ", slots.Select(s => _slots[s].WTag + " " + _slots[s].Stunde + "."));
+            return (slots.Count, fixiert, pos);
+        }
+
+        // Toggle der Positionsfixierung einer UNr an ihren AKTUELLEN Plan-Slots:
+        // ist die UNr an allen ihren Plan-Positionen fixiert -> alle entfernen,
+        // sonst die noch offenen fixieren (auf "voll" bringen). Schreibt ueber
+        // _aendereFixUNrCallback in Tabelle "Fix UNrn" und aktualisiert _slots.
+        // Rueckgabe: Meldung fuer die UV-Fussleiste ("⚠" = Problem).
+        private string UvUmschalteFix(int unr)
+        {
+            if (_aendereFixUNrCallback == null)
+                return "⚠ Fixierung nicht verfuegbar (kein Schreib-Callback).";
+
+            var slots = PlatzierteSlotsDerUNr(unr);
+            if (slots.Count == 0)
+                return $"⚠ UNr {unr} ist im aktuell gewaehlten Plan nicht eingeplant – keine Positionsfixierung moeglich.";
+
+            int fixiert = slots.Count(s => _slots[s].FixUNrn.Contains(unr));
+            bool vollFixiert = fixiert == slots.Count;
+
+            try
+            {
+                if (vollFixiert)
+                {
+                    foreach (int s in slots)
+                        if (_slots[s].FixUNrn.Contains(unr))
+                            _aendereFixUNrCallback.Invoke(s, unr, false);
+                }
+                else
+                {
+                    foreach (int s in slots)
+                        if (!_slots[s].FixUNrn.Contains(unr))
+                            _aendereFixUNrCallback.Invoke(s, unr, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                return "⚠ Fehler bei Fixierung: " + ex.Message;
+            }
+
+            ZeichneBeideGrids();
+            AktualisiereUvFenster();
+
+            string pos = string.Join(", ", slots.Select(s => _slots[s].WTag + " " + _slots[s].Stunde + "."));
+            SetStatus(
+                (vollFixiert ? "Positionsfixierung entfernt: UNr " : "Positionsfixiert: UNr ") + unr,
+                false);
+            return vollFixiert
+                ? $"Positionsfixierung von UNr {unr} entfernt ({slots.Count} Std)."
+                : $"UNr {unr} an {slots.Count} Position(en) fixiert: {pos}";
+        }
+
+        // Alle Slot-Indizes, in denen ein Block dieser UNr im aktuell gewaehlten
+        // Plan liegt (aufsteigend, ohne Doppelte).
+        private List<int> PlatzierteSlotsDerUNr(int unr)
+        {
+            var res = new List<int>();
+            if (_blocks == null || _belegung == null || _slots == null) return res;
+
+            for (int b = 0; b < _blocks.Count; b++)
+            {
+                if (_blocks[b].UNr != unr) continue;
+                for (int s = 0; s < _slots.Count; s++)
+                    if (_belegung[b, s] == 1) res.Add(s);
+            }
+            return res.Distinct().OrderBy(x => x).ToList();
         }
 
         // Rückruf aus einem UV-Fenster (Doppelklick auf Lehrer/Klasse): stellt
@@ -1736,10 +1856,11 @@ namespace Stundenplan_V2
                 CboKlasse.SelectedIndex = idx >= 0 ? idx : 0;
             }
 
-            // Fachgruppen haengen an derselben Loesung und muessen beim Wechsel
-            // genauso neu aufgebaut werden; die bisherige Auswahl bleibt, wenn
-            // es die Gruppe in der neuen Loesung noch gibt.
+            // Fachgruppen UND Faecher haengen an derselben Loesung und muessen
+            // beim Wechsel genauso neu aufgebaut werden; die bisherige Auswahl
+            // bleibt, wenn es Gruppe/Fach in der neuen Loesung noch gibt.
             FuelleFachgruppenDropdown(CboFachgruppe?.SelectedItem as string);
+            FuelleFaecherDropdown(CboFach?.SelectedItem as string);
         }
 
         // Ruft den PlanValidator mit den vollstaendigen Freie-Tage- UND
@@ -1845,6 +1966,7 @@ namespace Stundenplan_V2
             ZeichneLehrerGrid();
             ZeichneKlasseGrid();
             ZeichneFachgruppenGrid();
+            ZeichneFaecherGrid();
             ZeichneAlleAngehefteten();
         }
 
@@ -1967,62 +2089,83 @@ namespace Stundenplan_V2
             if (BrdFachgruppenPlan.Visibility != Visibility.Visible) return;
 
             string gruppe = CboFachgruppe.SelectedItem as string;
-            ZeichneEinFachgruppenGrid(FachgruppenGrid, gruppe);
-            AktualisiereFachgruppenKopf(gruppe);
+            ZeichneEinAnsichtGrid(FachgruppenGrid, gruppe, _schlFachgruppe);
+            AktualisiereAnsichtKopf(LblFachgruppenKopf, gruppe, _schlFachgruppe);
         }
 
-        // Kopfzeile mit Limit, Gesamtzahl der Stunden dieser Gruppe und der
-        // Anzahl ueberbuchter Slots. Bei Ueberbuchung rot, damit man beim
-        // Durchblaettern der Gruppen sofort sieht, welche klemmt.
-        private void AktualisiereFachgruppenKopf(string gruppe)
+        // Analog zum Fachgruppenplan, nur mit dem Fach-Schluessel (kein Limit).
+        private void ZeichneFaecherGrid()
         {
-            if (LblFachgruppenKopf == null) return;
+            if (FaecherGrid == null || BrdFaecherPlan == null) return;
+            if (BrdFaecherPlan.Visibility != Visibility.Visible) return;
 
-            if (gruppe == null || _belegung == null || _blocks == null)
+            string fach = CboFach.SelectedItem as string;
+            ZeichneEinAnsichtGrid(FaecherGrid, fach, _schlFach);
+            AktualisiereAnsichtKopf(LblFaecherKopf, fach, _schlFach);
+        }
+
+        // Kopfzeile beider Ansichten. MIT Limit (Fachgruppe): Limit, Gesamtstunden
+        // und Anzahl ueberbuchter Slots, bei Ueberbuchung rot — damit man beim
+        // Durchblaettern sofort sieht, welche Gruppe klemmt. OHNE Limit (Fach):
+        // Gesamtstunden und die hoechste Parallelitaet, immer neutral (es gibt
+        // nichts zu ueberbuchen).
+        private void AktualisiereAnsichtKopf(TextBlock lbl, string wert, AnsichtsSchluessel schl)
+        {
+            if (lbl == null) return;
+
+            if (wert == null || _belegung == null || _blocks == null)
             {
-                LblFachgruppenKopf.Text = "FACHGRUPPENPLAN";
-                LblFachgruppenKopf.ClearValue(TextBlock.ForegroundProperty);
+                lbl.Text = schl.KopfPrefix;
+                lbl.ClearValue(TextBlock.ForegroundProperty);
                 return;
             }
 
-            int? limit = FachgruppenLimit(gruppe);
-            int stunden = 0, ueberbucht = 0;
+            int? limit = schl.Limit(wert);
+            int stunden = 0, ueberbucht = 0, maxParallel = 0;
             for (int s = 0; s < _slots.Count; s++)
             {
-                var bloecke = BloeckeDerFachgruppeImSlot(s, gruppe);
+                var bloecke = BloeckeImSlot(s, wert, schl.Sel);
                 if (bloecke.Count == 0) continue;
                 stunden += bloecke.Count;
-                var (anzahlA, anzahlB, _) = ZaehleFachgruppe(bloecke, gruppe);
+                var (anzahlA, anzahlB, _) = Zaehle(bloecke, wert, schl.Sel);
+                maxParallel = Math.Max(maxParallel, Math.Max(anzahlA, anzahlB));
                 if (limit.HasValue && (anzahlA > limit.Value || anzahlB > limit.Value))
                     ueberbucht++;
             }
 
-            string limitTxt = !limit.HasValue
-                ? "kein Limit in FGR"
-                : (limit.Value == 1 ? "Limit 1 Raum" : "Limit " + limit.Value + " Raeume");
-            string ueberTxt = !limit.HasValue
-                ? ""
-                : " · " + (ueberbucht == 0
-                    ? "keine Ueberbuchung"
-                    : ueberbucht + (ueberbucht == 1 ? " Ueberbuchung" : " Ueberbuchungen"));
+            if (!limit.HasValue)
+            {
+                // Fach: reiner Zaehler, keine Ueberbuchungs-Semantik.
+                lbl.Text = schl.KopfPrefix + " " + wert +
+                           " — " + stunden + " Std. · max " + maxParallel + " parallel";
+                lbl.ClearValue(TextBlock.ForegroundProperty);
+                return;
+            }
 
-            LblFachgruppenKopf.Text = "FACHGRUPPENPLAN " + gruppe +
-                                      " — " + limitTxt + " · " + stunden + " Std." + ueberTxt;
+            string limitTxt = limit.Value == 1 ? "Limit 1 Raum" : "Limit " + limit.Value + " Raeume";
+            string ueberTxt = " · " + (ueberbucht == 0
+                ? "keine Ueberbuchung"
+                : ueberbucht + (ueberbucht == 1 ? " Ueberbuchung" : " Ueberbuchungen"));
+
+            lbl.Text = schl.KopfPrefix + " " + wert +
+                       " — " + limitTxt + " · " + stunden + " Std." + ueberTxt;
             if (ueberbucht > 0)
-                LblFachgruppenKopf.Foreground = new SolidColorBrush(Color.FromRgb(0xC0, 0x20, 0x20));
+                lbl.Foreground = new SolidColorBrush(Color.FromRgb(0xC0, 0x20, 0x20));
             else
-                LblFachgruppenKopf.ClearValue(TextBlock.ForegroundProperty);
+                lbl.ClearValue(TextBlock.ForegroundProperty);
         }
 
         // Aufbau wie ZeichneEinGrid, nur mit breiteren Zellen und ohne
-        // Interaktivitaets-Schalter (immer reine Ansicht).
-        private void ZeichneEinFachgruppenGrid(Grid grid, string gruppe)
+        // Interaktivitaets-Schalter (immer reine Ansicht). Gemeinsam fuer
+        // Fachgruppen- und Faecherplan; der Schluessel bestimmt Gruppierung,
+        // Limit und Kopf.
+        private void ZeichneEinAnsichtGrid(Grid grid, string wert, AnsichtsSchluessel schl)
         {
             grid.Children.Clear();
             grid.ColumnDefinitions.Clear();
             grid.RowDefinitions.Clear();
 
-            if (gruppe == null || _belegung == null || _blocks == null) return;
+            if (wert == null || _belegung == null || _blocks == null) return;
 
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
             foreach (var _ in _tage)
@@ -2065,7 +2208,7 @@ namespace Stundenplan_V2
                 for (int hi = 0; hi < _stunden.Count; hi++)
                 {
                     int slotIdx = FindeSlot(_tage[ti], _stunden[hi]);
-                    var zelle = BaueFachgruppenZelle(slotIdx, gruppe);
+                    var zelle = BaueAnsichtZelle(slotIdx, wert, schl);
                     Grid.SetRow(zelle, hi + 1);
                     Grid.SetColumn(zelle, ti + 1);
                     grid.Children.Add(zelle);
@@ -2073,11 +2216,13 @@ namespace Stundenplan_V2
             }
         }
 
-        // Eine Zelle des Fachgruppenplans: Bloecke untereinander (anders als im
-        // Lehrer-/Klassenplan, wo parallele Bloecke nebeneinander stehen — hier
-        // sind es potenziell mehr und sie gehoeren verschiedenen Klassen), oben
-        // rechts das Auslastungs-Badge. Keine Drag&Drop-Handler.
-        private Border BaueFachgruppenZelle(int slotIdx, string gruppe)
+        // Eine Zelle einer Ansicht (Fachgruppe/Fach): Bloecke untereinander
+        // (anders als im Lehrer-/Klassenplan, wo parallele Bloecke nebeneinander
+        // stehen — hier sind es potenziell mehr und sie gehoeren verschiedenen
+        // Klassen), oben rechts das Auslastungs-/Zaehler-Badge. Keine
+        // Drag&Drop-Handler. Ohne Limit (Fach) entfallen Ueberbuchung/voll —
+        // dann bleibt die Zelle neutral und das Badge zeigt nur die Anzahl.
+        private Border BaueAnsichtZelle(int slotIdx, string wert, AnsichtsSchluessel schl)
         {
             var border = new Border
             {
@@ -2096,9 +2241,9 @@ namespace Stundenplan_V2
 
             border.Background = Brushes.White;
 
-            var bloecke = BloeckeDerFachgruppeImSlot(slotIdx, gruppe);
-            var (anzahlA, anzahlB, hatWochenTrennung) = ZaehleFachgruppe(bloecke, gruppe);
-            int? limit = FachgruppenLimit(gruppe);
+            var bloecke = BloeckeImSlot(slotIdx, wert, schl.Sel);
+            var (anzahlA, anzahlB, hatWochenTrennung) = Zaehle(bloecke, wert, schl.Sel);
+            int? limit = schl.Limit(wert);
 
             bool ueberbucht = limit.HasValue && (anzahlA > limit.Value || anzahlB > limit.Value);
             bool voll = limit.HasValue && !ueberbucht && (anzahlA == limit.Value || anzahlB == limit.Value);
@@ -2110,12 +2255,12 @@ namespace Stundenplan_V2
             }
 
             // (A) Tooltip mit der VOLLSTÄNDIGEN Belegung an der Zelle.
-            string vollTip = FachgruppenSlotTooltip(slotIdx, gruppe);
+            string vollTip = AnsichtSlotTooltip(slotIdx, wert, schl);
             if (vollTip != null) border.ToolTip = vollTip;
 
             var stapel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 14, 0, 0) };
             foreach (int b in bloecke.Take(FgMaxBloeckeProZelle))
-                stapel.Children.Add(BaueFachgruppenTeil(b, slotIdx, ueberbucht));
+                stapel.Children.Add(BaueAnsichtTeil(b, slotIdx, ueberbucht, schl));
 
             if (bloecke.Count > FgMaxBloeckeProZelle)
             {
@@ -2129,10 +2274,10 @@ namespace Stundenplan_V2
                     Cursor = Cursors.Hand,
                     ToolTip = vollTip
                 };
-                int slotL = slotIdx; string gruppeL = gruppe;
+                int slotL = slotIdx; string wertL = wert; var schlL = schl;
                 mehr.MouseLeftButtonDown += (s, e) =>
                 {
-                    OeffneFachgruppenBelegungPopup(mehr, slotL, gruppeL);
+                    OeffneAnsichtBelegungPopup(mehr, slotL, wertL, schlL);
                     e.Handled = true;
                 };
                 stapel.Children.Add(mehr);
@@ -2142,16 +2287,16 @@ namespace Stundenplan_V2
             zellInhalt.Children.Add(stapel);
 
             // (C) Badge ebenfalls anklickbar (und mit Tooltip) — zeigt die Liste.
-            var badge = BaueFachgruppenBadge(
+            var badge = BaueAnsichtBadge(
                 anzahlA, anzahlB, hatWochenTrennung, limit, ueberbucht, voll);
             if (badge != null)
             {
                 badge.ToolTip = vollTip;
                 badge.Cursor = Cursors.Hand;
-                int slotB = slotIdx; string gruppeB = gruppe;
+                int slotB = slotIdx; string wertB = wert; var schlB = schl;
                 badge.MouseLeftButtonDown += (s, e) =>
                 {
-                    OeffneFachgruppenBelegungPopup(badge, slotB, gruppeB);
+                    OeffneAnsichtBelegungPopup(badge, slotB, wertB, schlB);
                     e.Handled = true;
                 };
             }
@@ -2162,17 +2307,30 @@ namespace Stundenplan_V2
             return border;
         }
 
-        // Auslastungs-Badge fuer die obere rechte Ecke: "2/2", bei A/B-Wochen im
-        // Slot "2/2 A · 1/2 B", ohne FGR-Limit "2/–". Farbe: gruen unter Limit,
-        // orange genau am Limit, rot darueber, grau ohne Limit. Nimmt keine
-        // Mausereignisse an, damit der Klick auf die Bloecke darunter durchgeht.
-        private Border BaueFachgruppenBadge(
+        // Badge fuer die obere rechte Ecke. MIT Limit (Fachgruppe): Auslastung
+        // "2/2", bei A/B-Wochen im Slot "2/2 A · 1/2 B"; Farbe gruen unter Limit,
+        // orange genau am Limit, rot darueber. OHNE Limit (Fach): reiner
+        // Parallelitaets-Zaehler "2" bzw. "2 A · 1 B", immer neutral grau — es
+        // gibt keine Referenz, gegen die etwas "voll" oder "ueberbucht" waere.
+        // Nimmt keine Mausereignisse an, damit der Klick auf die Bloecke
+        // darunter durchgeht.
+        private Border BaueAnsichtBadge(
             int anzahlA, int anzahlB, bool hatWochenTrennung, int? limit, bool ueberbucht, bool voll)
         {
-            string limitTxt = limit.HasValue ? limit.Value.ToString() : "–";
-            string text = hatWochenTrennung
-                ? anzahlA + "/" + limitTxt + " A · " + anzahlB + "/" + limitTxt + " B"
-                : anzahlA + "/" + limitTxt;
+            string text;
+            if (limit.HasValue)
+            {
+                string limitTxt = limit.Value.ToString();
+                text = hatWochenTrennung
+                    ? anzahlA + "/" + limitTxt + " A · " + anzahlB + "/" + limitTxt + " B"
+                    : anzahlA + "/" + limitTxt;
+            }
+            else
+            {
+                text = hatWochenTrennung
+                    ? anzahlA + " A · " + anzahlB + " B"
+                    : anzahlA.ToString();
+            }
 
             Color hg, vg;
             if (!limit.HasValue)      { hg = Color.FromRgb(0xEE, 0xEE, 0xEE); vg = Color.FromRgb(0x55, 0x55, 0x55); }
@@ -2199,14 +2357,14 @@ namespace Stundenplan_V2
             };
         }
 
-        // Ein Block innerhalb einer Fachgruppen-Zelle. Kompakter als
-        // BaueTeilbereich (mehrere passen untereinander), Zeilenaufbau aber
+        // Ein Block innerhalb einer Ansichts-Zelle (Fachgruppe/Fach). Kompakter
+        // als BaueTeilbereich (mehrere passen untereinander), Zeilenaufbau aber
         // nach demselben Muster: Zeile 1 fett Klassen + Lehrer (+ Wochengruppe),
         // Zeile 2 klein und blass UNr + Faecher (+ "F" bei fixierter UNr). Rot,
-        // wenn der Slot ueberbucht ist; sonst greift der normale Farbcode
-        // (Flaechenfarbe), damit die Faerbung nicht von der der anderen Plaene
-        // abweicht.
-        private Border BaueFachgruppenTeil(int blockIdx, int slotIdx, bool ueberbucht)
+        // wenn der Slot ueberbucht ist (nur mit Limit moeglich); sonst greift der
+        // normale Farbcode (Flaechenfarbe), damit die Faerbung nicht von der der
+        // anderen Plaene abweicht.
+        private Border BaueAnsichtTeil(int blockIdx, int slotIdx, bool ueberbucht, AnsichtsSchluessel quelle)
         {
             var block = _blocks[blockIdx];
             bool hervorheben = _highlightBloecke.Contains(blockIdx);
@@ -2254,19 +2412,22 @@ namespace Stundenplan_V2
             innerBorder.Child = tb;
             innerBorder.ToolTip = "UNr " + block.UNr + " · " + faecher + " · " + klassen + " · " + lehrer +
                                   (wg == "" ? "" : "  (Woche " + wg + ")") +
-                                  "\nKlick: Lehrer- und Klassenplan auf diesen Unterricht umstellen";
+                                  "\nKlick: Lehrer- und Klassenplan (und die jeweils andere Ansicht) auf diesen Unterricht umstellen";
 
             int idxLokal = blockIdx;
+            var quelleLokal = quelle;
             innerBorder.MouseLeftButtonDown += (s, e) =>
             {
                 ZeigeDetails(idxLokal);
                 SynchronisiereBeidePlaeneAufBlock(idxLokal);
+                SpringeZuAndererAnsicht(idxLokal, quelleLokal);
             };
 
             return innerBorder;
         }
 
-        // Einzeiliger Beschreibungstext eines Blocks für Tooltip/Popup.
+        // Einzeiliger Beschreibungstext eines Blocks für Tooltip/Popup
+        // (unabhaengig vom Ansichts-Schluessel — zeigt immer die volle Belegung).
         private string FachgruppenBlockText(int blockIdx)
         {
             var block = _blocks[blockIdx];
@@ -2280,11 +2441,11 @@ namespace Stundenplan_V2
                    (wg == "" ? "" : "  [" + wg + "]");
         }
 
-        // (A) Tooltip-Text mit der VOLLSTÄNDIGEN Belegung eines Fachgruppen-Slots.
-        private string FachgruppenSlotTooltip(int slotIdx, string gruppe)
+        // (A) Tooltip-Text mit der VOLLSTÄNDIGEN Belegung eines Ansichts-Slots.
+        private string AnsichtSlotTooltip(int slotIdx, string wert, AnsichtsSchluessel schl)
         {
             if (slotIdx < 0) return null;
-            var bloecke = BloeckeDerFachgruppeImSlot(slotIdx, gruppe);
+            var bloecke = BloeckeImSlot(slotIdx, wert, schl.Sel);
             if (bloecke.Count == 0) return null;
 
             var sb = new System.Text.StringBuilder();
@@ -2299,24 +2460,27 @@ namespace Stundenplan_V2
         // (C) Popup mit der vollständigen, anklickbaren Belegungsliste des Slots.
         // Jede Zeile springt (wie im Plan) auf den Unterricht; das Popup schließt
         // sich beim Wegklicken (StaysOpen=false) oder nach dem Sprung.
-        private void OeffneFachgruppenBelegungPopup(UIElement anker, int slotIdx, string gruppe)
+        private void OeffneAnsichtBelegungPopup(UIElement anker, int slotIdx, string wert, AnsichtsSchluessel schl)
         {
             if (slotIdx < 0) return;
-            var bloecke = BloeckeDerFachgruppeImSlot(slotIdx, gruppe);
+            var bloecke = BloeckeImSlot(slotIdx, wert, schl.Sel);
             if (bloecke.Count == 0) return;
 
-            int? limit = FachgruppenLimit(gruppe);
-            var (anzahlA, anzahlB, _) = ZaehleFachgruppe(bloecke, gruppe);
+            int? limit = schl.Limit(wert);
+            var (anzahlA, anzahlB, _) = Zaehle(bloecke, wert, schl.Sel);
             int belegt = Math.Max(anzahlA, anzahlB);
             bool ueberbucht = limit.HasValue && (anzahlA > limit.Value || anzahlB > limit.Value);
 
             var panel = new StackPanel { Margin = new Thickness(8) };
 
             string slotName = _slots[slotIdx].WTag + " " + _slots[slotIdx].Stunde + ". Std";
-            string limitTxt = limit.HasValue ? limit.Value.ToString() : "-";
+            // Mit Limit: "belegt N/Limit"; ohne Limit (Fach): "N parallel".
+            string belegtTxt = limit.HasValue
+                ? "belegt " + belegt + "/" + limit.Value
+                : belegt + " parallel";
             var kopf = new TextBlock
             {
-                Text = gruppe + " · " + slotName + " · belegt " + belegt + "/" + limitTxt,
+                Text = wert + " · " + slotName + " · " + belegtTxt,
                 FontWeight = FontWeights.Bold,
                 Margin = new Thickness(0, 0, 0, 6)
             };
@@ -2327,6 +2491,7 @@ namespace Stundenplan_V2
             foreach (int b in bloecke)
             {
                 int idxLokal = b;
+                var schlLokal = schl;
                 var zeile = new TextBlock
                 {
                     Text = FachgruppenBlockText(b),
@@ -2341,6 +2506,7 @@ namespace Stundenplan_V2
                 {
                     ZeigeDetails(idxLokal);
                     SynchronisiereBeidePlaeneAufBlock(idxLokal);
+                    SpringeZuAndererAnsicht(idxLokal, schlLokal);
                     if (_fgBelegungPopup != null) _fgBelegungPopup.IsOpen = false;
                     e.Handled = true;
                 };
@@ -2368,21 +2534,28 @@ namespace Stundenplan_V2
             _fgBelegungPopup.IsOpen = true;
         }
 
-        // Alle Block-Indizes, die in diesem Slot einen Raum der Fachgruppe
-        // belegen. Vergleich exakt wie im Solver (RoomConstraint.cs) und in
-        // PlanValidator.cs: t.FachGruppe == gruppe.
-        private List<int> BloeckeDerFachgruppeImSlot(int slotIdx, string gruppe)
+        // Alle Block-Indizes, die in diesem Slot einen Teilunterricht mit dem
+        // gegebenen Schluesselwert (Fachgruppe ODER Fach, je nach Selektor)
+        // haben. Fuer die Fachgruppe exakt wie im Solver (RoomConstraint.cs) und
+        // in PlanValidator.cs: t.FachGruppe == gruppe.
+        private List<int> BloeckeImSlot(int slotIdx, string wert, Func<TeilUnterricht, string> sel)
         {
             var liste = new List<int>();
-            if (slotIdx < 0 || gruppe == null || _belegung == null || _blocks == null) return liste;
+            if (slotIdx < 0 || wert == null || _belegung == null || _blocks == null) return liste;
 
             for (int b = 0; b < _blocks.Count; b++)
             {
                 if (_belegung[b, slotIdx] != 1) continue;
-                if (_blocks[b].Teile.Any(t => t.FachGruppe == gruppe)) liste.Add(b);
+                if (_blocks[b].Teile.Any(t => sel(t) == wert)) liste.Add(b);
             }
             return liste;
         }
+
+        // Fachgruppen-Variante (unveraenderte Signatur fuer alle bisherigen
+        // Aufrufer): delegiert an den generischen Helfer mit dem Fachgruppen-
+        // Selektor.
+        private List<int> BloeckeDerFachgruppeImSlot(int slotIdx, string gruppe)
+            => BloeckeImSlot(slotIdx, gruppe, t => t.FachGruppe);
 
         // Zaehlung EXAKT wie die Solver-Constraint in RoomConstraint.cs und die
         // Pruefung in PlanValidator.cs: A-Woche-Bloecke und Bloecke ohne
@@ -2401,15 +2574,27 @@ namespace Stundenplan_V2
         // der Lehrer-/Klassenansicht gilt).
         private (int anzahlA, int anzahlB, bool hatWochenTrennung) ZaehleFachgruppe(
             List<int> bloecke, string gruppe)
+            => Zaehle(bloecke, gruppe, t => t.FachGruppe);
+
+        // Generische Zaehlung fuer beide Ansichten. Das Gewicht je Block ist die
+        // Anzahl seiner Teilunterrichte, deren Selektor-Wert gleich dem gesuchten
+        // ist (fuer die Fachgruppe formelgleich zu UnterrichtsBlock.FachraumBedarf,
+        // also identische Zahlen wie zuvor; fuer das Fach die Zahl paralleler
+        // Teilunterrichte dieses Fachs im Block). A/B-Wochen wie im Solver: ohne
+        // Wochengruppe zaehlt der Block in beide Summen, "A" nur nach A, "B" nur
+        // nach B (A und B kollidieren nie). hatWochenTrennung=false -> A==B, dann
+        // genuegt eine Zahl im Badge.
+        private (int anzahlA, int anzahlB, bool hatWochenTrennung) Zaehle(
+            List<int> bloecke, string wert, Func<TeilUnterricht, string> sel)
         {
             int anzahlA = 0, anzahlB = 0;
             bool hatWochenTrennung = false;
-            if (bloecke == null || _blocks == null || gruppe == null)
+            if (bloecke == null || _blocks == null || wert == null)
                 return (0, 0, false);
 
             foreach (int b in bloecke)
             {
-                int bedarf = _blocks[b].FachraumBedarf(gruppe);
+                int bedarf = _blocks[b].Teile.Count(t => sel(t) == wert);
                 if (bedarf == 0) continue;
                 string wg = (_blocks[b].WochenGruppe ?? "").Trim();
                 if (wg == "A" || wg == "B") hatWochenTrennung = true;
@@ -2456,6 +2641,30 @@ namespace Stundenplan_V2
             }
         }
 
+        // Auswahlliste des Faecherplans: alle in der Loesung vorkommenden Faecher
+        // (t.Fach), alphabetisch. Kein FGR-/Limit-Bezug — anders als bei den
+        // Fachgruppen gibt es hier keine Vorrang-Sortierung.
+        private void FuelleFaecherDropdown(string behalten = null)
+        {
+            if (CboFach == null || _blocks == null) return;
+
+            CboFach.Items.Clear();
+
+            var alle = _blocks.SelectMany(b => b.Teile.Select(t => t.Fach))
+                              .Where(s => !string.IsNullOrWhiteSpace(s))
+                              .Distinct()
+                              .OrderBy(f => f);
+
+            foreach (var f in alle)
+                CboFach.Items.Add(f);
+
+            if (CboFach.Items.Count > 0)
+            {
+                int idx = behalten != null ? CboFach.Items.IndexOf(behalten) : -1;
+                CboFach.SelectedIndex = idx >= 0 ? idx : 0;
+            }
+        }
+
         // Klick auf einen Unterricht im Fachgruppenplan: BEIDE Hauptplaene auf
         // diesen Unterricht umstellen (anders als SynchronisiereAnderenPlan, das
         // immer nur den jeweils anderen Plan setzt). Wiederholter Klick auf
@@ -2486,6 +2695,7 @@ namespace Stundenplan_V2
 
             ZeichneAlleAngehefteten();
             ZeichneFachgruppenGrid();
+            ZeichneFaecherGrid();
         }
 
         // true = Auswahl wurde tatsaechlich geaendert (SelectionChanged laeuft).
@@ -2530,6 +2740,36 @@ namespace Stundenplan_V2
             CboFachgruppe.SelectedIndex = (CboFachgruppe.SelectedIndex - 1 + n) % n;
         }
 
+        // ---- Bedienelemente Faecherplan (analog Fachgruppenplan) ----
+
+        private void ChkFaecherPlan_Changed(object sender, RoutedEventArgs e)
+        {
+            if (BrdFaecherPlan == null) return;
+            BrdFaecherPlan.Visibility = ChkFaecherPlan.IsChecked == true
+                ? Visibility.Visible : Visibility.Collapsed;
+            if (!_initialisiert || _belegung == null) return;
+            if (ChkFaecherPlan.IsChecked == true) ZeichneFaecherGrid();
+        }
+
+        private void CboFach_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_initialisiert || _belegung == null) return;
+            ZeichneFaecherGrid();
+        }
+
+        private void BtnNaechstesFach_Click(object sender, RoutedEventArgs e)
+        {
+            if (CboFach.Items.Count == 0) return;
+            CboFach.SelectedIndex = (CboFach.SelectedIndex + 1) % CboFach.Items.Count;
+        }
+
+        private void BtnVorigesFach_Click(object sender, RoutedEventArgs e)
+        {
+            if (CboFach.Items.Count == 0) return;
+            int n = CboFach.Items.Count;
+            CboFach.SelectedIndex = (CboFach.SelectedIndex - 1 + n) % n;
+        }
+
         // =====================================================
         // Angeheftete Pläne (mehrere Lehrer-/Klassenpläne gleichzeitig)
         // =====================================================
@@ -2555,11 +2795,19 @@ namespace Stundenplan_V2
             AnhefteTile(PlanArt.Fachgruppe, name);
         }
 
+        private void BtnFachAnheften_Click(object sender, RoutedEventArgs e)
+        {
+            string name = CboFach.SelectedItem as string;
+            if (name == null) return;
+            AnhefteTile(PlanArt.Fach, name);
+        }
+
         // Beschriftung eines Plantyps für Statusmeldungen und Kachelköpfe.
         private static string ArtName(PlanArt art) => art switch
         {
             PlanArt.Lehrer => "Lehrer",
             PlanArt.Klasse => "Klasse",
+            PlanArt.Fach => "Fach",
             _ => "Fachgruppe"
         };
 
@@ -2626,6 +2874,7 @@ namespace Stundenplan_V2
                 {
                     PlanArt.Lehrer => "LEHRERPLAN (angeheftet)",
                     PlanArt.Klasse => "KLASSENPLAN (angeheftet)",
+                    PlanArt.Fach => "FAECHERPLAN (angeheftet)",
                     _ => "FACHGRUPPENPLAN (angeheftet)"
                 },
                 FontWeight = FontWeights.Bold,
@@ -2669,11 +2918,13 @@ namespace Stundenplan_V2
             (PlanArt art, string name, Border tile, Grid grid, Canvas canvas) t)
         {
             if (_belegung == null) return;
-            if (t.art == PlanArt.Fachgruppe)
+            if (t.art == PlanArt.Fachgruppe || t.art == PlanArt.Fach)
             {
-                // Reine Ansicht, eigener Zellaufbau (Auslastungs-Badge statt
-                // Zeitwunsch-Zahl, Bloecke untereinander statt nebeneinander).
-                ZeichneEinFachgruppenGrid(t.grid, t.name);
+                // Reine Ansicht, gemeinsamer Zellaufbau (Auslastungs-/Zaehler-
+                // Badge statt Zeitwunsch-Zahl, Bloecke untereinander statt
+                // nebeneinander). Der Schluessel bestimmt Gruppierung/Limit.
+                ZeichneEinAnsichtGrid(
+                    t.grid, t.name, t.art == PlanArt.Fach ? _schlFach : _schlFachgruppe);
                 return;
             }
             // Interaktiv wie die Haupt-Grids: gleiche BaueZelle/Zelle_Drop-Logik,
@@ -3124,6 +3375,7 @@ namespace Stundenplan_V2
                 return;
             }
             ZeichneBeideGrids();
+            AktualisiereUvFenster();
         }
 
         // =====================================================
@@ -4381,6 +4633,7 @@ namespace Stundenplan_V2
             // loest CboFachgruppe_SelectionChanged aus, das nur zeichnet und
             // nicht zurueck synchronisiert.
             SpringeZuFachgruppe(blockIdx);
+            SpringeZuFach(blockIdx);
         }
 
         // Beim Klick im Lehrer- oder Klassenplan den Fachgruppenplan auf die
@@ -4398,6 +4651,42 @@ namespace Stundenplan_V2
             // SelectionChanged, also hier selbst — wegen der Hervorhebung.
             if (!SetzeComboAuf(CboFachgruppe, gruppe))
                 ZeichneFachgruppenGrid();
+        }
+
+        // Beim Klick im Lehrer- oder Klassenplan den Faecherplan auf das Fach des
+        // angeklickten Unterrichts umstellen. Anders als bei der Fachgruppe gibt
+        // es kein Limit und damit keine "engste" Auswahl — hat der Block mehrere
+        // Faecher (parallele Teilunterrichte), entscheidet die Reihenfolge der
+        // Teile. null = Block ohne Fach -> kein Sprung (gewaehltes Fach bleibt).
+        private void SpringeZuFach(int blockIdx)
+        {
+            if (BrdFaecherPlan == null || BrdFaecherPlan.Visibility != Visibility.Visible) return;
+
+            string fach = WaehleFachFuer(blockIdx);
+
+            if (!SetzeComboAuf(CboFach, fach))
+                ZeichneFaecherGrid();
+        }
+
+        // Erstes distinct nicht-leeres Fach des Blocks (Reihenfolge der Teile).
+        private string WaehleFachFuer(int blockIdx)
+        {
+            if (_blocks == null || blockIdx < 0 || blockIdx >= _blocks.Count) return null;
+            return _blocks[blockIdx].Teile.Select(t => t.Fach)
+                       .FirstOrDefault(f => !string.IsNullOrWhiteSpace(f));
+        }
+
+        // Klick in einer der beiden reinen Ansichten (Fachgruppen-/Faecherplan):
+        // die JEWEILS ANDERE Ansicht auf denselben Unterricht springen lassen
+        // (Fachgruppenplan-Klick -> Faecherplan aufs Fach; Faecherplan-Klick ->
+        // Fachgruppenplan auf die Gruppe). Die geklickte Ansicht selbst wird
+        // bewusst nicht umgesprungen, damit man nicht aus der Gruppe/dem Fach
+        // herausfliegt, in der bzw. dem man gerade schaut. Beide Ziel-Sprünge
+        // sind No-Ops, wenn die Zielansicht ausgeblendet ist.
+        private void SpringeZuAndererAnsicht(int blockIdx, AnsichtsSchluessel quelle)
+        {
+            if (quelle == _schlFachgruppe) SpringeZuFach(blockIdx);
+            else if (quelle == _schlFach) SpringeZuFachgruppe(blockIdx);
         }
 
         // Zu welcher Fachgruppe soll der Fachgruppenplan beim Klick auf diesen

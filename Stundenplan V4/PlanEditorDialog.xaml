@@ -86,6 +86,11 @@
                       ToolTip="Zusaetzlicher Plan (reine Ansicht): zeigt je Zeitslot alle Bloecke einer Fachgruppe (Sheet FGR) und die Raum-Auslastung. Klick auf einen Unterricht stellt Lehrer- und Klassenplan darauf um."
                       Checked="ChkFachgruppenPlan_Changed" Unchecked="ChkFachgruppenPlan_Changed"/>
 
+            <CheckBox x:Name="ChkFaecherPlan" Content="Faecherplan zeigen"
+                      VerticalAlignment="Center" Margin="0,0,20,0"
+                      ToolTip="Zusaetzlicher Plan (reine Ansicht): zeigt je Zeitslot alle Bloecke EINES Fachs (ueber alle Klassen/Lehrer) und wie viele davon parallel liegen. Kein Raumlimit — nur Parallelitaets-Zaehler. Klick auf einen Unterricht stellt Lehrer- und Klassenplan darauf um."
+                      Checked="ChkFaecherPlan_Changed" Unchecked="ChkFaecherPlan_Changed"/>
+
             <CheckBox x:Name="ChkVergleichsModus" Content="Vergleichsmodus (2 Lösungen)"
                       VerticalAlignment="Center" Margin="0,0,10,0" Checked="ChkVergleichsModus_Changed" Unchecked="ChkVergleichsModus_Changed"/>
             <TextBlock x:Name="LblVglLoesung" Text="2. Lösung:" FontWeight="Bold" VerticalAlignment="Center"
@@ -139,13 +144,14 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
             <!-- ANGEHEFTETE PLAENE (beliebig viele Lehrer-/Klassenpläne
                  zusätzlich zur normalen Auswahl oben, nebeneinander scrollbar
                  über ScrollEditAnsicht, alle live editierbar auf derselben
                  _belegung — siehe AnhefteTile()/ZeichneAlleAngehefteten(). -->
-            <StackPanel x:Name="PnlAngeheftet" Grid.Column="7" Orientation="Horizontal"/>
+            <StackPanel x:Name="PnlAngeheftet" Grid.Column="8" Orientation="Horizontal"/>
 
             <!-- FACHGRUPPEN-PLAN (reine Ansicht, siehe ZeichneEinFachgruppenGrid).
                  Zeigt je Zeitslot ALLE Bloecke, die einen Raum der gewaehlten
@@ -174,6 +180,37 @@
                                HorizontalAlignment="Center" Margin="0,0,0,2"/>
                     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <Grid x:Name="FachgruppenGrid"/>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <!-- FAECHER-PLAN (reine Ansicht, siehe ZeichneEinAnsichtGrid mit
+                 _schlFach). Wie der Fachgruppenplan aufgebaut, gruppiert aber
+                 nach dem einzelnen Fach (t.Fach) statt der Raum-Fachgruppe. Es
+                 gibt kein Raumlimit; das Badge ist ein reiner Parallelitaets-
+                 Zaehler (belegt N, ohne "/Limit"), immer neutral gefaerbt. Klick
+                 auf einen Unterricht stellt Lehrer- und Klassenplan darauf um. -->
+            <Border Grid.Column="7" x:Name="BrdFaecherPlan" BorderBrush="#CCC" BorderThickness="1"
+                    Margin="4,0,4,0" Background="#FBFBFB" Visibility="Collapsed">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4" Height="32">
+                        <TextBlock Text="Fach:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <Button x:Name="BtnVorigesFach" Content="&#9664;" Width="28" VerticalAlignment="Center"
+                                Margin="0,0,2,0" ToolTip="Voriges Fach" Click="BtnVorigesFach_Click"/>
+                        <ComboBox x:Name="CboFach" Width="140" VerticalAlignment="Center" Margin="0,0,2,0"
+                                  SelectionChanged="CboFach_SelectionChanged"/>
+                        <Button x:Name="BtnNaechstesFach" Content="&#9654;" Width="28" VerticalAlignment="Center"
+                                ToolTip="Naechstes Fach" Click="BtnNaechstesFach_Click"/>
+                        <Button x:Name="BtnFachAnheften" Content="📌" Width="28" VerticalAlignment="Center"
+                                Margin="8,0,0,0"
+                                ToolTip="Diesen Faecherplan zusätzlich anheften (bleibt sichtbar, auch wenn oben ein anderes Fach gewählt wird)"
+                                Click="BtnFachAnheften_Click"/>
+                    </StackPanel>
+                    <TextBlock x:Name="LblFaecherKopf" DockPanel.Dock="Top" Text="FAECHERPLAN"
+                               FontWeight="Bold" Height="20"
+                               HorizontalAlignment="Center" Margin="0,0,0,2"/>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <Grid x:Name="FaecherGrid"/>
                     </ScrollViewer>
                 </DockPanel>
             </Border>

@@ -41,6 +41,7 @@ namespace Stundenplan_V2
         public bool SpaetePaedFix = false;
         public bool Klassenvergleich = false;
         public bool Fachgruppenplan = false;
+        public bool Faecherplan = false;
         public bool Vergleichsmodus = false;
         public bool IgnorierteZeigen = false;
         public bool FilterVerletzungen = false;
@@ -113,6 +114,7 @@ namespace Stundenplan_V2
                 cfg.SpaetePaedFix     = LiesBool(w, "SpaetePaedFix", cfg.SpaetePaedFix);
                 cfg.Klassenvergleich  = LiesBool(w, "Klassenvergleich", cfg.Klassenvergleich);
                 cfg.Fachgruppenplan   = LiesBool(w, "Fachgruppenplan", cfg.Fachgruppenplan);
+                cfg.Faecherplan       = LiesBool(w, "Faecherplan", cfg.Faecherplan);
                 cfg.Vergleichsmodus   = LiesBool(w, "Vergleichsmodus", cfg.Vergleichsmodus);
                 cfg.IgnorierteZeigen  = LiesBool(w, "IgnorierteZeigen", cfg.IgnorierteZeigen);
                 cfg.FilterVerletzungen = LiesBool(w, "FilterVerletzungen", cfg.FilterVerletzungen);
@@ -181,6 +183,7 @@ namespace Stundenplan_V2
             Schreibe("SpaetePaedFix", SpaetePaedFix ? "1" : "0");
             Schreibe("Klassenvergleich", Klassenvergleich ? "1" : "0");
             Schreibe("Fachgruppenplan", Fachgruppenplan ? "1" : "0");
+            Schreibe("Faecherplan", Faecherplan ? "1" : "0");
             Schreibe("Vergleichsmodus", Vergleichsmodus ? "1" : "0");
             Schreibe("IgnorierteZeigen", IgnorierteZeigen ? "1" : "0");
             Schreibe("FilterVerletzungen", FilterVerletzungen ? "1" : "0");
