@@ -149,18 +149,25 @@ namespace Stundenplan_V2
                 if (_gespeicherteBreiten.TryGetValue(_spalten[idx], out double breite) && breite > 0)
                     e.Column.Width = new DataGridLength(breite);
 
-                bool istHart = StammdatenImportExport.HartSpalten
+                // Farbschema: die aus Untis (GPU004) importierten Spalten gelb
+                // hervorheben — nur sie werden bei einem Import überschrieben.
+                // Alle übrigen Spalten bleiben weiß (Default): sie stammen
+                // nicht aus Untis (hart-Flags, "Verbot Bad units", Freie Tage/
+                // Stunden …), werden über die Spalte "Name" der richtigen Zeile
+                // zugeordnet und überleben einen Import unverändert.
+                //
+                // Färbung über den ZELLSTIL (DataGridCell.Background), nicht über
+                // ElementStyle (TextBlock.Background): der Textblock färbt nur den
+                // Textbereich, LEERE Zellen blieben sonst weiß — und gerade
+                // Vorname/Geburtsdatum sind fast durchgehend leer. Der Stil
+                // "ImportiertZelle" (in der XAML) baut auf dem Standard-Zellstil
+                // auf, damit Gitternetz und Auswahl-Highlight erhalten bleiben.
+                // Die übrigen (weißen) Spalten behalten den Default-Zellstil und
+                // damit die volle Auswahl-Markierung fürs Füllen (Strg+D).
+                bool istImportiert = StammdatenImportExport.ImportierteSpalten
                     .Contains(_spalten[idx], StringComparer.OrdinalIgnoreCase);
-                if (istHart && e.Column is DataGridTextColumn tc)
-                {
-                    // Die fünf hart-Spalten optisch abheben: sie sind die
-                    // einzigen ohne Untis-Herkunft und die einzigen mit harter
-                    // Wirkung auf die Lösbarkeit.
-                    var stil = new Style(typeof(TextBlock));
-                    stil.Setters.Add(new Setter(TextBlock.BackgroundProperty,
-                        System.Windows.Media.Brushes.LightGoldenrodYellow));
-                    tc.ElementStyle = stil;
-                }
+                if (istImportiert)
+                    e.Column.CellStyle = (Style)DgStammdaten.FindResource("ImportiertZelle");
             }
         }
 
@@ -207,6 +214,96 @@ namespace Stundenplan_V2
         }
 
         private void MnuFuellen_Click(object sender, RoutedEventArgs e) => FuelleNachUnten();
+
+        // =====================================================
+        // ZEILEN LÖSCHEN (Kontextmenü)
+        // Löscht die Zeilen aller markierten Zellen. Wirkt wie das Bearbeiten
+        // VERZÖGERT: die Zeilen werden in der DataTable als gelöscht markiert
+        // (verschwinden sofort aus der Ansicht, weil die DefaultView gelöschte
+        // Zeilen ausblendet) und landen erst mit "Speichern und schließen" in der
+        // Datei — bis dahin per "Verwerfen und schließen" rücknehmbar. AktuelleTabelle
+        // überspringt gelöschte Zeilen ohnehin, und GetChanges() erkennt sie, sodass
+        // die Rückfrage beim Schließen greift.
+        //
+        // Untis-Import entfernt nichts mehr; das Aussortieren nur-in-StD stehender
+        // Lehrer passiert bewusst hier von Hand. Deshalb sitzt auch die UV-Warnung
+        // (Lehrer hat noch Unterricht) jetzt an dieser Stelle.
+        // =====================================================
+        private void MnuZeileLoeschen_Click(object sender, RoutedEventArgs e)
+        {
+            CommitGrid();
+
+            // Betroffene Zeilen aus den markierten Zellen sammeln — je Zeile nur
+            // einmal, auch wenn mehrere ihrer Zellen markiert sind.
+            var zeilen = DgStammdaten.SelectedCells
+                .Where(c => c.IsValid && c.Item is DataRowView)
+                .Select(c => ((DataRowView)c.Item).Row)
+                .Distinct()
+                .Where(r => r.RowState != DataRowState.Deleted)
+                .ToList();
+
+            if (zeilen.Count == 0)
+            {
+                SetzeStatus("Zum Löschen mindestens eine Zelle in der/den gewünschten Zeile(n) markieren, " +
+                            "dann Rechtsklick → 'Markierte Zeile(n) löschen'.");
+                return;
+            }
+
+            // Namen der betroffenen Lehrer für Rückfrage und UV-Warnung.
+            int idxName = _spalten.FindIndex(s =>
+                string.Equals(s, StammdatenImportExport.SpalteName, StringComparison.OrdinalIgnoreCase));
+            var namen = idxName >= 0
+                ? zeilen.Select(r => (r["C" + idxName]?.ToString() ?? "").Trim())
+                        .Where(n => n.Length > 0).ToList()
+                : new List<string>();
+
+            var frage = new System.Text.StringBuilder();
+            frage.AppendLine(zeilen.Count == 1 ? "Diese Zeile löschen?" : $"Diese {zeilen.Count} Zeilen löschen?");
+            if (namen.Count > 0)
+            {
+                frage.AppendLine();
+                frage.AppendLine(Liste(namen));
+            }
+
+            // UV-Warnung: Lehrer, die in der UV noch Unterricht haben — fast sicher
+            // ein Versehen. Best effort: schlägt das Lesen der UV fehl, wird ohne
+            // diese Zusatzinfo gefragt.
+            var mitUnterricht = new List<string>();
+            if (namen.Count > 0)
+            {
+                try
+                {
+                    var lehrerInUv = StammdatenImportExport.LiesLehrerAusUv(_excelPfad);
+                    mitUnterricht = namen.Where(n => lehrerInUv.Contains(n)).ToList();
+                }
+                catch { /* Zusatzinfo, kein Muss */ }
+            }
+            if (mitUnterricht.Count > 0)
+            {
+                frage.AppendLine();
+                frage.AppendLine($"⚠ Davon haben {mitUnterricht.Count} in der UV noch Unterricht: " +
+                                 Liste(mitUnterricht));
+                frage.AppendLine("Der Solver rechnet danach ohne deren Std.Folge, HohlStd. soll und harte " +
+                                 "Regeln weiter.");
+            }
+            frage.AppendLine();
+            frage.AppendLine("Das Löschen wird erst mit 'Speichern und schließen' geschrieben.");
+
+            var icon = mitUnterricht.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Question;
+            if (MessageBox.Show(frage.ToString(), "Zeilen löschen",
+                    MessageBoxButton.OKCancel, icon) != MessageBoxResult.OK)
+                return;
+
+            foreach (var r in zeilen) r.Delete();
+
+            // DefaultView blendet gelöschte Zeilen von selbst aus; Refresh macht es
+            // sofort sichtbar.
+            DgStammdaten.Items.Refresh();
+
+            SetzeStatus(zeilen.Count == 1
+                ? "1 Zeile gelöscht (wird mit 'Speichern und schließen' geschrieben)."
+                : $"{zeilen.Count} Zeilen gelöscht (werden mit 'Speichern und schließen' geschrieben).");
+        }
 
         private void FuelleNachUnten()
         {
@@ -344,8 +441,7 @@ namespace Stundenplan_V2
                 // hart-Flags) beim Import kommentarlos verloren.
                 var bestand = AktuelleTabelle();
                 var gpu = StammdatenImportExport.LiesGpu004(dlg.FileName);
-                var lehrerInUv = StammdatenImportExport.LiesLehrerAusUv(_excelPfad);
-                plan = StammdatenImportExport.PlaneImport(bestand, gpu, lehrerInUv);
+                plan = StammdatenImportExport.PlaneImport(bestand, gpu);
             }
             catch (Exception ex)
             {
@@ -370,7 +466,7 @@ namespace Stundenplan_V2
             _nachSpeichernReload?.Invoke();
             LadeAusDatei();
             SetzeStatus($"Import: {plan.Neu.Count} neu, {plan.Aktualisiert} aktualisiert, " +
-                        $"{plan.Entfernt.Count} entfernt. Gespeichert und neu eingelesen.");
+                        $"{plan.NurInStd.Count} nur in StD behalten. Gespeichert und neu eingelesen.");
         }
 
         // Rückfrage vor dem Schreiben. Der teure Fehler ist ein GEFILTERTER
@@ -380,22 +476,15 @@ namespace Stundenplan_V2
         private bool BestaetigeImport(StammdatenImportExport.ImportPlan plan)
         {
             var text = new System.Text.StringBuilder();
-            text.AppendLine($"{plan.Neu.Count} Lehrer neu, {plan.Aktualisiert} aktualisiert, " +
-                            $"{plan.Entfernt.Count} werden aus StD entfernt.");
+            text.AppendLine($"{plan.Neu.Count} Lehrer neu, {plan.Aktualisiert} aktualisiert.");
             text.AppendLine();
 
-            if (plan.Entfernt.Count > 0)
+            if (plan.NurInStd.Count > 0)
             {
-                text.AppendLine("Entfernt werden: " + Liste(plan.Entfernt));
-                text.AppendLine();
-            }
-
-            if (plan.EntferntMitUnterricht.Count > 0)
-            {
-                text.AppendLine($"⚠ Davon haben {plan.EntferntMitUnterricht.Count} in der UV noch Unterricht: " +
-                                Liste(plan.EntferntMitUnterricht));
-                text.AppendLine("Der Solver rechnet danach ohne deren Std.Folge, HohlStd. soll und harte " +
-                                "Regeln weiter — er meldet keinen Fehler, liefert aber andere Ergebnisse.");
+                text.AppendLine($"{plan.NurInStd.Count} Lehrer stehen nur in StD (nicht in der Datei) und " +
+                                "bleiben unverändert erhalten: " + Liste(plan.NurInStd));
+                text.AppendLine("Nicht mehr benötigte Lehrer per Rechtsklick im Grid → 'Markierte " +
+                                "Zeile(n) löschen' entfernen.");
                 text.AppendLine();
             }
 
@@ -414,12 +503,8 @@ namespace Stundenplan_V2
             text.AppendLine();
             text.AppendLine("Fortfahren?");
 
-            var icon = plan.EntferntMitUnterricht.Count > 0
-                ? MessageBoxImage.Warning
-                : MessageBoxImage.Question;
-
             return MessageBox.Show(text.ToString(), "Import bestätigen",
-                MessageBoxButton.OKCancel, icon) == MessageBoxResult.OK;
+                MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK;
         }
 
         private static string Liste(List<string> namen, int max = 20)

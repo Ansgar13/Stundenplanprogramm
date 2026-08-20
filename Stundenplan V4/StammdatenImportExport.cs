@@ -267,8 +267,8 @@ namespace Stundenplan_V2
 
         /// <summary>
         /// Namen aller Lehrer, die in der UV Unterricht haben — fuer die Warnung
-        /// beim Entfernen. Schlaegt das Lesen fehl, wird die Warnung ohne diese
-        /// Zusatzinfo gezeigt; der Import soll daran nie scheitern.
+        /// beim manuellen Loeschen einer StD-Zeile. Schlaegt das Lesen fehl, wird
+        /// ohne diese Zusatzinfo gefragt; das Loeschen soll daran nie scheitern.
         /// </summary>
         public static HashSet<string> LiesLehrerAusUv(string excelPfad)
         {
@@ -429,18 +429,19 @@ namespace Stundenplan_V2
 
         /// <summary>
         /// Was ein Import tun WUERDE — damit der Nutzer es bestaetigen kann,
-        /// bevor etwas geschrieben wird. Vor allem die Entfernungen: ein
-        /// gefilterter Untis-Export wuerde sonst stillschweigend halbe
-        /// Kollegien loeschen, samt ihrer harten Regeln.
+        /// bevor etwas geschrieben wird. Lehrer, die nur in StD stehen (nicht in
+        /// der Datei), werden NICHT mehr entfernt, sondern behalten (NurInStd) —
+        /// das Loeschen laeuft jetzt manuell ueber das Grid (Rechtsklick). So
+        /// kann ein gefilterter Untis-Export nicht mehr stillschweigend halbe
+        /// Kollegien aus StD kippen.
         /// </summary>
         public class ImportPlan
         {
             public StdTabelle Ergebnis { get; set; } = new();
             public List<string> Neu { get; } = new();
-            public List<string> Entfernt { get; } = new();
-            // Teilmenge von Entfernt: diese Lehrer haben in der UV noch
-            // Unterricht — fast sicher ein Versehen.
-            public List<string> EntferntMitUnterricht { get; } = new();
+            // Lehrer, die nur in StD stehen (nicht in der GPU-Datei). Sie bleiben
+            // unveraendert erhalten; zum Loeschen dient das Grid.
+            public List<string> NurInStd { get; } = new();
             public int Aktualisiert { get; set; }
             // Lehrer, bei denen ein Bereichsfeld nur halb gefuellt war.
             public List<string> HalbeBereiche { get; } = new();
@@ -450,8 +451,7 @@ namespace Stundenplan_V2
 
         public static ImportPlan PlaneImport(
             StdTabelle bestand,
-            List<Gpu004Zeile> gpuZeilen,
-            HashSet<string> lehrerInUv)
+            List<Gpu004Zeile> gpuZeilen)
         {
             var plan = new ImportPlan();
 
@@ -522,13 +522,23 @@ namespace Stundenplan_V2
                 else plan.Neu.Add(name);
             }
 
+            // Lehrer, die nur in StD stehen (nicht in der GPU-Datei), bleiben
+            // erhalten: ihre Zeile wird unveraendert uebernommen — gegen die
+            // Ergebnis-Spalten aufgebaut, damit neu hinzugekommene Spalten
+            // (hart-Flags, Freie Tage/Stunden) sauber leer mitlaufen. Sie werden
+            // hinten angehaengt (nach den GPU-Lehrern). Entfernt wird hier nichts
+            // mehr — das Loeschen laeuft manuell ueber das Grid.
             foreach (var z in bestand.Zeilen)
             {
                 string n = bestand.Wert(z, SpalteName).Trim();
                 if (n.Length == 0 || gpuNamen.Contains(n)) continue;
-                plan.Entfernt.Add(n);
-                if (lehrerInUv != null && lehrerInUv.Contains(n))
-                    plan.EntferntMitUnterricht.Add(n);
+
+                var behalten = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var spalte in ergebnis.Spalten)
+                    behalten[spalte] = bestand.Wert(z, spalte);
+                ergebnis.Zeilen.Add(behalten);
+
+                plan.NurInStd.Add(n);
             }
 
             plan.Ergebnis = ergebnis;

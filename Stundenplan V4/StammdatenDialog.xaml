@@ -17,7 +17,7 @@
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap"
-                   Text="Alle Zeilen des Sheets 'StD'. Werte direkt in der Tabelle bearbeiten. Die fünf gelb hinterlegten Spalten 'HohlWoche hart' … 'DreifachHohl hart' machen die jeweilige Regel für diesen Lehrer verbindlich (x, ja oder 1) — sie stammen nicht aus Untis und überleben einen Import. Mehrere Zellen einer Spalte markieren (Ziehen oder Strg/Shift) und mit Strg+D bzw. Rechtsklick den Wert der obersten markierten Zelle nach unten füllen. 'Speichern und schließen' schreibt in die Excel-Datei und liest die Daten neu ein. Ein Import schreibt sofort und lässt das Fenster offen."/>
+                   Text="Alle Zeilen des Sheets 'StD'. Werte direkt in der Tabelle bearbeiten. Die gelb hinterlegten Spalten stammen aus Untis (GPU004) und werden bei einem Import überschrieben. Alle weiß hinterlegten Spalten stammen NICHT aus Untis — dazu gehören die fünf hart-Spalten 'HohlWoche hart' … 'DreifachHohl hart' (machen die jeweilige Regel für diesen Lehrer verbindlich: x, ja oder 1), 'Verbot Bad units', 'Freie Tage'/'Freie Stunden' u.a. Sie werden über die Spalte 'Name' der richtigen Zeile zugeordnet und bleiben bei einem Neuimport erhalten. Mehrere Zellen einer Spalte markieren (Ziehen oder Strg/Shift) und mit Strg+D bzw. Rechtsklick den Wert der obersten markierten Zelle nach unten füllen. Ganze Zeilen lassen sich per Rechtsklick → 'Markierte Zeile(n) löschen' entfernen. 'Speichern und schließen' schreibt in die Excel-Datei und liest die Daten neu ein. Ein Import schreibt sofort und lässt das Fenster offen."/>
 
         <!-- AutoGenerateColumns: die Spalten stehen erst zur Laufzeit fest, sie
              kommen aus der Kopfzeile des Sheets. Deshalb DataTable-Binding.
@@ -30,6 +30,20 @@
                   SelectionUnit="Cell" SelectionMode="Extended"
                   PreviewKeyDown="DgStammdaten_PreviewKeyDown"
                   AutoGeneratingColumn="DgStammdaten_AutoGeneratingColumn">
+            <DataGrid.Resources>
+                <!-- Volle Zellfärbung für die importierten (gelben) Spalten.
+                     Bewusst am DataGridCell und NICHT am TextBlock (ElementStyle):
+                     der Textblock färbt nur den Textbereich, leere Zellen blieben
+                     sonst weiß — und Vorname/Geburtsdatum sind fast durchgehend
+                     leer. BasedOn den Standard-Zellstil, damit Gitternetz und
+                     Auswahl-Highlight erhalten bleiben; der Auswahl-Trigger des
+                     Basisstils übersteuert das Gelb im markierten Zustand und
+                     fällt danach zurück. -->
+                <Style x:Key="ImportiertZelle" TargetType="DataGridCell"
+                       BasedOn="{StaticResource {x:Type DataGridCell}}">
+                    <Setter Property="Background" Value="LightGoldenrodYellow"/>
+                </Style>
+            </DataGrid.Resources>
             <!-- Umbrechende Spaltenköpfe: ohne das erzwingt der Kopftext seine
                  volle Breite als Mindestbreite, die Spalte lässt sich dann nicht
                  schmaler ziehen. Mit TextWrapping bricht die Überschrift um, die
@@ -62,6 +76,9 @@
                 <ContextMenu>
                     <MenuItem x:Name="MnuFuellen" Header="Nach unten füllen (Strg+D)"
                               Click="MnuFuellen_Click"/>
+                    <Separator/>
+                    <MenuItem x:Name="MnuZeileLoeschen" Header="Markierte Zeile(n) löschen"
+                              Click="MnuZeileLoeschen_Click"/>
                 </ContextMenu>
             </DataGrid.ContextMenu>
         </DataGrid>
@@ -69,13 +86,21 @@
         <TextBlock x:Name="TxtStatus" Grid.Row="2" Margin="0,0,0,8"
                    TextWrapping="Wrap" Foreground="DimGray"/>
 
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button x:Name="BtnImport" Content="Aus GPU004 importieren …" Width="180" Margin="0,0,24,0"
-                    Click="BtnImport_Click"/>
-            <Button x:Name="BtnSpeichern" Content="Speichern und schließen" Width="170" Margin="0,0,6,0"
-                    Click="BtnSpeichern_Click"/>
-            <Button x:Name="BtnSchliessen" Content="Verwerfen und schließen" Width="170" IsCancel="True"
-                    Click="BtnSchliessen_Click"/>
-        </StackPanel>
+        <!-- Buttons rechts, dazu links der Import-Hinweis. LastChildFill lässt
+             den Hinweistext den verbleibenden Platz füllen und umbrechen; er
+             steht damit unmittelbar links neben dem Import-Knopf. -->
+        <DockPanel Grid.Row="3" LastChildFill="True">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="BtnImport" Content="Aus GPU004 importieren …" Width="180" Margin="0,0,24,0"
+                        Click="BtnImport_Click"/>
+                <Button x:Name="BtnSpeichern" Content="Speichern und schließen" Width="170" Margin="0,0,6,0"
+                        Click="BtnSpeichern_Click"/>
+                <Button x:Name="BtnSchliessen" Content="Verwerfen und schließen" Width="170" IsCancel="True"
+                        Click="BtnSchliessen_Click"/>
+            </StackPanel>
+            <TextBlock VerticalAlignment="Center" Margin="0,0,12,0" TextWrapping="Wrap"
+                       Foreground="DimGray"
+                       Text="Weiße Zellen werden automatisch nach Spalte 'Name' zugeordnet und bleiben so bei einem Neuimport in der korrekten Zeile."/>
+        </DockPanel>
     </Grid>
 </Window>
