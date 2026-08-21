@@ -3279,6 +3279,7 @@ namespace Stundenplan_V2
             if (interaktiv)
             {
                 innerBorder.MouseLeftButtonDown += Teil_MouseLeftButtonDown;
+                innerBorder.MouseLeftButtonUp += Teil_MouseLeftButtonUp;
                 innerBorder.MouseMove += Teil_MouseMove;
                 innerBorder.ContextMenuOpening += Teilbereich_ContextMenuOpening;
             }
@@ -3445,25 +3446,38 @@ namespace Stundenplan_V2
         {
             if (sender is Border bd && bd.Tag is int[] arr)
             {
+                // Beim DRUECKEN nur den moeglichen Zug vormerken — sonst nichts.
+                // Frueher liefen hier synchron Details-Anzeige, Plan-Synchronisation
+                // und vor allem die (teure) Tauschketten-Suche; das blockierte den
+                // UI-Thread, sodass das Ziehen erst spuerbar verzoegert griff.
+                // Die eigentliche Klick-Arbeit passiert jetzt beim Loslassen
+                // (Teil_MouseLeftButtonUp), also nur wenn KEIN Zug begonnen hat.
                 _maybeDrag = arr;
                 _dragStartPunkt = e.GetPosition(null);
-
-                int blockIdx = arr[0];
-                int slotIdx = arr[1];
-                bool ausLehrerPlan = arr.Length > 2 && arr[2] == 1;
-
-                // Details anzeigen
-                ZeigeDetails(blockIdx);
-
-                // Klick-Synchronisation: anderen Plan auf zugehörige(n) Klasse/Lehrer setzen
-                SynchronisiereAnderenPlan(blockIdx, ausLehrerPlan);
-
-                // Tauschvorschläge (klassenintern) fuer beide Ansichten.
-                // Die klassenuebergreifende Ring-Liste wurde entfernt; an ihre
-                // Stelle tritt der Drag-basierte Ansatz (Verschiebung + Ausweichtausch).
-                LeereVerschiebungen();
-                ZeigeTauschvorschlaege(blockIdx, slotIdx);
             }
+        }
+
+        // Echter Klick (Druecken + Loslassen ohne Ziehen): jetzt erst die
+        // Klick-Arbeit. Beginnt stattdessen ein Zug, setzt Teil_MouseMove
+        // _maybeDrag auf null (nach DoDragDrop), und dieser Handler ueberspringt.
+        private void Teil_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_maybeDrag == null) return;   // Ein Zug hat uebernommen -> kein Klick.
+
+            int blockIdx = _maybeDrag[0];
+            int slotIdx = _maybeDrag[1];
+            bool ausLehrerPlan = _maybeDrag.Length > 2 && _maybeDrag[2] == 1;
+            _maybeDrag = null;
+
+            // Details anzeigen
+            ZeigeDetails(blockIdx);
+
+            // Klick-Synchronisation: anderen Plan auf zugehörige(n) Klasse/Lehrer setzen
+            SynchronisiereAnderenPlan(blockIdx, ausLehrerPlan);
+
+            // Tauschvorschläge (klassenintern) fuer beide Ansichten.
+            LeereVerschiebungen();
+            ZeigeTauschvorschlaege(blockIdx, slotIdx);
         }
 
         // =====================================================
@@ -3485,6 +3499,10 @@ namespace Stundenplan_V2
             _fixierteKette = null;
             _fixierteZeile = null;
             _letzterDragOverSlot = -2;
+            // Eine ausstehende Kollisions-Option gilt immer nur fuer den letzten
+            // Zug — bei neuem Drag/Reset/nach Ausfuehren eines Vorschlags verfaellt sie.
+            _kollisionProbe = null;
+            _kollisionInfo = null;
             if (PnlTausch != null) PnlTausch.Children.Clear();
             LeereLehrerVergleich();
             LeereKlassenVergleich();
@@ -3732,7 +3750,13 @@ namespace Stundenplan_V2
         private void BeschreibeKetteInTextBlock(Tauschkette kette, TextBlock tb)
         {
             tb.Inlines.Clear();
+            BeschreibeKetteInInlines(kette, tb.Inlines);
+        }
 
+        // Wie oben, haengt aber NUR an (kein Clear) — damit die Beschreibung auch
+        // als Kopf des Diagnosefensters wiederverwendet werden kann.
+        private void BeschreibeKetteInInlines(Tauschkette kette, System.Windows.Documents.InlineCollection inlines)
+        {
             string SlotsText(List<int> slots)
             {
                 if (slots.Count == 0) return "?";
@@ -3748,8 +3772,8 @@ namespace Stundenplan_V2
                 string fach = string.Join(",", block.Teile.Select(t => t.Fach).Distinct());
                 string klassen = string.Join(",", block.Teile.SelectMany(t => t.Klassen).Distinct());
                 // Slot fett, dann Fach/Klasse zur eindeutigen Identifikation
-                tb.Inlines.Add(new System.Windows.Documents.Run(SlotsText(g.slots)) { FontWeight = FontWeights.Bold });
-                tb.Inlines.Add(new System.Windows.Documents.Run(" (" + fach + ", " + klassen + ")"));
+                inlines.Add(new System.Windows.Documents.Run(SlotsText(g.slots)) { FontWeight = FontWeights.Bold });
+                inlines.Add(new System.Windows.Documents.Run(" (" + fach + ", " + klassen + ")"));
             }
 
             int n = kette.Glieder.Count;
@@ -3757,9 +3781,9 @@ namespace Stundenplan_V2
             if (n == 2)
             {
                 // Echter Tausch: A <-> B
-                tb.Inlines.Add(new System.Windows.Documents.Run("Tausch: ") { FontWeight = FontWeights.Bold });
+                inlines.Add(new System.Windows.Documents.Run("Tausch: ") { FontWeight = FontWeights.Bold });
                 GliedBeschreibung(0);
-                tb.Inlines.Add(new System.Windows.Documents.Run("  <->  "));
+                inlines.Add(new System.Windows.Documents.Run("  <->  "));
                 GliedBeschreibung(1);
             }
             else
@@ -3768,16 +3792,16 @@ namespace Stundenplan_V2
                 // Darstellung als "Glied0 -> Slot1 -> Slot2 -> ... -> zurueck zu Slot0"
                 // ist verwirrend, wenn zwei Glieder denselben Slot haben.
                 // Deshalb: jedes Glied EINZELN mit seinem Ziel auflisten.
-                tb.Inlines.Add(new System.Windows.Documents.Run(n + "er-Ring: ") { FontWeight = FontWeights.Bold });
+                inlines.Add(new System.Windows.Documents.Run(n + "er-Ring: ") { FontWeight = FontWeights.Bold });
                 for (int i = 0; i < n; i++)
                 {
                     int ziel = (i + 1) % n;
                     if (i > 0)
-                        tb.Inlines.Add(new System.Windows.Documents.Run("   |   "));
+                        inlines.Add(new System.Windows.Documents.Run("   |   "));
                     GliedBeschreibung(i);
-                    tb.Inlines.Add(new System.Windows.Documents.Run(" nach "));
+                    inlines.Add(new System.Windows.Documents.Run(" nach "));
                     // Zielslot (wo dieses Glied HINwandert)
-                    tb.Inlines.Add(new System.Windows.Documents.Run(SlotsText(kette.Glieder[ziel].slots)) { FontWeight = FontWeights.Bold });
+                    inlines.Add(new System.Windows.Documents.Run(SlotsText(kette.Glieder[ziel].slots)) { FontWeight = FontWeights.Bold });
                 }
             }
         }
@@ -6319,6 +6343,7 @@ namespace Stundenplan_V2
                     Foreground = Brushes.Gray,
                     TextWrapping = TextWrapping.Wrap
                 });
+                FuegeKollisionsOptionEin(); // Option auch ohne Ausweichsuche zeigen
                 return;
             }
 
@@ -6402,13 +6427,123 @@ namespace Stundenplan_V2
 
                 PnlVerschieb.Children.Add(bd);
             }
+
+            // Die anklickbare "Kollision erzeugen"-Option immer oben halten,
+            // damit sie auch nach jedem Neuzeichnen der Liste sichtbar bleibt.
+            FuegeKollisionsOptionEin();
+        }
+
+        // =====================================================
+        // Kollisions-Option (Ko-Platzierung ohne Tausch, per Klick)
+        // =====================================================
+        // Nach dem Ziehen auf ein besetztes/gesperrtes Feld wird NICHTS sofort
+        // ausgefuehrt. Stattdessen werden die Tauschvorschlaege angezeigt UND diese
+        // fertige Ko-Platzierungs-Belegung gemerkt; erst ein Klick auf die Option
+        // legt den Unterricht (ohne Tausch) auf das Feld und erzeugt damit bewusst
+        // die Kollision. null = keine ausstehende Kollision.
+        private int[,] _kollisionProbe;
+        private string _kollisionInfo;
+
+        // Merkt die Ko-Platzierung und blendet die Option ein. probe ist die bereits
+        // fertige Belegung (A liegt auf den Zielslots, alles andere bleibt stehen).
+        private void MerkeKollision(int[,] probe, int blockIdx, List<int> zielSlots, string konflikt)
+        {
+            _kollisionProbe = probe;
+
+            string wo = "Zielfeld";
+            if (zielSlots != null && zielSlots.Count > 0)
+            {
+                string tag = _slots[zielSlots[0]].WTag;
+                var std = zielSlots.Select(s => _slots[s].Stunde).OrderBy(x => x);
+                wo = tag + " Std" + string.Join("/", std);
+            }
+            _kollisionInfo = "UNr " + _blocks[blockIdx].UNr + " -> " + wo;
+
+            FuegeKollisionsOptionEin();
+            SetStatus("Vorschlaege angezeigt (nicht ausgefuehrt). 'Kollision erzeugen' klicken, "
+                      + "um UNr " + _blocks[blockIdx].UNr + " ohne Tausch auf " + wo
+                      + " zu legen. Konflikt: " + (konflikt ?? "").Replace("\n", "   ·   "), false);
+        }
+
+        private void LoescheKollisionsOption()
+        {
+            _kollisionProbe = null;
+            _kollisionInfo = null;
+            // Etwaigen Button aus dem Panel entfernen (ohne den Rest neu zu zeichnen).
+            if (PnlVerschieb != null)
+                for (int i = PnlVerschieb.Children.Count - 1; i >= 0; i--)
+                    if (PnlVerschieb.Children[i] is FrameworkElement fe && (fe.Tag as string) == "KOLLISION")
+                        PnlVerschieb.Children.RemoveAt(i);
+        }
+
+        // Fuegt die Option oben in PnlVerschieb ein, falls eine Kollision ansteht.
+        // Doppelte werden vorher entfernt.
+        private void FuegeKollisionsOptionEin()
+        {
+            if (PnlVerschieb == null || _kollisionProbe == null) return;
+
+            for (int i = PnlVerschieb.Children.Count - 1; i >= 0; i--)
+                if (PnlVerschieb.Children[i] is FrameworkElement fe && (fe.Tag as string) == "KOLLISION")
+                    PnlVerschieb.Children.RemoveAt(i);
+
+            var bd = new Border
+            {
+                BorderBrush = Brushes.Red,
+                BorderThickness = new Thickness(2),
+                Margin = new Thickness(0, 0, 0, 6),
+                Padding = new Thickness(6, 4, 6, 4),
+                Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xE0, 0xE0)),
+                Cursor = System.Windows.Input.Cursors.Hand,
+                Tag = "KOLLISION"
+            };
+            var tb = new TextBlock
+            {
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 11,
+                Foreground = Brushes.DarkRed
+            };
+            tb.Inlines.Add(new System.Windows.Documents.Run(
+                "⚠ Kollision erzeugen bzw. verbotenen Slot besetzen")
+                { FontWeight = FontWeights.Bold });
+            if (_kollisionInfo != null)
+                tb.Inlines.Add(new System.Windows.Documents.Run("  (" + _kollisionInfo + ")"));
+            tb.Inlines.Add(new System.Windows.Documents.LineBreak());
+            tb.Inlines.Add(new System.Windows.Documents.Run(
+                "Klick: Unterricht ohne Tausch hierher legen (Plan wird ungueltig)."));
+            bd.Child = tb;
+
+            bd.MouseLeftButtonDown += (s2, e2) => { FuehreKollisionAus(); e2.Handled = true; };
+
+            PnlVerschieb.Children.Insert(0, bd);
+        }
+
+        // Fuehrt die gemerkte Ko-Platzierung aus (nur per Klick auf die Option).
+        private void FuehreKollisionAus()
+        {
+            if (_kollisionProbe == null) return;
+
+            _belegung = _kollisionProbe;
+            LoescheKollisionsOption();
+            LeereTauschvorschlaege();   // raeumt Ketten + Lehrervergleich + Pfeile
+            LeereVerschiebungen();
+            SetStatus("Kollision erzeugt: Unterricht ohne Tausch auf das besetzte/gesperrte "
+                      + "Feld gelegt — der Plan ist an dieser Stelle ungueltig.", true);
+            ZeichneBeideGrids();
+            ZeichneParkbereich();
+            PruefeUndZeigeWarnungen();
         }
 
         // Beschreibt eine Verschiebung-mit-Ausweich: "A: X nach Y; B weicht: P nach Q; ..."
         private void BeschreibeVerschiebung(VerschiebungMitAusweich v, TextBlock tb)
         {
             tb.Inlines.Clear();
+            BeschreibeVerschiebungInInlines(v, tb.Inlines);
+        }
 
+        // Wie oben, haengt aber NUR an (kein Clear) — fuer die Verwendung als Kopf
+        // des Diagnosefensters.
+        private void BeschreibeVerschiebungInInlines(VerschiebungMitAusweich v, System.Windows.Documents.InlineCollection inlines)
+        {
             string SlotsText(List<int> slots)
             {
                 if (slots == null || slots.Count == 0) return "?";
@@ -6427,23 +6562,23 @@ namespace Stundenplan_V2
 
             // Hauptverschiebung (bzw. Einplanung aus dem Parkbereich)
             bool ausPark = v.AltSlots == null || v.AltSlots.Count == 0;
-            tb.Inlines.Add(new System.Windows.Documents.Run(ausPark ? "Einplanen " : "Verschiebe ")
+            inlines.Add(new System.Windows.Documents.Run(ausPark ? "Einplanen " : "Verschiebe ")
                 { FontWeight = FontWeights.Bold });
-            tb.Inlines.Add(new System.Windows.Documents.Run(Bez(v.HauptBlock) + " "));
-            tb.Inlines.Add(new System.Windows.Documents.Run(ausPark ? "Parkbereich" : SlotsText(v.AltSlots))
+            inlines.Add(new System.Windows.Documents.Run(Bez(v.HauptBlock) + " "));
+            inlines.Add(new System.Windows.Documents.Run(ausPark ? "Parkbereich" : SlotsText(v.AltSlots))
                 { FontWeight = FontWeights.Bold });
-            tb.Inlines.Add(new System.Windows.Documents.Run(" nach "));
-            tb.Inlines.Add(new System.Windows.Documents.Run(SlotsText(v.ZielSlots)) { FontWeight = FontWeights.Bold });
+            inlines.Add(new System.Windows.Documents.Run(" nach "));
+            inlines.Add(new System.Windows.Documents.Run(SlotsText(v.ZielSlots)) { FontWeight = FontWeights.Bold });
 
             // Ausweich-Tausche (je Paar: Hindernis + Partner). v.Ausweiche enthaelt
             // beide Richtungen; wir zeigen pro Block "alt nach neu".
             foreach (var aw in v.Ausweiche)
             {
-                tb.Inlines.Add(new System.Windows.Documents.Run("  |  "));
-                tb.Inlines.Add(new System.Windows.Documents.Run(Bez(aw.block) + " "));
-                tb.Inlines.Add(new System.Windows.Documents.Run(SlotsText(aw.alt)) { FontWeight = FontWeights.Bold });
-                tb.Inlines.Add(new System.Windows.Documents.Run("->"));
-                tb.Inlines.Add(new System.Windows.Documents.Run(SlotsText(aw.neu)) { FontWeight = FontWeights.Bold });
+                inlines.Add(new System.Windows.Documents.Run("  |  "));
+                inlines.Add(new System.Windows.Documents.Run(Bez(aw.block) + " "));
+                inlines.Add(new System.Windows.Documents.Run(SlotsText(aw.alt)) { FontWeight = FontWeights.Bold });
+                inlines.Add(new System.Windows.Documents.Run("->"));
+                inlines.Add(new System.Windows.Documents.Run(SlotsText(aw.neu)) { FontWeight = FontWeights.Bold });
             }
         }
 
@@ -6488,7 +6623,8 @@ namespace Stundenplan_V2
 
             // Diagnose (struktur-unabhaengiger Kern): betroffene Lehrer aus der Belegungsdifferenz
             var betroffene = ErmittleGeaenderteLehrer(_belegung, v.ProbeBelegung);
-            ZeigeDiagnoseDiffKern(v.ProbeBelegung, betroffene);
+            ZeigeDiagnoseDiffKern(v.ProbeBelegung, betroffene,
+                kopf: inlines => BeschreibeVerschiebungInInlines(v, inlines));
 
             // Vorher/Nachher-Plaene (nutzt _vglProbe -> struktur-unabhaengig)
             _vglProbe = v.ProbeBelegung;
@@ -6756,11 +6892,11 @@ namespace Stundenplan_V2
 
                     if (!freiVorCache.TryGetValue(lehrer, out int vor))
                     {
-                        vor = ZaehleWaehlbareFreieTage(lehrer, _belegung);
+                        vor = ZaehleFreieTage(lehrer, _belegung);
                         freiVorCache[lehrer] = vor;
                     }
 
-                    int nach = ZaehleWaehlbareFreieTage(lehrer, probe);
+                    int nach = ZaehleFreieTage(lehrer, probe);
                     if (nach < gefordert && nach < vor) return true;
                 }
             }
@@ -6886,16 +7022,33 @@ namespace Stundenplan_V2
             foreach (var g in kette.Glieder)
                 foreach (var t in _blocks[g.blockIdx].Teile)
                     if (!string.IsNullOrWhiteSpace(t.Lehrer)) betroffeneLehrer.Add(t.Lehrer);
-            ZeigeDiagnoseDiffKern(kette.ProbeBelegung, betroffeneLehrer);
+            ZeigeDiagnoseDiffKern(kette.ProbeBelegung, betroffeneLehrer,
+                kopf: inlines => BeschreibeKetteInInlines(kette, inlines));
         }
 
         // Struktur-unabhaengige Diagnose: vergleicht _belegung mit probeBelegung
         // fuer die angegebenen betroffenen Lehrer. Wird von Tausch UND Verschiebung genutzt.
-        private void ZeigeDiagnoseDiffKern(int[,] probeBelegung, HashSet<string> betroffeneLehrer)
+        // kopf (optional): rendert oben — in der Diagnose-Schriftgroesse — nochmals
+        // den zugrundeliegenden Vorschlag, damit er gut lesbar ist.
+        private void ZeigeDiagnoseDiffKern(int[,] probeBelegung, HashSet<string> betroffeneLehrer,
+                                           Action<System.Windows.Documents.InlineCollection> kopf = null)
         {
             var p = _bewParam;
             TxtDetails.Inlines.Clear();
             if (probeBelegung == null) return;
+
+            // Zeilenumbruch, damit ein langer Vorschlag (und lange Diagnosezeilen)
+            // umbrechen statt abzuschneiden.
+            TxtDetails.TextWrapping = TextWrapping.Wrap;
+
+            // Optionaler Kopf: der Vorschlag selbst, in derselben Schrift wie die
+            // Diagnose (TxtDetails), gefolgt von einer Leerzeile als Trenner.
+            if (kopf != null)
+            {
+                TxtDetails.Inlines.Add(new System.Windows.Documents.Run("Vorschlag: ") { FontWeight = FontWeights.Bold });
+                kopf(TxtDetails.Inlines);
+                TxtDetails.Inlines.Add(new System.Windows.Documents.LineBreak());
+            }
 
             void Zeile(string text, bool fett = false, double einzug = 0)
             {
@@ -7087,39 +7240,6 @@ namespace Stundenplan_V2
             int frei = 0;
             foreach (var tag in _tage)
             {
-                bool hatUnterricht = false;
-                for (int b = 0; b < _blocks.Count && !hatUnterricht; b++)
-                {
-                    if (!_blocks[b].Teile.Any(t => t.Lehrer == lehrer)) continue;
-                    for (int s = 0; s < _slots.Count; s++)
-                        if (_slots[s].WTag == tag && belegung[b, s] == 1) { hatUnterricht = true; break; }
-                }
-                if (!hatUnterricht) frei++;
-            }
-            return frei;
-        }
-
-        // Wie ZaehleFreieTage, aber konsistent zur Solver-Zaehlung der GEFORDERTEN
-        // freien Tage: ein Tag, an dem der Lehrer per ZWL an ALLEN Stunden -3-
-        // gesperrt ist, ist ohnehin fest frei und zaehlt NICHT auf die geforderte
-        // Zahl (identisch zu StundenplanEngine, wo dort free[l,day]==0 erzwungen
-        // wird). Ohne diese Korrektur ueberzaehlt der Editor bei Lehrern mit einem
-        // fest gesperrten Ganztag und laesst Tauschvorschlaege durch, die die harte
-        // Freie-Tage-Regel verletzen. Fuer Lehrer ohne gesperrten Ganztag ist der
-        // Rueckgabewert identisch zu ZaehleFreieTage.
-        private int ZaehleWaehlbareFreieTage(string lehrer, int[,] belegung)
-        {
-            int frei = 0;
-            foreach (var tag in _tage)
-            {
-                // Fest gesperrten Ganztag ueberspringen: alle Slots des Tages
-                // haben LehrerWunsch == -3 -> zaehlt nicht als waehlbarer freier Tag.
-                var tagSlots = _slots.Where(s => s.WTag == tag).ToList();
-                bool fixFrei = tagSlots.Count > 0 && tagSlots.All(s =>
-                    s.LehrerWunsch != null &&
-                    s.LehrerWunsch.TryGetValue(lehrer, out int lw) && lw == -3);
-                if (fixFrei) continue;
-
                 bool hatUnterricht = false;
                 for (int b = 0; b < _blocks.Count && !hatUnterricht; b++)
                 {
@@ -7420,21 +7540,19 @@ namespace Stundenplan_V2
                 {
                     int anzP = _aktuelleVerschiebungen?.Count ?? 0;
 
-                    // WICHTIG: Bei Effects = None loest WPF gar kein Drop-Ereignis
-                    // aus - Zelle_Drop wird nie erreicht und das Fallenlassen
-                    // bleibt wirkungslos. Sobald es Ausweich-Vorschlaege gibt,
-                    // muss der Drop also erlaubt sein, obwohl das Feld belegt ist.
-                    e.Effects = anzP > 0 ? DragDropEffects.Move : DragDropEffects.None;
-                    MarkiereKonfliktZelle(bd, konfliktP, hart: anzP == 0);
+                    // Frueher: ohne Ausweich-Vorschlag Effects = None -> WPF loeste
+                    // gar kein Drop aus, das Feld war schlicht gesperrt. Jetzt ist
+                    // auch ohne Vorschlag ein Drop erlaubt: der Drop-Handler stellt
+                    // dann die Rueckfrage "trotzdem einplanen?".
+                    e.Effects = DragDropEffects.Move;
+                    MarkiereKonfliktZelle(bd, konfliktP, hart: false);
 
-                    if (anzP == 1)
-                        SetStatus("Feld belegt - Loslassen fuehrt den einzigen "
-                                  + "Ausweich-Vorschlag aus.", false);
-                    else if (anzP > 1)
-                        SetStatus("Feld belegt - " + anzP + " Moeglichkeiten; Loslassen "
-                                  + "fixiert die einfachste.", false);
+                    if (anzP >= 1)
+                        SetStatus("Feld belegt - Loslassen: trotzdem hier "
+                                  + "oder Ausweich (" + anzP + ").", false);
                     else
-                        SetStatus("Einplanen gesperrt: " + konfliktP.Replace("\n", "   ·   "), true);
+                        SetStatus("Feld gesperrt - Loslassen fragt, ob trotzdem "
+                                  + "eingeplant werden soll.", false);
                 }
                 else
                 {
@@ -7498,79 +7616,28 @@ namespace Stundenplan_V2
 
             ZeigeVerschiebungen(blockIdx, quellSlots, zielSlots);
 
-            // Harten Konflikt am Zielslot schon waehrend des Ziehens pruefen
-            // (Cursor "verboten" + rote Zielzelle + Tooltip mit Grund),
-            // unabhaengig davon, ob spaeter ein Ausweich-Tausch moeglich waere.
-            //
-            // Die Probe muss GENAU die Aktion abbilden, die Zelle_Drop danach
-            // ausfuehren wuerde. Liegt im Ziel genau ein kollidierender Block
-            // gleicher Stundenzahl, ist das ein TAUSCH (siehe VersucheTauschen)
-            // — dann muss auch der Zielblock in der Probe auf die Quellslots
-            // wandern. Blieb er stattdessen (wie frueher) im Ziel stehen,
-            // standen beide Bloecke gleichzeitig im selben Slot: die Pruefung
-            // meldete dann immer zuerst den gar nicht existierenden Lehrer-
-            // bzw. Klassenkonflikt mit eben diesem Block und kam nie bis zur
-            // Fachraum-Pruefung. Der Tooltip nannte deshalb die Klasse, obwohl
-            // in Wahrheit das Fachraum-Limit den Tausch verhindert.
-            int tauschBlock = -1;
-            List<int> tauschSlots = null;
-            var zielGruppenVorschau = FindeKonfligierendeBeleger(blockIdx, zielSlots)
-                .GroupBy(x => x.b).ToList();
-            if (zielGruppenVorschau.Count == 1)
-            {
-                var slotsB = zielGruppenVorschau[0].Select(x => x.s).OrderBy(x => x).ToList();
-                if (slotsB.Count == quellSlots.Count)
-                {
-                    tauschBlock = zielGruppenVorschau[0].Key;
-                    tauschSlots = slotsB;
-                }
-            }
-
+            // Vorschau exakt der Aktion, die der Drop danach ausfuehren wuerde:
+            //  - konfliktfreies Ziel -> reines Verschieben (nur weiche Warnung).
+            //  - belegtes/gesperrtes Ziel -> Ko-Platzierung; der Drop tauscht NICHT
+            //    automatisch, sondern zeigt Vorschlaege + die anklickbare
+            //    Kollisions-Option. Deshalb hier keine Tausch-Vorschau mehr.
             var probe = (int[,])_belegung.Clone();
-            string konflikt;
-
-            if (tauschBlock >= 0)
-            {
-                // Tausch-Probe exakt wie in VersucheTauschen: A raus aus
-                // quellSlots, B raus aus tauschSlots, dann A in tauschSlots und
-                // B in quellSlots. Beide Richtungen pruefen — gesperrt ist der
-                // Tausch auch dann, wenn erst der Zielblock am neuen Platz
-                // ansteht.
-                foreach (int s in quellSlots) probe[blockIdx, s] = 0;
-                foreach (int s in tauschSlots) probe[tauschBlock, s] = 0;
-                foreach (int s in tauschSlots) probe[blockIdx, s] = 1;
-                foreach (int s in quellSlots) probe[tauschBlock, s] = 1;
-
-                var kA = FindeAlleHartenKonflikte(probe, blockIdx, tauschSlots);
-                var kB = FindeAlleHartenKonflikte(probe, tauschBlock, quellSlots);
-                konflikt = (kA == null && kB == null)
-                    ? null
-                    : string.Join("\n", new[] { kA, kB }.Where(x => x != null));
-            }
-            else
-            {
-                // Reines Verschieben (leeres Ziel oder nur fremde, nicht
-                // kollidierende Unterrichte im Ziel -> Ko-Platzierung).
-                foreach (int s in quellSlots) probe[blockIdx, s] = 0;
-                foreach (int s in zielSlots) probe[blockIdx, s] = 1;
-                konflikt = FindeAlleHartenKonflikte(probe, blockIdx, zielSlots);
-            }
+            foreach (int s in quellSlots) probe[blockIdx, s] = 0;
+            foreach (int s in zielSlots) probe[blockIdx, s] = 1;
+            string konflikt = FindeAlleHartenKonflikte(probe, blockIdx, zielSlots);
 
             if (konflikt != null)
             {
-                e.Effects = DragDropEffects.None;
-                MarkiereKonfliktZelle(bd, konflikt, hart: true);
-                SetStatus((tauschBlock >= 0 ? "Tausch gesperrt: " : "Gesperrt: ")
-                          + konflikt.Replace("\n", "   ·   "), true);
+                // Move erlauben, damit der Drop feuert (er zeigt dann Vorschlaege
+                // + Kollisions-Option). Zielzelle orange markieren.
+                e.Effects = DragDropEffects.Move;
+                MarkiereKonfliktZelle(bd, konflikt, hart: false);
+                SetStatus("Konflikt: " + konflikt.Replace("\n", "   ·   ")
+                          + "  —  Loslassen zeigt Vorschlaege + 'Kollision erzeugen'.", false);
             }
             else
             {
-                // Beim Tausch zaehlt auch der Tauschpartner: er wandert auf die
-                // Quellslots und kann sich dort seinerseits eine Doppelstunden-
-                // oder Tagesregel-Verletzung einhandeln.
-                string weiche = tauschBlock >= 0
-                    ? FindeNeueWeicheVerletzung(probe, _blocks[blockIdx].UNr, _blocks[tauschBlock].UNr)
-                    : FindeNeueWeicheVerletzung(probe, _blocks[blockIdx].UNr);
+                string weiche = FindeNeueWeicheVerletzung(probe, _blocks[blockIdx].UNr);
                 if (weiche != null)
                 {
                     MarkiereKonfliktZelle(bd, weiche, hart: false);
@@ -7618,49 +7685,26 @@ namespace Stundenplan_V2
 
                 if (konflikt != null)
                 {
-                    // Feld belegt -> nicht einfach sperren, sondern wie beim
-                    // normalen Ziehen den einfachsten Ausweich-Vorschlag
-                    // FIXIEREN (Vorher/Nachher + Diagnose). Ausgefuehrt wird er
-                    // erst per Doppelklick in der Liste.
+                    // Belegtes/gesperrtes Feld -> NICHTS sofort ausfuehren.
+                    // Ausweich-Vorschlaege anzeigen (per Doppelklick ausfuehrbar)
+                    // UND die anklickbare Kollisions-Option anbieten.
                     _dragQuelle = null;
                     _letzterDragOverSlot = -2;
 
-                    if (_aktuelleVerschiebungen == null || _aktuelleVerschiebungen.Count == 0)
-                    {
-                        // Bewusst direkt statt ueber ZeigeVerschiebungen: beim
-                        // Fallenlassen ist die Suche gewollt, auch wenn die
-                        // Live-Ausweichsuche (Checkbox) abgeschaltet ist.
-                        LeereVerschiebungen();
-                        _letzteVerschiebungBlock = blockIdx;
-                        _letzteVerschiebungAlt = null;
-                        _letzteVerschiebungZiel = zielSlotsP;
-                        _letzteVerschiebungAusPark = true;
-                        _aktuelleVerschiebungen = SucheEinplanungMitAusweich(blockIdx, zielSlotsP);
-                        ZeichneVerschiebungsliste();
-                    }
+                    LeereVerschiebungen();
+                    _letzteVerschiebungBlock = blockIdx;
+                    _letzteVerschiebungAlt = null;
+                    _letzteVerschiebungZiel = zielSlotsP;
+                    _letzteVerschiebungAusPark = true;
+                    // Bewusst direkt suchen (unabhaengig von der Live-Ausweichsuche).
+                    _aktuelleVerschiebungen = SucheEinplanungMitAusweich(blockIdx, zielSlotsP);
+                    ZeichneVerschiebungsliste();
 
                     DbgPark("Drop auf belegtes Feld: " + _aktuelleVerschiebungen.Count
                             + " Vorschlag(e) vorhanden.");
 
-                    if (_aktuelleVerschiebungen.Count == 1)
-                    {
-                        // Genau eine Moeglichkeit -> direkt ausfuehren. Ein Drop,
-                        // der sichtbar nichts tut, ist irrefuehrend, und zu waehlen
-                        // gibt es hier ohnehin nichts.
-                        FuehreVerschiebungAus(_aktuelleVerschiebungen[0]);
-                    }
-                    else if (_aktuelleVerschiebungen.Count > 1)
-                    {
-                        // Liste ist nach Anzahl der Bewegungen sortiert.
-                        var einfachster = _aktuelleVerschiebungen[0];
-                        FixiereVerschiebung(einfachster, FindeVerschiebungsZeile(einfachster));
-                        SetStatus(_aktuelleVerschiebungen.Count + " Moeglichkeiten - einfachste "
-                                  + "fixiert. Doppelklick in der Liste fuehrt sie aus.", false);
-                    }
-                    else
-                    {
-                        SetStatus("Einplanen gesperrt: " + konflikt, true);
-                    }
+                    // probe = A liegt zusaetzlich auf dem Zielslot (Ko-Platzierung).
+                    MerkeKollision(probe, blockIdx, zielSlotsP, konflikt);
                     return;
                 }
 
@@ -7678,27 +7722,6 @@ namespace Stundenplan_V2
 
             var quellSlots = _dragQuelle.SlotIndizes;
 
-            // NEU: Gibt es Tauschvorschlaege, bei denen NUR der Ausgangsunterricht
-            // auf den Zielslot wandert? Dann den einfachsten fixieren (nicht ausfuehren).
-            if (_aktuelleKetten != null && _aktuelleKetten.Count > 0)
-            {
-                var passende = _aktuelleKetten
-                    .Where(k => KetteLandetAuf(k, zielSlot))
-                    .OrderBy(k => k.Glieder.Count)
-                    .ToList();
-                if (passende.Count > 0)
-                {
-                    _letzterDragOverSlot = -2;
-                    _dragQuelle = null;
-                    // Liste mit diesem Feld hervorgehoben zeichnen, dann einfachsten fixieren
-                    ZeichneTauschliste(zielSlot);
-                    FixiereKette(passende[0], null);
-                    return;
-                }
-            }
-
-            // Zielslots berechnen: ausgehend vom Zielslot, gleiche Anzahl + Folge wie Quelle
-            // Quellslots sind am selben Tag aufeinanderfolgend (Block-Tag) oder einzeln.
             var zielSlots = BerechneZielSlots(quellSlots, zielSlot);
             if (zielSlots == null)
             {
@@ -7707,53 +7730,38 @@ namespace Stundenplan_V2
                 return;
             }
 
-            // Was liegt im Ziel und kollidiert HART (gleiche Klasse/gleicher Lehrer)?
-            // Fremde Unterrichte (andere Klasse + anderer Lehrer) zählen nicht —
-            // dann ist das Feld für diesen Block frei und es wird ko-platziert
-            // (gleiches Verhalten wie beim Einplanen über den Parkbereich).
-            var zielBeleger = FindeKonfligierendeBeleger(blockIdx, zielSlots);
+            // Ko-Platzierungs-Probe: A wandert auf die Zielslots, alles andere
+            // (insbesondere ein dort liegender Unterricht) bleibt stehen.
+            var coProbe = (int[,])_belegung.Clone();
+            foreach (int s in quellSlots) coProbe[blockIdx, s] = 0;
+            foreach (int s in zielSlots) coProbe[blockIdx, s] = 1;
+            string koKonflikt = FindeAlleHartenKonflikte(coProbe, blockIdx, zielSlots);
 
-            // Aktion bestimmen
-            bool zielLeer = zielBeleger.Count == 0;
+            _letzterDragOverSlot = -2;
 
-            if (zielLeer)
+            if (koKonflikt == null)
             {
+                // Freies/konfliktfreies Ziel -> direkt verschieben (inkl. Fixier-
+                // Rueckfrage und Diagnose-Vorschau in VersucheVerschieben).
                 VersucheVerschieben(blockIdx, quellSlots, zielSlots);
+                _dragQuelle = null;
+                return;
             }
-            else
-            {
-                // Verschiebung-mit-Ausweich-Vorschlaege suchen und anzeigen:
-                // A soll nach zielSlots; Hindernis-Bloecke weichen per klasseninternem Tausch.
-                ZeigeVerschiebungen(blockIdx, quellSlots, zielSlots);
 
-                // Swap nur bei gleicher Slot-Zahl + genau EIN Ziel-Block
-                var zielBlockGruppen = zielBeleger.GroupBy(x => x.b).ToList();
-                if (zielBlockGruppen.Count != 1)
-                {
-                    // Kein einfacher Tausch moeglich. Falls Ausweich-Vorschlaege
-                    // gefunden wurden, darauf hinweisen, sonst sperren.
-                    if (_aktuelleVerschiebungen.Count > 0)
-                        SetStatus("Direkter Tausch nicht moeglich — siehe 'Verschiebung mit Ausweich'.", false);
-                    else
-                        SetStatus("Tausch nur mit genau einem Block moeglich — gesperrt.", true);
-                    _dragQuelle = null;
-                    return;
-                }
-                int zielBlock = zielBlockGruppen[0].Key;
-                var zielBlockSlots = zielBlockGruppen[0].Select(x => x.s).OrderBy(x => x).ToList();
-
-                if (zielBlockSlots.Count != quellSlots.Count)
-                {
-                    if (_aktuelleVerschiebungen.Count > 0)
-                        SetStatus("Direkter Tausch nicht moeglich — siehe 'Verschiebung mit Ausweich'.", false);
-                    else
-                        SetStatus("Tausch nur bei gleicher Stundenzahl moeglich — gesperrt.", true);
-                    _dragQuelle = null;
-                    return;
-                }
-
-                VersucheTauschen(blockIdx, quellSlots, zielBlock, zielBlockSlots);
-            }
+            // Besetztes/gesperrtes Ziel -> es wird NICHTS automatisch getauscht
+            // oder verschoben. Tauschvorschlaege werden angezeigt (per Doppelklick
+            // ausfuehrbar) und die anklickbare Kollisions-Option angeboten. Der
+            // vorhandene Zielunterricht bleibt liegen; erst ein Klick auf die
+            // Option legt A ohne Tausch auf das Feld und erzeugt die Kollision.
+            //
+            // Die klasseninternen Tauschketten werden erst HIER berechnet (beim
+            // Ziehen wurde die teure Suche uebersprungen, damit der Zug sofort
+            // startet). ZeigeTauschvorschlaege fuellt _aktuelleKetten und zeichnet;
+            // danach die zum Ziel passenden hervorheben.
+            ZeigeTauschvorschlaege(blockIdx, quellSlots[0]);
+            ZeichneTauschliste(zielSlot);                        // Ketten hervorheben
+            ZeigeVerschiebungen(blockIdx, quellSlots, zielSlots); // Verschiebung mit Ausweich
+            MerkeKollision(coProbe, blockIdx, zielSlots, koKonflikt);
 
             _dragQuelle = null;
         }
@@ -7779,6 +7787,11 @@ namespace Stundenplan_V2
         // =====================================================
         // Aktionen mit Hart-Sperre
         // =====================================================
+        // Verschiebt A auf die Zielslots. Ist das Ziel konfliktfrei, wird direkt
+        // verschoben. Entsteht ein harter Konflikt (belegtes/gesperrtes Feld, oder
+        // Kollision ueber eine andere Klasse), wird NICHTS ausgefuehrt: es werden
+        // Ausweich-Vorschlaege angezeigt und die anklickbare Kollisions-Option
+        // angeboten (erst ein Klick legt A ohne Tausch auf das Feld).
         private void VersucheVerschieben(int blockIdx, List<int> quellSlots, List<int> zielSlots)
         {
             // Probe-Belegung erstellen
@@ -7789,17 +7802,12 @@ namespace Stundenplan_V2
             string konflikt = FindeAlleHartenKonflikte(probe, blockIdx, zielSlots);
             if (konflikt != null)
             {
-                // Der Zielslot ist in der AKTUELL angezeigten Klasse leer (sonst waeren
-                // wir nicht hier), aber der Block kann trotzdem kollidieren - z.B. weil
-                // derselbe Lehrer zur gleichen Zeit in einer ANDEREN Klasse unterrichtet.
-                // In diesem Fall ebenfalls nach Verschiebung-mit-Ausweich suchen, statt
-                // nur zu sperren.
+                // Konfliktbehaftet -> nicht ausfuehren. Ausweich-Vorschlaege zeigen
+                // (der Block kann auch kollidieren, wenn das Feld in der ANGEZEIGTEN
+                // Klasse leer wirkt — z.B. derselbe Lehrer zeitgleich in einer
+                // anderen Klasse) und die Kollisions-Option anbieten.
                 ZeigeVerschiebungen(blockIdx, quellSlots, zielSlots);
-
-                if (_aktuelleVerschiebungen.Count > 0)
-                    SetStatus("Direkte Verschiebung nicht moeglich — siehe 'Verschiebung mit Ausweich'.", false);
-                else
-                    SetStatus("Gesperrt: " + konflikt.Replace("\n", "   ·   "), true);
+                MerkeKollision(probe, blockIdx, zielSlots, konflikt);
                 return;
             }
 
@@ -7841,69 +7849,6 @@ namespace Stundenplan_V2
 
             SetStatus("Verschoben: UNr " + _blocks[blockIdx].UNr
                       + (fixIdx.Count > 0 ? " (inkl. Fixierung)." : "."), false);
-            ZeichneBeideGrids();
-            ZeichneParkbereich();
-            PruefeUndZeigeWarnungen();
-        }
-
-        private void VersucheTauschen(int blockA, List<int> slotsA, int blockB, List<int> slotsB)
-        {
-            var probe = (int[,])_belegung.Clone();
-            // A raus aus slotsA, B raus aus slotsB
-            foreach (int s in slotsA) probe[blockA, s] = 0;
-            foreach (int s in slotsB) probe[blockB, s] = 0;
-            // A in slotsB, B in slotsA
-            foreach (int s in slotsB) probe[blockA, s] = 1;
-            foreach (int s in slotsA) probe[blockB, s] = 1;
-
-            string konfliktA = FindeAlleHartenKonflikte(probe, blockA, slotsB);
-            string konfliktB = FindeAlleHartenKonflikte(probe, blockB, slotsA);
-            if (konfliktA != null || konfliktB != null)
-            {
-                string beide = string.Join("\n", new[] { konfliktA, konfliktB }.Where(x => x != null));
-                SetStatus("Tausch gesperrt: " + beide.Replace("\n", "   ·   "), true);
-                return;
-            }
-
-            // Fixierte Slots der beiden Blöcke ermitteln (slotsA/slotsB sind gleich lang).
-            int unrA = _blocks[blockA].UNr, unrB = _blocks[blockB].UNr;
-            var fixA = new List<int>();
-            for (int i = 0; i < slotsA.Count; i++)
-                if (_slots[slotsA[i]].FixUNrn.Contains(unrA)) fixA.Add(i);
-            var fixB = new List<int>();
-            for (int i = 0; i < slotsB.Count; i++)
-                if (_slots[slotsB[i]].FixUNrn.Contains(unrB)) fixB.Add(i);
-
-            if (fixA.Count > 0 || fixB.Count > 0)
-            {
-                var antwort = MessageBox.Show(
-                    "Mindestens einer der zu tauschenden Blöcke ist fixiert.\n\n" +
-                    "Fixierungen mittauschen (auch in Tabelle 'Fix UNrn')?",
-                    "Fixierten Block tauschen",
-                    MessageBoxButton.YesNo, MessageBoxImage.Question);
-                if (antwort != MessageBoxResult.Yes)
-                {
-                    SetStatus("Tausch abgebrochen — Block ist fixiert.", false);
-                    return;
-                }
-            }
-
-            _belegung = probe;
-
-            // Fixierungen mittauschen: A wandert slotsA -> slotsB, B wandert slotsB -> slotsA.
-            foreach (int i in fixA)
-            {
-                _aendereFixUNrCallback?.Invoke(slotsA[i], unrA, false);
-                _aendereFixUNrCallback?.Invoke(slotsB[i], unrA, true);
-            }
-            foreach (int i in fixB)
-            {
-                _aendereFixUNrCallback?.Invoke(slotsB[i], unrB, false);
-                _aendereFixUNrCallback?.Invoke(slotsA[i], unrB, true);
-            }
-
-            SetStatus("Getauscht: UNr " + _blocks[blockA].UNr + " <-> UNr " + _blocks[blockB].UNr
-                      + (fixA.Count + fixB.Count > 0 ? " (inkl. Fixierung)." : "."), false);
             ZeichneBeideGrids();
             ZeichneParkbereich();
             PruefeUndZeigeWarnungen();
@@ -8029,7 +7974,7 @@ namespace Stundenplan_V2
                     bool zwingend = minus3 || (minus2 && _bewParam.VerbotMinus2);
                     if (!zwingend) continue;
 
-                    int freiNach = ZaehleWaehlbareFreieTage(lehrer, probe);
+                    int freiNach = ZaehleFreieTage(lehrer, probe);
                     if (freiNach < gefordert)
                         { Add("Lehrer " + lehrer + " haette nur " + freiNach
                                + " statt " + gefordert + " zwingende(r) freie(r) Tag(e)"); if (nurErster) return alle; }
