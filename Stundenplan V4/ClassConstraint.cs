@@ -29,7 +29,15 @@ namespace Stundenplan_V2
             BoolVar[,] x,
             List<UnterrichtsBlock> blocks,
             int S,
-            KlassenGruppen gruppen)
+            KlassenGruppen gruppen,
+            // Fix-Relax (optional): fixSlot[b,s] == true, wenn Block b per FixUNrn
+            // in Slot s vorgegeben ist. null => Standardverhalten (unveraendert).
+            // Ist gesetzt, entfaellt der Kollisions-Constraint fuer ein Paar,
+            // BEIDE Bloecke im selben Slot fixiert sind: eine von zwei
+            // Fixierungen verursachte Klassenkollision wird dann bewusst
+            // toleriert. Alle uebrigen Paare bleiben hart -> kein Freiblock
+            // darf zusaetzlich in denselben Slot.
+            bool[,] fixSlot = null)
         {
             gruppen ??= KlassenGruppen.Leer;
             int B = blocks.Count;
@@ -74,6 +82,12 @@ namespace Stundenplan_V2
 
                             // (b) Wochengruppen A <-> B -> kollidieren nie
                             if ((wg1 == "A" && wg2 == "B") || (wg1 == "B" && wg2 == "A"))
+                                continue;
+
+                            // (c) Fix-Relax: sind BEIDE Bloecke in diesem Slot
+                            // fixiert, ist die Kollision durch die Fixierungen
+                            // selbst verursacht -> tolerieren (kein Constraint).
+                            if (fixSlot != null && fixSlot[b1, s] && fixSlot[b2, s])
                                 continue;
 
                             // Sonst: nicht gleichzeitig

@@ -26,6 +26,11 @@ public class StundenplanInput
     // Mindestanzahl Blöcke, die sich zwischen zwei ausgegebenen Lösungen
     // mindestens unterscheiden müssen (verhindert nahezu identische Lösungen).
     public int MindestAbstandLösungenBloecke { get; set; } = 5;
+    // Fix-Relax: Sind die FixUNrn allein schon unlösbar, wird der Grundlauf
+    // EINMAL mit toleranten Fixierungs-Konflikten wiederholt (Fixierungen
+    // bleiben hart, nur die von ihnen verursachten harten Verstöße werden
+    // geduldet; alle übrigen Regeln bleiben hart). false = altes Verhalten.
+    public bool FixRelaxBeiFixInfeasible { get; set; } = false;
     // Warnungen zu UV-Zeilen ohne Fach und/oder ohne Klasse (Pflichtfelder).
     public List<string> UvFachKlasseWarnungen { get; set; } = new();
     // Dieselben Zeilen wie oben, aber nur die reinen UNr-Werte (dedupliziert,

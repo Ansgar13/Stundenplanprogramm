@@ -27,11 +27,12 @@ namespace Stundenplan_V2
     /// im Plan-Editor angezeigte Plan bleibt unveraendert.
     ///
     /// Vom Plan-Editor können MEHRERE dieser Fenster gleichzeitig geöffnet
-    /// werden (z.B. zwei Lehrer nebeneinander vergleichen). Jedes Fenster
-    /// übernimmt den beim Öffnen gewählten Lehrer/Klasse einmalig als Filter
-    /// und bleibt danach stehen. Nur wenn "an Auswahl koppeln" angehakt ist,
-    /// zieht das Fenster mit den Dropdowns des Editors mit — siehe
-    /// PlanEditorDialog.AktualisiereUvFenster().
+    /// werden (z.B. zwei Lehrer nebeneinander vergleichen). Standardmäßig ist
+    /// "an Auswahl koppeln" angehakt: das Fenster zieht mit den Dropdowns des
+    /// Editors mit — siehe PlanEditorDialog.AktualisiereUvFenster(). Wird der
+    /// Haken entfernt, bleibt der beim Öffnen (bzw. zuletzt gekoppelt) gewählte
+    /// Lehrer/Klasse als Filter stehen, sodass sich mehrere Fenster mit
+    /// verschiedenen Lehrern vergleichen lassen.
     /// </summary>
     public class UvAnzeigeWindow : Window
     {
@@ -165,12 +166,13 @@ namespace Stundenplan_V2
             _chkKoppeln = new CheckBox
             {
                 Content = "an Auswahl koppeln",
-                IsChecked = false,
+                IsChecked = true,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 20, 0),
                 ToolTip = "Folgt den Lehrer-/Klassen-Dropdowns des Plan-Editors. " +
-                          "Aus (Standard): der Filter bleibt stehen — so lassen sich mehrere " +
-                          "Fenster mit verschiedenen Lehrern nebeneinander vergleichen."
+                          "An (Standard): das Fenster zieht mit der Auswahl im Editor mit. " +
+                          "Zum Vergleichen mehrerer Lehrer nebeneinander den Haken entfernen — " +
+                          "dann bleibt der Filter dieses Fensters stehen."
             };
             top.Children.Add(_chkKoppeln);
 

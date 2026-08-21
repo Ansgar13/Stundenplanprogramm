@@ -54,6 +54,12 @@ namespace Stundenplan_V2
         private static SchnellSolverOptionen _schnell = null;
         private static bool _schnellCapsAus = false;
 
+        // Fix-Relax: erlaubt den einmaligen Wiederholungslauf mit toleranten
+        // Fixierungs-Konflikten, wenn der Grundlauf allein an den FixUNrn
+        // scheitert. Wird zu Beginn jedes Planen()-Laufs aus dem Parameter
+        // gesetzt; false = altes Verhalten (Abbruch/Diagnose wie bisher).
+        private static bool _fixRelaxErlaubt = false;
+
         /// <summary>
         /// True, sobald der Nutzer den Lauf abgebrochen hat. Wird an allen
         /// Schleifengrenzen und vor jedem Solve-Aufruf geprüft, damit nach
@@ -3299,7 +3305,12 @@ namespace Stundenplan_V2
             // Klassengruppen (Untis-Konzept). null => Leer = kein Feature.
             KlassenGruppen klassenGruppen = null,
             // Schneller Solver. null => Standard-Solver-Verhalten (unverändert).
-            SchnellSolverOptionen schnell = null)
+            SchnellSolverOptionen schnell = null,
+            // Fix-Relax: sind die FixUNrn allein schon unlösbar, wird der
+            // Grundlauf EINMAL mit toleranten Fixierungs-Konflikten wiederholt
+            // (Fixierungen bleiben hart, nur die von ihnen verursachten harten
+            // Verstöße werden geduldet). false = altes Verhalten.
+            bool fixRelaxBeiFixInfeasible = false)
         {
             // Diagnose-Buffer für aktuellen Lauf zurücksetzen
             _infeasibleDetails.Clear();
@@ -3318,6 +3329,9 @@ namespace Stundenplan_V2
             // Klassengruppen für diesen Lauf hinterlegen (wird von der
             // Klassenregel ClassConstraint.Add gelesen). Leer = wie bisher.
             _klassenGruppen = klassenGruppen ?? KlassenGruppen.Leer;
+
+            // Fix-Relax-Option für diesen Lauf hinterlegen. false = unverändert.
+            _fixRelaxErlaubt = fixRelaxBeiFixInfeasible;
 
             extraFreieStunden ??= new Dictionary<string, int>();
             freieStundenBereich ??= new Dictionary<string, (int von, int bis)>();
@@ -3503,6 +3517,98 @@ namespace Stundenplan_V2
             }
 
             // --------------------------------------------------
+            // FIX-RELAX: FixUNrn allein infeasible?
+            // Ist der Grundlauf BEWIESEN unlösbar, existieren Fixierungen und
+            // ist die Option gesetzt, wird EINMAL erneut gelöst — die
+            // Fixierungen bleiben hart, aber die von IHNEN verursachten harten
+            // Verstöße (Lehrer-/Klassen-/Raum-Kollision zwischen zwei
+            // Fixierungen, gesperrte Slots, überzählige Fixslots) werden
+            // toleriert. Alle übrigen harten Regeln bleiben hart -> es
+            // entstehen keine WEITEREN harten Fehler. Kommt eine Lösung
+            // zustande, wird sie verwendet, die Einzel-Diagnose entfällt (da
+            // ohneLösungen dann nicht mehr leer ist) und Phase 2 (Tausch) wird
+            // übersprungen (der Grundplan trägt bewusst geduldete Konflikte).
+            // --------------------------------------------------
+            bool fixRelaxVerwendet = false;
+            bool fixierungenVorhanden =
+                slots.Any(s => s.FixUNrn != null && s.FixUNrn.Count > 0);
+
+            if (_fixRelaxErlaubt && ohneLösungen.Count == 0 && phase1Infeasible
+                && fixierungenVorhanden && !abbruch.IsCancellationRequested)
+            {
+                log("Fix-Relax: Grundlauf bewiesen unlösbar und Fixierungen vorhanden – " +
+                    "wiederhole EINMAL mit toleranten Fixierungs-Konflikten " +
+                    "(alle übrigen Regeln bleiben hart).");
+                reporter?.SetzePhase("Phase 1: ohne Tausch (Fix-Relax)");
+
+                ohneLösungen = PlanenIntern(
+                    excelPfad, blocks, slots, fachraumLimit, extraFreieTage,
+                    log, maxLösungen: anzahlLösungenOhne, tauschKey: null,
+                    bewiesenInfeasible: out _,
+                    zeitlimitSekunden: zeitlimitSekunden,
+                    nichtFreieTage: nichtFreieTage,
+                    mindestAbstandBloecke: mindestAbstandBloecke,
+                    gewichtFrüh: gewichtFrüh, gewichtSpät: gewichtSpät,
+                    gewichtPäd: gewichtPäd, gewichtFrei: gewichtFrei,
+                    strafeHohl: strafeHohl, strafeDoppelHohl: strafeDoppelHohl,
+                    strafeDreifachHohl: strafeDreifachHohl, strafeStdFolge: strafeStdFolge,
+                    strafeEinzel: strafeEinzel, strafeSpäteLk: strafeSpäteLk, grenzeSpäteLk: grenzeSpäteLk,
+                    lehrerStammdaten: lehrerStammdaten,
+                    grossePausen: grossePausen,
+                    verbotSpäteDoppel: verbotSpäteDoppel,
+                    hauptfachSpätAnteilProzent: hauptfachSpätAnteilProzent,
+                    strafeHauptfachSpät: strafeHauptfachSpät,
+                    verbotMinus2Lehrer: verbotMinus2Lehrer,
+                    strafeMinus2Lehrer: strafeMinus2Lehrer,
+                    lehrerFreiTageMinus2: lehrerFreiTageMinus2,
+                    lehrerFreiTageMinus3: lehrerFreiTageMinus3,
+                    extraFreieStunden: extraFreieStunden,
+                    freieStundenBereich: freieStundenBereich,
+                    lehrerFreieStundenMinus2: lehrerFreieStundenMinus2,
+                    lehrerFreieStundenMinus3: lehrerFreieStundenMinus3,
+                    doppelSelberTagFaecher: doppelSelberTagFaecher,
+                    strafeDoppelSelberTag: strafeDoppelSelberTag,
+                    spätGrenzeFolgetag: spätGrenzeFolgetag,
+                    frühGrenzeFolgetag: frühGrenzeFolgetag,
+                    strafeSpätFrüh: strafeSpätFrüh,
+                    schwelleStdTagVortag: schwelleStdTagVortag,
+                    lehrerSpätFrühMinus2: lehrerSpätFrühMinus2,
+                    lehrerSpätFrühMinus3: lehrerSpätFrühMinus3,
+                    reporter: reporter, abbruch: abbruch, liveState: liveState,
+                    darfDiagnose: diagnoseGate,
+                    fixRelax: true);
+
+                if (ohneLösungen.Count > 0)
+                {
+                    fixRelaxVerwendet = true;
+
+                    // Welche fix-verursachten harten Verstöße werden geduldet?
+                    // Genau die Kategorien, die PrüfeFixUNrn ohnehin ausweist.
+                    var toleriert = PlanValidator.PrüfeFixUNrn(blocks, slots, grossePausen);
+                    log($"Fix-Relax: Lösung gefunden. {toleriert.Count} durch Fixierungen " +
+                        "verursachte harte Verstöße werden BEWUSST geduldet:");
+                    foreach (var g in toleriert
+                                 .GroupBy(v => v.Kategorie)
+                                 .OrderByDescending(g => g.Count()))
+                        log($"  ⚠ geduldet – {g.Key}: {g.Count()}");
+                    log("  (Alle übrigen harten Regeln wurden eingehalten – es sind KEINE " +
+                        "weiteren harten Fehler entstanden. Der Plan enthält damit genau die " +
+                        "oben gelisteten, fixierungsbedingten Konflikte.)");
+
+                    if (reporter != null)
+                        foreach (var l in ohneLösungen)
+                            reporter.MeldeGefundeneLösung(l.label, l.quality, l.badUnits);
+                }
+                else
+                {
+                    // Kein Erfolg: ohneLösungen bleibt leer, phase1Infeasible
+                    // bleibt true -> die normale Diagnose unten läuft weiter.
+                    log("Fix-Relax: auch mit toleranten Fixierungs-Konflikten keine Lösung – " +
+                        "die Ursache liegt (auch) außerhalb der Fixierungen. Weiter mit der Diagnose.");
+                }
+            }
+
+            // --------------------------------------------------
             // DIAGNOSE bei INFEASIBLE: welche einzelne Klasse / Zeilentext2-
             // Gruppe verursacht (zusammen mit den FixUNr) schon allein die
             // Unlösbarkeit? Dann sind Tauschversuche zwecklos → Phase 2 entfällt.
@@ -3569,6 +3675,11 @@ namespace Stundenplan_V2
             }
             else if (alleEinzelPaare.Count > 0 && anzahlLösungenMit > 0 && !einzelInfeasible)
             {
+                if (fixRelaxVerwendet)
+                    log("Fix-Relax-Grundplan aktiv – Phase 2 läuft ebenfalls im Fix-Relax-Modus " +
+                        "(Fixierungen bleiben hart, ihre Konflikte werden geduldet). Ein Tausch kann " +
+                        "eine fixierungsbedingte Kollision auch auflösen, sodass Varianten sauberer " +
+                        "als der Grundplan sein können.");
                 log("Bestimme aussichtsreichste Tausch-Kombinationen...");
 
                 var top5Kombinationen = BestimmeAussichtsreichsteTausche(
@@ -3656,7 +3767,8 @@ namespace Stundenplan_V2
                             schwelleStdTagVortag: schwelleStdTagVortag,
                             lehrerSpätFrühMinus2: lehrerSpätFrühMinus2,
                             lehrerSpätFrühMinus3: lehrerSpätFrühMinus3,
-                            reporter: reporter, abbruch: abbruch, liveState: liveState);
+                            reporter: reporter, abbruch: abbruch, liveState: liveState,
+                            fixRelax: fixRelaxVerwendet);
                         if (lösungen.Count > 0)
                         {
                             log($"  Lösung gefunden mit Seed {seed}.");
@@ -3897,7 +4009,14 @@ namespace Stundenplan_V2
             FortschrittReporter reporter = null,
             System.Threading.CancellationToken abbruch = default,
             LiveExportState liveState = null,
-            Func<bool> darfDiagnose = null)
+            Func<bool> darfDiagnose = null,
+            // Fix-Relax: Fixierungen bleiben hart, aber die von IHNEN
+            // verursachten harten Verstöße werden geduldet (Lehrer-/Klassen-/
+            // Raum-Kollision zwischen zwei Fixierungen, gesperrte Slots,
+            // überzählige Fixslots, fixierte Doppelstd. über Pause / 3 in
+            // Folge). Alle übrigen harten Regeln bleiben hart. false =
+            // unverändertes Verhalten.
+            bool fixRelax = false)
         {
             // Standard: nicht bewiesen unlösbar. Wird nur im Infeasible-Zweig auf
             // true gesetzt (Timeout/Unknown bleibt false).
@@ -4040,19 +4159,48 @@ namespace Stundenplan_V2
                     x[b, s] = model.NewBoolVar($"x_b{b}_s{s}");
 
             // =====================================================
-            // WOCHENSTUNDEN
+            // FIX-RELAX-INFOS: fixSlot[b,s] / fixSlotAnzahl[b]
+            // fixSlot[b,s] == true  <=>  Block b ist per FixUNrn in Slot s
+            // vorgegeben. Wird auch im Normalmodus gebaut (billig) und dort nur
+            // zum Setzen der Fix-Constraints benutzt; die Relax-Zweige unten
+            // greifen ausschließlich, wenn fixRelax == true.
             // =====================================================
-            for (int b = 0; b < B; b++)
-                model.Add(LinearExpr.Sum(Enumerable.Range(0, S).Select(s => x[b, s])) == blocks[b].Wst);
-
-            // =====================================================
-            // FIX-UNR
-            // =====================================================
+            bool[,] fixSlot = new bool[B, S];
             for (int s = 0; s < S; s++)
                 foreach (var unr in slots[s].FixUNrn)
                     for (int b = 0; b < B; b++)
                         if (blocks[b].UNr == unr)
-                            model.Add(x[b, s] == 1);
+                            fixSlot[b, s] = true;
+
+            int[] fixSlotAnzahl = new int[B];
+            for (int b = 0; b < B; b++)
+                for (int s = 0; s < S; s++)
+                    if (fixSlot[b, s]) fixSlotAnzahl[b]++;
+
+            // fixSlot nur weiterreichen, wenn Relax aktiv ist -> Normalmodus
+            // ruft die Constraint-Helfer bitgleich zu früher auf.
+            bool[,] fixSlotRelax = fixRelax ? fixSlot : null;
+
+            // =====================================================
+            // WOCHENSTUNDEN
+            // Fix-Relax: ist ein Block ÜBER-fixiert (mehr Fixslots als Wst),
+            // wird das Ziel auf die Fixslot-Zahl angehoben, damit ALLE
+            // Fixierungen Platz haben. Sonst == Wst wie bisher.
+            // =====================================================
+            for (int b = 0; b < B; b++)
+            {
+                int target = blocks[b].Wst;
+                if (fixRelax && fixSlotAnzahl[b] > target) target = fixSlotAnzahl[b];
+                model.Add(LinearExpr.Sum(Enumerable.Range(0, S).Select(s => x[b, s])) == target);
+            }
+
+            // =====================================================
+            // FIX-UNR
+            // =====================================================
+            for (int b = 0; b < B; b++)
+                for (int s = 0; s < S; s++)
+                    if (fixSlot[b, s])
+                        model.Add(x[b, s] == 1);
 
             // =====================================================
             // LEHRERREGEL (Wochengruppe-aware)
@@ -4084,6 +4232,11 @@ namespace Stundenplan_V2
                             // A↔B → kollidieren nie, kein Constraint
                             if ((wg1 == "A" && wg2 == "B") || (wg1 == "B" && wg2 == "A"))
                                 continue;
+                            // Fix-Relax: sind beide Blöcke in diesem Slot
+                            // fixiert, ist die Lehrer-Kollision fixierungsbedingt
+                            // -> tolerieren.
+                            if (fixRelax && fixSlot[b1, s] && fixSlot[b2, s])
+                                continue;
                             model.Add(x[b1, s] + x[b2, s] <= 1);
                         }
                 }
@@ -4092,17 +4245,17 @@ namespace Stundenplan_V2
             // =====================================================
             // KLASSENREGEL
             // =====================================================
-            ClassConstraint.Add(model, x, blocks, S, _klassenGruppen);
+            ClassConstraint.Add(model, x, blocks, S, _klassenGruppen, fixSlotRelax);
 
             // =====================================================
             // FACHRAUMLIMIT
             // =====================================================
-            RoomConstraint.Add(model, x, blocks, fachraumLimit, S);
+            RoomConstraint.Add(model, x, blocks, fachraumLimit, S, fixSlotRelax);
 
             // =====================================================
             // SPERRSLOTS (-3)
             // =====================================================
-            TimeConstraint.AddBlockedSlots(model, x, blocks, slots, B, S, verbotMinus2Lehrer);
+            TimeConstraint.AddBlockedSlots(model, x, blocks, slots, B, S, verbotMinus2Lehrer, fixSlotRelax);
 
             // =====================================================
             // FREIE TAGE CONSTRAINT
@@ -4151,6 +4304,12 @@ namespace Stundenplan_V2
                         bool istPause = grossePausen.Any(p =>
                             p.stundeVor == stundeVon && p.stundeNach == stundeNach);
 
+                        // Fix-Relax: sind beide Slots für diesen Block fixiert,
+                        // ist die Doppelstunde über der Pause fixierungsbedingt
+                        // -> dulden (d nicht auf 0 zwingen).
+                        if (fixRelax && fixSlot[b, s] && fixSlot[b, s + 1])
+                            continue;
+
                         if (istPause)
                             model.Add(d[b, s] == 0);
                     }
@@ -4158,6 +4317,13 @@ namespace Stundenplan_V2
             }
             for (int b = 0; b < B; b++)
             {
+                // Fix-Relax: ist der Block vollständig (oder über-) fixiert, ist
+                // seine Doppelstunden-Struktur allein durch die Fixierung
+                // bestimmt und nicht mehr veränderbar. Die Min/Max-Schranken
+                // würden dann nur Unlösbarkeit erzeugen -> überspringen.
+                if (fixRelax && fixSlotAnzahl[b] >= blocks[b].Wst)
+                    continue;
+
                 int minD = blocks[b].Teile.Max(t => t.MinDoppel);
                 int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
 
@@ -4208,7 +4374,13 @@ namespace Stundenplan_V2
                         slots[s].WTag == slots[s + 2].WTag &&
                         slots[s].Stunde + 1 == slots[s + 1].Stunde &&
                         slots[s].Stunde + 2 == slots[s + 2].Stunde)
+                    {
+                        // Fix-Relax: sind alle drei Slots für diesen Block
+                        // fixiert, ist der Dreierblock fixierungsbedingt -> dulden.
+                        if (fixRelax && fixSlot[b, s] && fixSlot[b, s + 1] && fixSlot[b, s + 2])
+                            continue;
                         model.Add(x[b, s] + x[b, s + 1] + x[b, s + 2] <= 2);
+                    }
 
             // =====================================================
             // SPÄTE PÄDAGOGISCHE EINHEITEN

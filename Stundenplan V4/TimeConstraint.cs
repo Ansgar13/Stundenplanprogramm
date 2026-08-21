@@ -12,12 +12,22 @@ namespace Stundenplan_V2
             List<ZeitSlot> slots,
             int B,
             int S,
-            bool verbotMinus2Lehrer = false)
+            bool verbotMinus2Lehrer = false,
+            // Fix-Relax (optional): fixSlot[b,s] == true, wenn Block b per
+            // FixUNrn in Slot s vorgegeben ist. null => Standardverhalten.
+            // Ist der Block in diesem Slot fixiert, entfaellt die Sperre:
+            // die Fixierung sticht die -3-/-2-Sperre und der dadurch
+            // verursachte harte Verstoss wird bewusst toleriert.
+            bool[,] fixSlot = null)
         {
             for (int b = 0; b < B; b++)
             {
                 for (int s = 0; s < S; s++)
                 {
+                    // Fix-Relax: fixierten Block nicht sperren.
+                    if (fixSlot != null && fixSlot[b, s])
+                        continue;
+
                     foreach (var t in blocks[b].Teile)
                     {
                         // Lehrer gesperrt (-3 immer, -2 nur wenn Verbot aktiv)

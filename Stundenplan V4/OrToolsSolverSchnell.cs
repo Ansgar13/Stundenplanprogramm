@@ -77,7 +77,8 @@ public class OrToolsSolverSchnell : ISolver
             lehrerSpätFrühMinus2: input.LehrerSpätFrühMinus2,
             lehrerSpätFrühMinus3: input.LehrerSpätFrühMinus3,
             klassenGruppen: input.KlassenGruppen,
-            schnell: _optionen
+            schnell: _optionen,
+            fixRelaxBeiFixInfeasible: input.FixRelaxBeiFixInfeasible
         );
     }
 }

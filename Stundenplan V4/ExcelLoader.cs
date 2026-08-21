@@ -420,6 +420,7 @@ namespace Stundenplan_V2
             int strafeSpäteLk = 0;
             int grenzeSpäteLk = 2;
             bool verbotSpäteDoppel = false;
+            bool fixRelaxBeiFixInfeasible = false;
             bool verbotMinus2 = false;
             int  strafeMinus2 = 0;
             int hauptfachSpätAnteil = 50;
@@ -550,6 +551,14 @@ namespace Stundenplan_V2
                     }
                     else if (label.Contains("frühe"))
                         LiesPmInt(wert, labelRoh, ref gewichtFrüh, pmWarnungen);
+                    // Fix-Relax: sind die Fixierungen (Sheet "Fix UNrn") allein
+                    // schon unlösbar, wird der Grundlauf EINMAL mit toleranten
+                    // Fixierungs-Konflikten wiederholt (Fixierungen bleiben hart,
+                    // nur die von IHNEN verursachten harten Verstöße werden
+                    // geduldet). Label enthält "fix" UND "relax" -> kollidiert
+                    // mit keiner anderen PM-Zeile.
+                    else if (label.Contains("fix") && label.Contains("relax"))
+                        fixRelaxBeiFixInfeasible = wert.Trim().ToLower() == "ja";
                     // Robust gegen Umformulierungen ("Verbot Doppelstunde auf
                     // 6,7 ...", "Verbot später Doppelstunden"): es genügt, dass
                     // die Beschriftung "verbot" UND "dopp" enthält. Kollidiert
@@ -1084,6 +1093,7 @@ namespace Stundenplan_V2
                 StrafeSpäteLkStunden = strafeSpäteLk,
                 GrenzeSpäteLk = grenzeSpäteLk,
                 VerbotSpäteDoppel = verbotSpäteDoppel,
+                FixRelaxBeiFixInfeasible = fixRelaxBeiFixInfeasible,
                 VerbotMinus2Verletzungen = verbotMinus2,
                 StrafeMinus2Verletzungen = strafeMinus2,
                 HauptfachSpätAnteilProzent = hauptfachSpätAnteil,
