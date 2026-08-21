@@ -6756,11 +6756,11 @@ namespace Stundenplan_V2
 
                     if (!freiVorCache.TryGetValue(lehrer, out int vor))
                     {
-                        vor = ZaehleFreieTage(lehrer, _belegung);
+                        vor = ZaehleWaehlbareFreieTage(lehrer, _belegung);
                         freiVorCache[lehrer] = vor;
                     }
 
-                    int nach = ZaehleFreieTage(lehrer, probe);
+                    int nach = ZaehleWaehlbareFreieTage(lehrer, probe);
                     if (nach < gefordert && nach < vor) return true;
                 }
             }
@@ -7087,6 +7087,39 @@ namespace Stundenplan_V2
             int frei = 0;
             foreach (var tag in _tage)
             {
+                bool hatUnterricht = false;
+                for (int b = 0; b < _blocks.Count && !hatUnterricht; b++)
+                {
+                    if (!_blocks[b].Teile.Any(t => t.Lehrer == lehrer)) continue;
+                    for (int s = 0; s < _slots.Count; s++)
+                        if (_slots[s].WTag == tag && belegung[b, s] == 1) { hatUnterricht = true; break; }
+                }
+                if (!hatUnterricht) frei++;
+            }
+            return frei;
+        }
+
+        // Wie ZaehleFreieTage, aber konsistent zur Solver-Zaehlung der GEFORDERTEN
+        // freien Tage: ein Tag, an dem der Lehrer per ZWL an ALLEN Stunden -3-
+        // gesperrt ist, ist ohnehin fest frei und zaehlt NICHT auf die geforderte
+        // Zahl (identisch zu StundenplanEngine, wo dort free[l,day]==0 erzwungen
+        // wird). Ohne diese Korrektur ueberzaehlt der Editor bei Lehrern mit einem
+        // fest gesperrten Ganztag und laesst Tauschvorschlaege durch, die die harte
+        // Freie-Tage-Regel verletzen. Fuer Lehrer ohne gesperrten Ganztag ist der
+        // Rueckgabewert identisch zu ZaehleFreieTage.
+        private int ZaehleWaehlbareFreieTage(string lehrer, int[,] belegung)
+        {
+            int frei = 0;
+            foreach (var tag in _tage)
+            {
+                // Fest gesperrten Ganztag ueberspringen: alle Slots des Tages
+                // haben LehrerWunsch == -3 -> zaehlt nicht als waehlbarer freier Tag.
+                var tagSlots = _slots.Where(s => s.WTag == tag).ToList();
+                bool fixFrei = tagSlots.Count > 0 && tagSlots.All(s =>
+                    s.LehrerWunsch != null &&
+                    s.LehrerWunsch.TryGetValue(lehrer, out int lw) && lw == -3);
+                if (fixFrei) continue;
+
                 bool hatUnterricht = false;
                 for (int b = 0; b < _blocks.Count && !hatUnterricht; b++)
                 {
@@ -7996,7 +8029,7 @@ namespace Stundenplan_V2
                     bool zwingend = minus3 || (minus2 && _bewParam.VerbotMinus2);
                     if (!zwingend) continue;
 
-                    int freiNach = ZaehleFreieTage(lehrer, probe);
+                    int freiNach = ZaehleWaehlbareFreieTage(lehrer, probe);
                     if (freiNach < gefordert)
                         { Add("Lehrer " + lehrer + " haette nur " + freiNach
                                + " statt " + gefordert + " zwingende(r) freie(r) Tag(e)"); if (nurErster) return alle; }
