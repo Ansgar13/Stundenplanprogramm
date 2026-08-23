@@ -117,7 +117,7 @@
     font-weight:600;font-size:.92rem;
   }
   .nav-cta:hover{background:var(--primary-dark);text-decoration:none;}
-  @media(max-width:760px){.nav-links a:not(.nav-cta){display:none;}}
+  @media(max-width:760px){.nav-links{display:none;}}
 
   /* ---------- Hero ---------- */
   .hero{padding:72px 0 80px;}
@@ -126,6 +126,11 @@
   .hero h1 .hl{
     background:linear-gradient(transparent 62%, rgba(231,169,60,.55) 62%);
     padding:0 2px;
+  }
+  .hero h1 .h1-sub{
+    display:block;margin-top:18px;
+    font-family:var(--body);font-weight:600;letter-spacing:0;
+    font-size:clamp(1.05rem,2.2vw,1.45rem);line-height:1.35;color:var(--ink-soft);
   }
   .hero .lede{font-size:1.18rem;color:var(--ink-soft);margin-top:22px;max-width:34ch;}
   .cta-row{display:flex;gap:14px;margin-top:32px;flex-wrap:wrap;}
@@ -299,6 +304,26 @@
   footer{border-top:1px solid var(--line);background:var(--paper-2);}
   .foot-inner{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap;padding:36px 0;font-size:.9rem;color:var(--ink-soft);}
 
+  /* ---------- Kontakt ---------- */
+  .contact{border-top:1px solid var(--line);}
+  .contact .wrap{max-width:640px;}
+  .contact .feat-head{text-align:center;margin:0 auto 36px;}
+  .contact-form{display:flex;flex-direction:column;gap:18px;}
+  .field label{display:block;font-weight:600;font-size:.92rem;margin-bottom:6px;color:var(--ink);}
+  .field input,.field textarea{
+    width:100%;font-family:var(--body);font-size:1rem;color:var(--ink);
+    background:var(--paper-2);border:1.5px solid var(--line);border-radius:10px;
+    padding:12px 14px;transition:border-color .15s ease;
+  }
+  .field textarea{min-height:140px;resize:vertical;}
+  .field input:focus,.field textarea:focus{outline:none;border-color:var(--primary);}
+  .contact-form .btn-primary{align-self:flex-start;border:none;}
+  .form-status{font-size:.95rem;min-height:1.2em;}
+  .form-status.ok{color:#1F6B44;}
+  .form-status.err{color:var(--f-d);}
+  .contact-note{text-align:center;color:var(--ink-soft);font-size:.9rem;margin-top:18px;}
+  .hp{position:absolute;left:-9999px;top:-9999px;}
+
   :focus-visible{outline:3px solid var(--primary);outline-offset:2px;border-radius:4px;}
 
   @media(max-width:860px){
@@ -323,7 +348,7 @@
       <a href="#untis">Untis-Import</a>
       <a href="#ablauf">Ablauf</a>
       <a href="#faq">FAQ</a>
-      <a class="nav-cta" href="#download">Herunterladen</a>
+      <a href="#kontakt">Kontakt</a>
     </nav>
   </div>
 </header>
@@ -333,7 +358,7 @@
   <div class="wrap hero-grid">
     <div>
       <p class="eyebrow">Für Gymnasien · Windows · Open Source</p>
-      <h1>Der Stundenplan, der sich <span class="hl">selbst optimiert</span>.</h1>
+      <h1>Der Stundenplan, der sich <span class="hl">wirklich selbst</span> optimiert.<span class="h1-sub">Kein Scrollen mehr durch Dutzende Pläne notwendig.</span></h1>
       <p class="lede">Automatische Stundenplanerstellung mit echtem Optimierungs-Solver – liest und schreibt Untis-Dateien, berücksichtigt Zeitwünsche und plant auch die Oberstufe.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="#download">
@@ -529,7 +554,7 @@
       </div>
       <div class="flow-item">
         <span class="tag">GPU</span><span class="arrow">→</span>
-        <div><strong>Zurückschreiben</strong><br><span>Fertigen Plan als GPU-Datei exportieren</span></div>
+        <div><strong>Zurück nach Untis</strong><br><span>Fertigen Plan in die Untis-Datei importieren</span></div>
       </div>
     </div>
   </div>
@@ -643,6 +668,43 @@
   </div>
 </section>
 
+<!-- Kontakt -->
+<section class="section contact" id="kontakt">
+  <div class="wrap">
+    <div class="feat-head">
+      <p class="eyebrow" style="justify-content:center;">Kontakt</p>
+      <h2>Frage oder Rückmeldung?</h2>
+      <p>Schreib direkt hier – die Nachricht geht per E-Mail an den Entwickler.</p>
+    </div>
+
+    <form class="contact-form" id="contactForm">
+      <input type="hidden" name="access_key" value="7b5366eb-a624-4973-9f59-e69b0012648d">
+      <input type="hidden" name="subject" value="Neue Nachricht über die Stundenplan-Website">
+      <input type="hidden" name="from_name" value="Stundenplan-Generator Website">
+      <!-- Spam-Schutz (Honeypot): bleibt für Menschen unsichtbar -->
+      <input type="checkbox" name="botcheck" class="hp" tabindex="-1" autocomplete="off">
+
+      <div class="field">
+        <label for="cf-name">Name</label>
+        <input type="text" id="cf-name" name="name" required>
+      </div>
+      <div class="field">
+        <label for="cf-email">E-Mail (für die Antwort)</label>
+        <input type="email" id="cf-email" name="email" required>
+      </div>
+      <div class="field">
+        <label for="cf-message">Nachricht</label>
+        <textarea id="cf-message" name="message" required></textarea>
+      </div>
+
+      <button type="submit" class="btn btn-primary">Nachricht senden</button>
+      <p class="form-status" id="formStatus" role="status" aria-live="polite"></p>
+    </form>
+
+    <p class="contact-note">Deine Angaben werden nur zur Beantwortung deiner Nachricht verwendet.</p>
+  </div>
+</section>
+
 <!-- Fußzeile -->
 <footer>
   <div class="wrap foot-inner">
@@ -654,7 +716,8 @@
       <a href="https://github.com/Ansgar13/Stundenplanprogramm" target="_blank" rel="noopener">GitHub</a> ·
       <a href="#download">Download</a> ·
       <a href="Stundenplan-Benutzerhandbuch.pdf" download>Handbuch</a> ·
-      <a href="#faq">FAQ</a> · Lizenz: siehe GitHub
+      <a href="#faq">FAQ</a> ·
+      <a href="#kontakt">Kontakt</a> · Lizenz: siehe GitHub
     </div>
   </div>
 </footer>
@@ -688,6 +751,47 @@
     {"@type":"Question","name":"Gibt es eine Anleitung?","acceptedAnswer":{"@type":"Answer","text":"Ja, ein vollständiges Benutzerhandbuch als PDF erklärt den Excel-Aufbau, alle Funktionen, die Solver-Parameter und die Fehlerbehebung. Es steht im Download-Bereich der Seite."}}
   ]
 }
+</script>
+
+<script>
+  // Kontaktformular an Web3Forms senden – ohne Seitenwechsel.
+  (function(){
+    var form = document.getElementById('contactForm');
+    if(!form){return;}
+    var status = document.getElementById('formStatus');
+    var btn = form.querySelector('button[type="submit"]');
+
+    form.addEventListener('submit', function(e){
+      e.preventDefault();
+      status.className = 'form-status';
+      status.textContent = 'Wird gesendet …';
+      btn.disabled = true;
+
+      var data = Object.fromEntries(new FormData(form).entries());
+
+      fetch('https://api.web3forms.com/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(data)
+      })
+      .then(function(res){ return res.json().then(function(j){ return { ok: res.ok, j: j }; }); })
+      .then(function(r){
+        if(r.ok){
+          status.className = 'form-status ok';
+          status.textContent = 'Danke! Deine Nachricht wurde gesendet.';
+          form.reset();
+        } else {
+          status.className = 'form-status err';
+          status.textContent = 'Das hat nicht geklappt: ' + (r.j.message || 'Bitte später erneut versuchen.');
+        }
+      })
+      .catch(function(){
+        status.className = 'form-status err';
+        status.textContent = 'Verbindungsfehler – bitte später erneut versuchen.';
+      })
+      .then(function(){ btn.disabled = false; });
+    });
+  })();
 </script>
 
 </body>
