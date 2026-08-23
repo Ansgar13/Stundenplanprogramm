@@ -254,21 +254,22 @@
   .card p{color:var(--ink-soft);font-size:.97rem;}
 
   /* ---------- Untis-Band (dunkel, Differenzierer) ---------- */
-  .untis{background:var(--dark);color:#EAF0F5;background-image:none;}
+  .untis{background:#E7EEF9;color:var(--ink);background-image:none;border-top:1px solid #D6E1F2;border-bottom:1px solid #D6E1F2;}
   .untis .wrap{display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:center;}
   @media(max-width:860px){.untis .wrap{grid-template-columns:1fr;gap:36px;}}
-  .untis .eyebrow{color:var(--accent);}
-  .untis h2{font-size:clamp(1.8rem,3.6vw,2.5rem);color:#fff;}
-  .untis p{color:#AEBDC9;margin-top:16px;font-size:1.08rem;}
+  .untis .eyebrow{color:var(--primary);}
+  .untis h2{font-size:clamp(1.8rem,3.6vw,2.5rem);color:var(--ink);}
+  .untis p{color:var(--ink-soft);margin-top:16px;font-size:1.08rem;}
   .flow{display:flex;flex-direction:column;gap:12px;}
   .flow-item{
-    display:flex;align-items:center;gap:16px;background:var(--dark-2);
-    border:1px solid #2C3B48;border-radius:12px;padding:16px 18px;
+    display:flex;align-items:center;gap:16px;background:var(--paper-2);
+    border:1px solid #D6E1F2;border-radius:12px;padding:16px 18px;
   }
-  .flow-item .tag{font-family:var(--mono);font-size:.72rem;color:var(--accent);border:1px solid #3A4B59;border-radius:6px;padding:4px 8px;white-space:nowrap;}
-  .flow-item .arrow{color:#5B6C7A;}
-  .flow-item strong{color:#fff;font-weight:600;}
-  .flow-item span{color:#98A8B5;font-size:.92rem;}
+  .flow-item .tag{font-family:var(--mono);font-size:.72rem;color:#fff;background:var(--primary);border-radius:6px;padding:4px 8px;white-space:nowrap;}
+  .flow-item .arrow{color:var(--ink-soft);}
+  .flow-item strong{color:var(--ink);font-weight:600;}
+  .flow-item span{color:var(--ink-soft);font-size:.92rem;}
+  .untis .flow-note{font-size:.8rem;line-height:1.45;color:var(--ink-soft);margin-top:6px;}
 
   /* ---------- Ablauf (nummeriert = echte Reihenfolge) ---------- */
   .steps{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;counter-reset:s;}
@@ -391,6 +392,32 @@
     <span><span class="dot"></span>Kostenlos &amp; quelloffen</span>
   </div>
 </div>
+
+<!-- Untis-Band -->
+<section class="section untis" id="untis">
+  <div class="wrap">
+    <div>
+      <p class="eyebrow">Untis-kompatibel</p>
+      <h2>Du musst nicht bei null anfangen.</h2>
+      <p>Wer schon mit Untis arbeitet, hat seine Unterrichtsverteilung längst erfasst. Diese Software liest das GPU-Format direkt ein, optimiert den Plan mit einem echten Constraint-Solver und gibt das Ergebnis im selben Format zurück. Ein voller Umstieg ist nicht nötig – du kannst beide Werkzeuge nebeneinander nutzen.</p>
+    </div>
+    <div class="flow">
+      <div class="flow-item">
+        <span class="tag">GPU</span><span class="arrow">→</span>
+        <div><strong>Importieren</strong><br><span>Unterrichtsverteilung aus Untis übernehmen</span></div>
+      </div>
+      <div class="flow-item">
+        <span class="tag">SOLVER</span><span class="arrow">→</span>
+        <div><strong>Optimieren</strong><br><span>Konfliktfrei planen, Zeitwünsche & Randstunden einrechnen</span></div>
+      </div>
+      <div class="flow-item">
+        <span class="tag">ZZ</span><span class="arrow">→</span>
+        <div><strong>Zurück nach Untis</strong><br><span>Fertigen Plan mit ZZ-Verfahren in die Untis-Datei importieren</span></div>
+      </div>
+      <p class="flow-note">Untis bietet derzeit noch keinen direkten Planimport als GPU-Datei an. Hierfür bietet das ZZ-Verfahren einen „10-Klick-Workaround".</p>
+    </div>
+  </div>
+</section>
 
 <!-- Highlights zum Plan -->
 <section class="section showcase" id="beispiel">
@@ -535,30 +562,6 @@
   </div>
 </section>
 
-<!-- Untis-Band -->
-<section class="section untis" id="untis">
-  <div class="wrap">
-    <div>
-      <p class="eyebrow">Untis-kompatibel</p>
-      <h2>Du musst nicht bei null anfangen.</h2>
-      <p>Wer schon mit Untis arbeitet, hat seine Unterrichtsverteilung längst erfasst. Diese Software liest das GPU-Format direkt ein, optimiert den Plan mit einem echten Constraint-Solver und gibt das Ergebnis im selben Format zurück. Ein voller Umstieg ist nicht nötig – du kannst beide Werkzeuge nebeneinander nutzen.</p>
-    </div>
-    <div class="flow">
-      <div class="flow-item">
-        <span class="tag">GPU</span><span class="arrow">→</span>
-        <div><strong>Importieren</strong><br><span>Unterrichtsverteilung aus Untis übernehmen</span></div>
-      </div>
-      <div class="flow-item">
-        <span class="tag">SOLVER</span><span class="arrow">→</span>
-        <div><strong>Optimieren</strong><br><span>Konfliktfrei planen, Zeitwünsche & Randstunden einrechnen</span></div>
-      </div>
-      <div class="flow-item">
-        <span class="tag">GPU</span><span class="arrow">→</span>
-        <div><strong>Zurück nach Untis</strong><br><span>Fertigen Plan in die Untis-Datei importieren</span></div>
-      </div>
-    </div>
-  </div>
-</section>
 
 <!-- Ablauf -->
 <section class="section" id="ablauf">
