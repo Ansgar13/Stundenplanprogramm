@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://ansgar13.github.io/Stundenplanprogramm/sitemap.xml
