@@ -608,16 +608,19 @@ namespace Stundenplan_V2
                 }
 
             FuelleLehrerKlasseDropdowns(vorherLehrer, vorherKlasse);
-            if (_vergleichsModus) ZeichneVergleichsModus();
-            else ZeichneBeideGrids();
-            ZeichneParkbereich();
             // Verletzungen der frisch geladenen Belegung als "Vorher"-Stand
             // festhalten. Ohne das bleibt _aktuelleVerletzungen bis zur ersten
             // Aenderung leer, und alles, was diesen Stand als Vergleichsbasis
             // nimmt (gelbe Drag-Warnung in FindeNeueWeicheVerletzung, Filter
             // ueber ErmittleVergleichsbasis), haelt bereits vorhandene
             // Verletzungen faelschlich fuer neu.
+            // BEWUSST vor dem Zeichnen: nur so werden bereits im geladenen Plan
+            // enthaltene harte Kollisionen (Lehrer-/Klassen-Konflikt) schon beim
+            // ersten Aufbau rot markiert, nicht erst nach einer Änderung.
             PruefeUndZeigeWarnungen();
+            if (_vergleichsModus) ZeichneVergleichsModus();
+            else ZeichneBeideGrids();
+            ZeichneParkbereich();
             SetStatus("Lösung '" + label + "' geladen.", false);
             AktualisiereDiagFenster();
             AktualisiereUvFenster();
@@ -3169,6 +3172,11 @@ namespace Stundenplan_V2
         private Border BaueTeilbereich(int blockIdx, int slotIdx, bool lehrerAnsicht, bool interaktiv = true)
         {
             var block = _blocks[blockIdx];
+            // HARTE Kollision (Lehrer-/Klassen-Konflikt) — z.B. ein Lehrer mit
+            // zwei Unterrichten gleichzeitig. Wird wie ein fehlerhafter Slot GELB
+            // hinterlegt (gleiche Farbe wie die übrigen Warnungen); der konkrete
+            // Grund steht im Tooltip.
+            bool konflikt = SlotHatKonflikt(blockIdx, slotIdx);
             bool warnung = SlotHatWarnung(blockIdx, slotIdx);
             bool hervorheben = _highlightBloecke.Contains(blockIdx);
             bool spaetPaed = _spaetePaedBloecke.Contains(blockIdx);
@@ -3178,20 +3186,25 @@ namespace Stundenplan_V2
             // ---- Farbcode-Zonen ----
             // Zweizonig (Rand = Klasse, Flaeche = Fach) nur im Modus
             // "Klasse+Fach" und nur, wenn die Klasse ueberhaupt eine Farbe hat.
-            // Bei Warnung/spaeter paed. Einheit bleibt die Zelle einfarbig: ein
-            // Farbrand wuerde die Warnflaeche sonst optisch zerschneiden.
+            // Bei Konflikt/Warnung/spaeter paed. Einheit bleibt die Zelle
+            // einfarbig: ein Farbrand wuerde die Warnflaeche sonst optisch
+            // zerschneiden.
             var (randFarbe, flaecheFarbe) = FarbcodeZonen(block);
-            bool zweizonig = !spaetPaed && !spaetPaedFix && !warnung && randFarbe != null;
+            bool zweizonig = !konflikt && !spaetPaed && !spaetPaedFix && !warnung && randFarbe != null;
 
-            // Hintergrund-Priorität: späte päd. Einheit (kräftiges Rot = bewegbar,
-            // helleres Rot = voll fixiert) > Warnung (gelb) > Farbcode (Klasse/Fach)
-            // > normal (hellblau). Ein Block gehört immer höchstens einer der
+            // Hintergrund-Priorität: harte Kollision (gelb, wie fehlerhafte Slots)
+            // > späte päd. Einheit (bewegbar rot / fixiert helleres Rot) > Warnung
+            // (gelb) > Farbcode (Klasse/Fach) > normal (hellblau). Kollision steht
+            // oben, damit ein doppelt verplanter Slot nicht von einer späten päd.
+            // Färbung überdeckt wird. Ein Block gehört immer höchstens einer der
             // beiden Spät-Mengen an (eine Einheit ist entweder voll fixiert
             // oder nicht), daher kein Farbkonflikt.
             // Der Farbcode steht bewusst UNTER den Warnfarben: er darf nie eine
             // Warnung uebermalen, sondern nur das sonst neutrale Hellblau ersetzen.
             Brush hintergrund;
-            if (spaetPaed)
+            if (konflikt)
+                hintergrund = new SolidColorBrush(Color.FromRgb(0xFF, 0xF3, 0x99)); // gelb (wie Warnung)
+            else if (spaetPaed)
                 hintergrund = SpaetPaedBrush();      // Standard: rot (#FFC1C1)
             else if (spaetPaedFix)
                 hintergrund = SpaetPaedFixBrush();   // Standard: helleres Rot (#FFDCDC)
@@ -3217,7 +3230,10 @@ namespace Stundenplan_V2
                 VerticalAlignment = VerticalAlignment.Stretch
             };
 
-            if (warnung)
+            // Tooltip: Kollision hat Vorrang; sonst die weiche Warnung.
+            if (konflikt)
+                innerBorder.ToolTip = ErmittleKonfliktText(blockIdx, slotIdx);
+            else if (warnung)
                 innerBorder.ToolTip = ErmittleWarnungsText(blockIdx, slotIdx);
 
             var teile = block.Teile;
@@ -6528,9 +6544,12 @@ namespace Stundenplan_V2
             LeereVerschiebungen();
             SetStatus("Kollision erzeugt: Unterricht ohne Tausch auf das besetzte/gesperrte "
                       + "Feld gelegt — der Plan ist an dieser Stelle ungueltig.", true);
+            // Erst die Verletzungen (inkl. Lehrer-/Klassen-Konflikt) neu berechnen,
+            // dann zeichnen — sonst bliebe die frisch erzeugte Kollision beim
+            // ersten Neuaufbau noch unmarkiert.
+            PruefeUndZeigeWarnungen();
             ZeichneBeideGrids();
             ZeichneParkbereich();
-            PruefeUndZeigeWarnungen();
         }
 
         // Beschreibt eine Verschiebung-mit-Ausweich: "A: X nach Y; B weicht: P nach Q; ..."
@@ -8097,6 +8116,40 @@ namespace Stundenplan_V2
             var warnungen = ErmittleWarnungen(blockIdx, slotIdx);
             if (warnungen.Count == 0) return null;
             return string.Join("\n", warnungen.Select(v => v.Kategorie + ": " + v.Details));
+        }
+
+        // HARTE Kollisionen (Lehrer- bzw. Klassen-Konflikt) an diesem Block/Slot.
+        // Anders als die weichen Warnungen haengen diese nicht an einer einzelnen
+        // UNr (v.UNr == 0), sondern tragen in BetroffeneUNrn die UNrn ALLER am
+        // Konflikt beteiligten Bloecke — darueber wird exakt zugeordnet. So wird
+        // z.B. eine von Hand erzeugte Doppelbelegung eines Lehrers (zwei
+        // Unterrichte gleichzeitig) an beiden Kacheln sichtbar.
+        private List<PlanValidator.Verletzung> ErmittleKonflikte(int blockIdx, int slotIdx)
+        {
+            if (_aktuelleVerletzungen == null || _aktuelleVerletzungen.Count == 0)
+                return new List<PlanValidator.Verletzung>();
+
+            var block = _blocks[blockIdx];
+            string tag = _slots[slotIdx].WTag;
+            int stunde = _slots[slotIdx].Stunde;
+
+            return _aktuelleVerletzungen.Where(v =>
+                (v.Kategorie == "Lehrer-Konflikt" || v.Kategorie == "Klassen-Konflikt")
+                && v.Tag == tag && v.Stunde == stunde
+                && v.BetroffeneUNrn != null && v.BetroffeneUNrn.Contains(block.UNr)
+            ).ToList();
+        }
+
+        // Ist dieser Block im Slot an einer harten Kollision beteiligt?
+        private bool SlotHatKonflikt(int blockIdx, int slotIdx)
+            => ErmittleKonflikte(blockIdx, slotIdx).Count > 0;
+
+        // Tooltip-Text für die rote Kollisions-Markierung.
+        private string ErmittleKonfliktText(int blockIdx, int slotIdx)
+        {
+            var konflikte = ErmittleKonflikte(blockIdx, slotIdx);
+            if (konflikte.Count == 0) return null;
+            return string.Join("\n", konflikte.Select(v => v.Kategorie + ": " + v.Details));
         }
 
         // =====================================================

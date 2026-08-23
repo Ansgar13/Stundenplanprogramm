@@ -99,7 +99,28 @@ namespace Stundenplan_V2
 
                 foreach (var stunde in stunden)
                 {
-                    sheet.Row(startRow).Height = 45;
+                    // Höchste Zahl unterschiedlicher Blöcke dieses Lehrers in
+                    // irgendeiner Zelle dieser Stunde bestimmen — damit bei einer
+                    // Kollision (Lehrer gibt zwei Unterrichte gleichzeitig) beide
+                    // gestapelt sichtbar bleiben und nicht der zweite den ersten
+                    // überschreibt bzw. abgeschnitten wird.
+                    int maxBlöckeProZelle = 1;
+                    foreach (var tagH in tage)
+                    {
+                        var slotH = zeitRaster
+                            .FirstOrDefault(z => z.WTag == tagH && z.Stunde == stunde);
+                        if (slotH == null) continue;
+
+                        int anz = slotH.BelegteUNrn
+                            .Select(u => unterrichtListe.First(b => b.UNr == u))
+                            .Where(b => b.Teile.Any(tt => tt.Lehrer == lehrer))
+                            .Select(b => b.UNr)
+                            .Distinct()
+                            .Count();
+                        if (anz > maxBlöckeProZelle) maxBlöckeProZelle = anz;
+                    }
+
+                    sheet.Row(startRow).Height = 45 * maxBlöckeProZelle;
                     sheet.Cell(startRow, 1).Value = stunde;
 
                     for (int t = 0; t < tage.Count; t++)
@@ -116,36 +137,47 @@ namespace Stundenplan_V2
 
                         bool gelb = false;
                         bool belegt = false;
+                        bool konflikt = false;
 
-                        foreach (var u in slot.BelegteUNrn)
+                        // Alle Unterrichte dieses Lehrers in diesem Slot, nach Block
+                        // (UNr) gruppiert — jeder Block wird separat angezeigt.
+                        var lehrerBlöcke = slot.BelegteUNrn
+                            .Select(u => unterrichtListe.First(b => b.UNr == u))
+                            .Where(b => b.Teile.Any(tt => tt.Lehrer == lehrer))
+                            .GroupBy(b => b.UNr)
+                            .Select(g => g.First())
+                            .ToList();
+
+                        if (lehrerBlöcke.Count > 0)
                         {
-                            var block = unterrichtListe.First(b => b.UNr == u);
+                            belegt = true;
 
-                            foreach (var teil in block.Teile)
+                            var next = zeitRaster
+                                .FirstOrDefault(z => z.WTag == tag && z.Stunde == stunde + 1);
+                            var prev = zeitRaster
+                                .FirstOrDefault(z => z.WTag == tag && z.Stunde == stunde - 1);
+
+                            var sb = new System.Text.StringBuilder();
+
+                            for (int gi = 0; gi < lehrerBlöcke.Count; gi++)
                             {
-                                if (teil.Lehrer != lehrer)
-                                    continue;
+                                var block = lehrerBlöcke[gi];
+                                var teil = block.Teile.First(tt => tt.Lehrer == lehrer);
 
-                                belegt = true;
+                                if (gi > 0) sb.Append("\n\n");   // Leerzeile als Trenner
+
+                                bool fixiert = slot.FixUNrn.Contains(block.UNr);
+                                string fixSuffix = fixiert ? "   Fix" : "";
+
+                                sb.Append(
+    $"{string.Join(",", teil.Klassen)}\n{teil.Fach}\nUNr {block.UNr}    {block.Zeilentext}{fixSuffix}");
 
                                 string key =
                                     teil.Lehrer + "|" +
                                     teil.Fach + "|" +
                                     string.Join(",", teil.Klassen.OrderBy(x => x));
 
-                                bool fixiert = slot.FixUNrn.Contains(block.UNr);
-                                string fixSuffix = fixiert ? "   Fix" : "";
-
-                                cell.Value =
-    $"{string.Join(",", teil.Klassen)}\n{teil.Fach}\nUNr {block.UNr}    {block.Zeilentext}{fixSuffix}";
-
                                 bool istDoppel = false;
-
-                                var next = zeitRaster
-                                    .FirstOrDefault(z => z.WTag == tag && z.Stunde == stunde + 1);
-
-                                var prev = zeitRaster
-                                    .FirstOrDefault(z => z.WTag == tag && z.Stunde == stunde - 1);
 
                                 if (next != null)
                                 {
@@ -176,6 +208,13 @@ namespace Stundenplan_V2
                                 else if (spaeteDoppel.Contains(key) && stunde >= 5)
                                     gelb = true;
                             }
+
+                            cell.Value = sb.ToString();
+
+                            // KOLLISION: mehr als ein distinkter Block dieses Lehrers
+                            // im selben Slot = Lehrer gibt zwei Unterrichte
+                            // gleichzeitig. Ausnahme: A-/B-Wochen kollidieren nie.
+                            konflikt = IstEchterLehrerKonflikt(lehrerBlöcke);
                         }
 
                         if (slot.LehrerWunsch.ContainsKey(lehrer))
@@ -185,6 +224,11 @@ namespace Stundenplan_V2
 
                         if (gelb)
                             cell.Style.Fill.BackgroundColor = XLColor.Yellow;
+
+                        // Kollision hat oberste Priorität und überschreibt jede
+                        // andere Färbung, damit sie im Plan nicht übersehen wird.
+                        if (konflikt)
+                            cell.Style.Fill.BackgroundColor = XLColor.Red;
 
                         cell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
                         cell.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
@@ -209,6 +253,24 @@ namespace Stundenplan_V2
 
             BlattReihenfolge.Anwenden(workbook);
             workbook.Save();
+        }
+
+        // Echter Lehrer-Konflikt: mehrere verschiedene Blöcke desselben Lehrers
+        // im selben Slot, von denen mindestens ein Paar NICHT A↔B ist (A-/B-Wochen
+        // finden nie gleichzeitig statt und kollidieren daher nicht). Gleiche
+        // Regel wie im PlanValidator.
+        private static bool IstEchterLehrerKonflikt(List<UnterrichtsBlock> blöcke)
+        {
+            if (blöcke == null || blöcke.Count < 2) return false;
+            for (int i = 0; i < blöcke.Count; i++)
+                for (int j = i + 1; j < blöcke.Count; j++)
+                {
+                    string wg1 = (blöcke[i].WochenGruppe ?? "").Trim();
+                    string wg2 = (blöcke[j].WochenGruppe ?? "").Trim();
+                    bool ab = (wg1 == "A" && wg2 == "B") || (wg1 == "B" && wg2 == "A");
+                    if (!ab) return true;
+                }
+            return false;
         }
 
         private static void FärbeZelle(IXLCell cell, int wert)

@@ -42,6 +42,31 @@ namespace Stundenplan_V2
             string Key(string lehrer, string fach, IEnumerable<string> klassen) =>
                 lehrer + "|" + fach + "|" + string.Join(",", klassen.OrderBy(x => x));
 
+            // Ist dieser Lehrer im gegebenen Slot doppelt verplant (zwei
+            // Unterrichte gleichzeitig)? Aus reiner Klassensicht ist das sonst
+            // unsichtbar — die zweite Klasse steht ja in ihrem eigenen Plan.
+            // Gleiche Regel wie im PlanValidator: mehrere verschiedene Blöcke
+            // desselben Lehrers, davon mindestens ein Paar NICHT A↔B.
+            bool LehrerImKonflikt(ZeitSlot slot, string lehrer)
+            {
+                var blöcke = slot.BelegteUNrn
+                    .Select(u => blockLookup[u])
+                    .Where(b => b.Teile.Any(t => t.Lehrer == lehrer))
+                    .GroupBy(b => b.UNr)
+                    .Select(g => g.First())
+                    .ToList();
+                if (blöcke.Count < 2) return false;
+                for (int i = 0; i < blöcke.Count; i++)
+                    for (int j = i + 1; j < blöcke.Count; j++)
+                    {
+                        string wg1 = (blöcke[i].WochenGruppe ?? "").Trim();
+                        string wg2 = (blöcke[j].WochenGruppe ?? "").Trim();
+                        bool ab = (wg1 == "A" && wg2 == "B") || (wg1 == "B" && wg2 == "A");
+                        if (!ab) return true;
+                    }
+                return false;
+            }
+
             // =====================================================
             // Robuste Erkennung der späten pädagogischen Einheiten:
             // Pro Lehrer/Fach/Klassen-Tripel:
@@ -204,6 +229,28 @@ namespace Stundenplan_V2
                                 }
                             }
 
+                            // Lehrer-Querabgleich: erscheint einer der hier
+                            // gezeigten Lehrer im selben Slot in einem WEITEREN
+                            // Block, gibt er zwei Unterrichte gleichzeitig — aus
+                            // Klassensicht sonst unsichtbar (die andere Klasse
+                            // steht ja in ihrem eigenen Plan). Deutlich als
+                            // Warnzeile kennzeichnen.
+                            var doppelteLehrer = gruppiertNachBlock
+                                .SelectMany(gr => gr.Teile.Select(t => t.Lehrer))
+                                .Where(l => !string.IsNullOrWhiteSpace(l))
+                                .Distinct()
+                                .Where(l => LehrerImKonflikt(slot, l))
+                                .ToList();
+                            bool lehrerKonflikt = doppelteLehrer.Count > 0;
+
+                            if (lehrerKonflikt)
+                            {
+                                var w = rt.AddText(
+                                    "\n⚠ " + string.Join(", ", doppelteLehrer) + " doppelt verplant");
+                                w.Bold = true;
+                                w.FontColor = XLColor.White;
+                            }
+
                             cell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Left;
                             cell.Style.Alignment.Vertical   = XLAlignmentVerticalValues.Center;
                             cell.Style.Alignment.WrapText   = true;
@@ -271,7 +318,13 @@ namespace Stundenplan_V2
                             bool istS2BlockSpät = (erstBlock.Zeilentext2 ?? "").Trim()
                                 .Equals("S2-Block spät", System.StringComparison.OrdinalIgnoreCase);
 
-                            if (istLK01)
+                            if (lehrerKonflikt)
+                                // Lehrer doppelt verplant (Kollision): rot, oberste
+                                // Priorität. Die weiße Warnzeile "⚠ … doppelt
+                                // verplant" im Zelltext grenzt sie eindeutig von der
+                                // (ebenfalls roten) späten päd. Einheit ab.
+                                cell.Style.Fill.BackgroundColor = XLColor.Red;
+                            else if (istLK01)
                                 cell.Style.Fill.BackgroundColor =
                                     istOberstufe ? XLColor.DarkOrange : XLColor.Orange;
                             else if (istLK02)

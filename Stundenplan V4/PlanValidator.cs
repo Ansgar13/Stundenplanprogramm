@@ -16,7 +16,12 @@ namespace Stundenplan_V2
             string Fach,
             string Details,
             string Klasse = "",
-            string ZeilenText = "");
+            string ZeilenText = "",
+            // Bei slot-gebundenen Konflikten ohne einzelne UNr (Lehrer-/Klassen-
+            // Konflikt, UNr = 0): die UNrn ALLER am Konflikt beteiligten Bloecke.
+            // Erlaubt dem Plan-Editor, exakt diese Zellen zu markieren, statt
+            // ueber Lehrer-/Klassennamen zu raten. null = nicht gesetzt.
+            IReadOnlyList<int> BetroffeneUNrn = null);
 
         public static List<Verletzung> Prüfe(
             int[,] belegung,
@@ -124,7 +129,8 @@ namespace Stundenplan_V2
                         0, kv.Key,
                         string.Join(" / ", kv.Value.Select(p => FachWert(blocks[p.b])).Distinct()),
                         $"Blöcke: {string.Join(", ", kv.Value.Select(p => $"UNr{blocks[p.b].UNr}"))}",
-                        ZeilenText: string.Join(" / ", kv.Value.Select(p => blocks[p.b].Zeilentext).Where(z => !string.IsNullOrWhiteSpace(z)).Distinct())));
+                        ZeilenText: string.Join(" / ", kv.Value.Select(p => blocks[p.b].Zeilentext).Where(z => !string.IsNullOrWhiteSpace(z)).Distinct()),
+                        BetroffeneUNrn: kv.Value.Select(p => blocks[p.b].UNr).Distinct().ToList()));
                 }
             }
 
@@ -195,7 +201,8 @@ namespace Stundenplan_V2
                         0, klasseAnzeige,
                         string.Join(" / ", beteiligte.Select(bl => FachWert(bl)).Distinct()),
                         $"Blöcke: {string.Join(", ", beteiligte.Select(bl => $"UNr{bl.UNr}"))}",
-                        ZeilenText: string.Join(" / ", beteiligte.Select(bl => bl.Zeilentext).Where(z => !string.IsNullOrWhiteSpace(z)).Distinct())));
+                        ZeilenText: string.Join(" / ", beteiligte.Select(bl => bl.Zeilentext).Where(z => !string.IsNullOrWhiteSpace(z)).Distinct()),
+                        BetroffeneUNrn: beteiligte.Select(bl => bl.UNr).Distinct().ToList()));
                 }
             }
 
