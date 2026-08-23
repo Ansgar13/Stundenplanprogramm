@@ -998,6 +998,28 @@ namespace Stundenplan_V2
             // Der schnelle Service wird mit den aktuell eingestellten Optionen
             // frisch gebaut, damit Änderungen aus dem Options-Dialog sofort wirken.
             bool schnell = ChkSchnellSolver?.IsChecked == true;
+
+            // Teilplan-Modus (bewusst gewählt): nur normaler Solver, kein
+            // Tausch. Der schnelle Solver wird dafür zwangsweise abgeschaltet.
+            bool teilplan = ChkTeilplan?.IsChecked == true;
+            input.TeilplanModus = teilplan;
+            if (teilplan)
+            {
+                schnell = false;
+
+                // Gap K (Wochenstunden) aus der Eingabe lesen; ungültig/leer -> 0 (exakt).
+                int gapK = 0;
+                if (!int.TryParse(TxtTeilplanGap?.Text?.Trim(), out gapK) || gapK < 0)
+                    gapK = 0;
+                input.TeilplanGapWst = gapK;
+
+                Log("Teilplan-Modus AKTIV: maximale fehlerfreie Teilverplanung (nach Wochenstunden), " +
+                    "normaler Solver, kein Tausch. Nicht verplanbare Unterrichte erscheinen im Editor als offen." +
+                    (gapK > 0
+                        ? $" Phase-A-Gap K = {gapK} Std (schneller; bis zu {gapK} Std können zusätzlich fallen)."
+                        : " Phase-A-Gap K = 0 (exakt)."));
+            }
+
             var svc = schnell
                 ? new StundenplanService(new OrToolsSolverSchnell(schnellOptionen))
                 : service;

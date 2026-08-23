@@ -70,7 +70,9 @@ public class OrToolsSolver : ISolver
             lehrerSpätFrühMinus2: input.LehrerSpätFrühMinus2,
             lehrerSpätFrühMinus3: input.LehrerSpätFrühMinus3,
             klassenGruppen: input.KlassenGruppen,
-            fixRelaxBeiFixInfeasible: input.FixRelaxBeiFixInfeasible
+            fixRelaxBeiFixInfeasible: input.FixRelaxBeiFixInfeasible,
+            teilplanModus: input.TeilplanModus,
+            teilplanGapWst: input.TeilplanGapWst
         );
     }
 }

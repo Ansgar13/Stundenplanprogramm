@@ -3310,7 +3310,12 @@ namespace Stundenplan_V2
             // Grundlauf EINMAL mit toleranten Fixierungs-Konflikten wiederholt
             // (Fixierungen bleiben hart, nur die von ihnen verursachten harten
             // Verstöße werden geduldet). false = altes Verhalten.
-            bool fixRelaxBeiFixInfeasible = false)
+            bool fixRelaxBeiFixInfeasible = false,
+            // Teilplan-Modus: bewusst gestarteter Sonderlauf, der möglichst
+            // viele Unterrichte fehlerfrei verplant und den Rest fallenlässt.
+            bool teilplanModus = false,
+            // Absoluter Wochenstunden-Gap für Phase A (0 = exakt).
+            int teilplanGapWst = 0)
         {
             // Diagnose-Buffer für aktuellen Lauf zurücksetzen
             _infeasibleDetails.Clear();
@@ -3396,6 +3401,73 @@ namespace Stundenplan_V2
             catch (Exception ex)
             {
                 log($"Checkup FixUNrn fehlgeschlagen: {ex.Message}");
+            }
+
+            // --------------------------------------------------
+            // TEILPLAN-MODUS (bewusst gestarteter Sonderlauf):
+            // Verplant möglichst viele Unterrichte (nach Wochenstunden
+            // gewichtet) fehlerfrei; nicht unterzubringende UNr werden
+            // fallengelassen und erscheinen im Editor als offen.
+            // Kein Tausch, keine Diagnosekaskade.
+            // --------------------------------------------------
+            if (teilplanModus)
+            {
+                log("Teilplan-Modus: maximale fehlerfreie Teilverplanung (nach Wochenstunden)...");
+                reporter?.SetzePhase("Teilplan: max. Unterrichte");
+
+                var teilLösungen = PlanenIntern(
+                    excelPfad, blocks, slots, fachraumLimit, extraFreieTage,
+                    log, maxLösungen: anzahlLösungenOhne, tauschKey: null,
+                    bewiesenInfeasible: out _,
+                    zeitlimitSekunden: zeitlimitSekunden,
+                    nichtFreieTage: nichtFreieTage,
+                    mindestAbstandBloecke: mindestAbstandBloecke,
+                    gewichtFrüh: gewichtFrüh, gewichtSpät: gewichtSpät,
+                    gewichtPäd: gewichtPäd, gewichtFrei: gewichtFrei,
+                    strafeHohl: strafeHohl, strafeDoppelHohl: strafeDoppelHohl,
+                    strafeDreifachHohl: strafeDreifachHohl, strafeStdFolge: strafeStdFolge,
+                    strafeEinzel: strafeEinzel, strafeSpäteLk: strafeSpäteLk, grenzeSpäteLk: grenzeSpäteLk,
+                    lehrerStammdaten: lehrerStammdaten,
+                    grossePausen: grossePausen,
+                    verbotSpäteDoppel: verbotSpäteDoppel,
+                    hauptfachSpätAnteilProzent: hauptfachSpätAnteilProzent,
+                    strafeHauptfachSpät: strafeHauptfachSpät,
+                    verbotMinus2Lehrer: verbotMinus2Lehrer,
+                    strafeMinus2Lehrer: strafeMinus2Lehrer,
+                    lehrerFreiTageMinus2: lehrerFreiTageMinus2,
+                    lehrerFreiTageMinus3: lehrerFreiTageMinus3,
+                    extraFreieStunden: extraFreieStunden,
+                    freieStundenBereich: freieStundenBereich,
+                    lehrerFreieStundenMinus2: lehrerFreieStundenMinus2,
+                    lehrerFreieStundenMinus3: lehrerFreieStundenMinus3,
+                    doppelSelberTagFaecher: doppelSelberTagFaecher,
+                    strafeDoppelSelberTag: strafeDoppelSelberTag,
+                    spätGrenzeFolgetag: spätGrenzeFolgetag,
+                    frühGrenzeFolgetag: frühGrenzeFolgetag,
+                    strafeSpätFrüh: strafeSpätFrüh,
+                    schwelleStdTagVortag: schwelleStdTagVortag,
+                    lehrerSpätFrühMinus2: lehrerSpätFrühMinus2,
+                    lehrerSpätFrühMinus3: lehrerSpätFrühMinus3,
+                    reporter: reporter, abbruch: abbruch, liveState: liveState,
+                    darfDiagnose: diagnoseGate,
+                    teilplanModus: true,
+                    teilplanGapWst: teilplanGapWst);
+
+                var teilErgebnis = new List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)>();
+                for (int i = 0; i < teilLösungen.Count; i++)
+                {
+                    var l = teilLösungen[i];
+                    teilErgebnis.Add((l.quality, l.badUnits, l.belegung, $"Teil_{i + 1}", blocks));
+                }
+
+                debug = teilErgebnis.Count > 0
+                    ? $"Teilplan-Modus: {teilErgebnis.Count} Teillösung(en) erzeugt."
+                    : "Teilplan-Modus: keine Teillösung (abgebrochen oder Grundmodell unlösbar).";
+
+                _laufAbbruch = System.Threading.CancellationToken.None;
+                _schnell = null;
+                _schnellCapsAus = false;
+                return teilErgebnis;
             }
 
             // --------------------------------------------------
@@ -4016,7 +4088,12 @@ namespace Stundenplan_V2
             // überzählige Fixslots, fixierte Doppelstd. über Pause / 3 in
             // Folge). Alle übrigen harten Regeln bleiben hart. false =
             // unverändertes Verhalten.
-            bool fixRelax = false)
+            bool fixRelax = false,
+            // Teilplan-Modus: pro UNr eine platziert-Variable; nicht
+            // platzierbare UNr werden komplett fallengelassen (alle x=0).
+            bool teilplanModus = false,
+            // Absoluter Wochenstunden-Gap für Phase A (0 = exakt).
+            int teilplanGapWst = 0)
         {
             // Standard: nicht bewiesen unlösbar. Wird nur im Infeasible-Zweig auf
             // true gesetzt (Timeout/Unknown bleibt false).
@@ -4177,6 +4254,26 @@ namespace Stundenplan_V2
                 for (int s = 0; s < S; s++)
                     if (fixSlot[b, s]) fixSlotAnzahl[b]++;
 
+            // =====================================================
+            // TEILPLAN-MODUS: pro UNr eine platziert-Variable.
+            // platziert[unr]=0 => die ganze UNr wird fallengelassen (alle x=0).
+            // Bleibt teilplanModus=false, ist platziert null und alle
+            // Constraints verhalten sich exakt wie bisher.
+            // =====================================================
+            Dictionary<int, BoolVar> platziert = null;
+            HashSet<int> teilplanFixUNr = null;
+            if (teilplanModus)
+            {
+                platziert = new Dictionary<int, BoolVar>();
+                foreach (var unr in blocks.Select(bl => bl.UNr).Distinct())
+                    platziert[unr] = model.NewBoolVar($"platz_unr_{unr}");
+
+                teilplanFixUNr = new HashSet<int>();
+                for (int s = 0; s < S; s++)
+                    foreach (var unr in slots[s].FixUNrn)
+                        teilplanFixUNr.Add(unr);
+            }
+
             // fixSlot nur weiterreichen, wenn Relax aktiv ist -> Normalmodus
             // ruft die Constraint-Helfer bitgleich zu früher auf.
             bool[,] fixSlotRelax = fixRelax ? fixSlot : null;
@@ -4191,7 +4288,12 @@ namespace Stundenplan_V2
             {
                 int target = blocks[b].Wst;
                 if (fixRelax && fixSlotAnzahl[b] > target) target = fixSlotAnzahl[b];
-                model.Add(LinearExpr.Sum(Enumerable.Range(0, S).Select(s => x[b, s])) == target);
+                var summe = LinearExpr.Sum(Enumerable.Range(0, S).Select(s => x[b, s]));
+                if (teilplanModus)
+                    // Ganze UNr platziert (== Wst) ODER komplett fallengelassen (== 0).
+                    model.Add(summe == platziert[blocks[b].UNr] * target);
+                else
+                    model.Add(summe == target);
             }
 
             // =====================================================
@@ -4200,7 +4302,14 @@ namespace Stundenplan_V2
             for (int b = 0; b < B; b++)
                 for (int s = 0; s < S; s++)
                     if (fixSlot[b, s])
-                        model.Add(x[b, s] == 1);
+                    {
+                        if (teilplanModus)
+                            // Fix bleibt gesetzt, WENN die UNr platziert wird;
+                            // nur bei nachweisbarer Unlösbarkeit fällt sie (=> 0).
+                            model.Add(x[b, s] == platziert[blocks[b].UNr]);
+                        else
+                            model.Add(x[b, s] == 1);
+                    }
 
             // =====================================================
             // LEHRERREGEL (Wochengruppe-aware)
@@ -4333,7 +4442,13 @@ namespace Stundenplan_V2
 
                 if (dVars.Count > 0)
                 {
-                    model.Add(LinearExpr.Sum(dVars) >= minD);
+                    if (teilplanModus && minD > 0)
+                        // Untergrenze nur für platzierte UNr; eine fallengelassene
+                        // UNr (x alle 0) darf minD nicht erzwingen.
+                        model.Add(LinearExpr.Sum(dVars) >= minD)
+                             .OnlyEnforceIf(platziert[blocks[b].UNr]);
+                    else
+                        model.Add(LinearExpr.Sum(dVars) >= minD);
                     model.Add(LinearExpr.Sum(dVars) <= maxD);
                 }
             }
@@ -5358,6 +5473,135 @@ namespace Stundenplan_V2
                                 $"(Gewicht {stabilitaetsGewicht}).");
                 }
             }
+            // =====================================================
+            // TEILPLAN-MODUS – PHASE A: maximiere platzierte Wochenstunden.
+            // Fix-UNr lexikografisch bevorzugt (nur fallengelassen, wenn ohne
+            // sie kein fehlerfreier Teilplan existiert), danach zählen die
+            // übrigen UNr nach Wochenstunden. Ergebnis wird fixiert; Phase B
+            // (der reguläre Qualitäts-Solve unten) ordnet nur die platzierten
+            // UNr an.
+            // =====================================================
+            if (teilplanModus)
+            {
+                var wstProUNr = blocks
+                    .GroupBy(bl => bl.UNr)
+                    .ToDictionary(g => g.Key, g => g.Max(bl => bl.Wst));
+
+                int summeNormalWst = platziert.Keys
+                    .Where(u => !teilplanFixUNr.Contains(u))
+                    .Sum(u => wstProUNr[u]);
+                // Fix-Gewicht > Summe aller normalen Wst => Halten EINER Fix-UNr
+                // wiegt schwerer als alle normalen UNr zusammen.
+                int fixGewicht = summeNormalWst + 1;
+
+                var platzTerme = new List<LinearExpr>();
+                foreach (var kv in platziert)
+                {
+                    int coef = wstProUNr[kv.Key];
+                    if (teilplanFixUNr.Contains(kv.Key)) coef *= fixGewicht;
+                    platzTerme.Add(kv.Value * coef);
+                }
+                model.Maximize(LinearExpr.Sum(platzTerme));
+
+                // -------------------------------------------------
+                // WARMSTART-HINT: Greedy-Vollplatzierung als Startlösung.
+                // Gibt CP-SAT sofort eine gültige Teilverplanung (Greedy
+                // achtet auf Lehrer-/Klassenkollision) und für jede UNr eine
+                // platziert-Vermutung. Hints sind unverbindlich – Fehler hier
+                // dürfen den Lauf nie kippen (analog zum Greedy-Hint unten).
+                // -------------------------------------------------
+                try
+                {
+                    var greedyA = BaueGreedyHint(blocks, slots, B, S);
+                    var greedyProBlock = new int[B];
+                    foreach (var (bIdx, sIdx) in greedyA)
+                    {
+                        model.AddHint(x[bIdx, sIdx], 1);
+                        greedyProBlock[bIdx]++;
+                    }
+
+                    // UNr -> Blockindizes, um "Greedy hat die UNr komplett
+                    // untergebracht" zu prüfen.
+                    var bloeckeProUNr = new Dictionary<int, List<int>>();
+                    for (int b = 0; b < B; b++)
+                    {
+                        if (!bloeckeProUNr.TryGetValue(blocks[b].UNr, out var lst))
+                            bloeckeProUNr[blocks[b].UNr] = lst = new List<int>();
+                        lst.Add(b);
+                    }
+                    foreach (var kv in platziert)
+                    {
+                        bool voll = bloeckeProUNr[kv.Key].All(b => greedyProBlock[b] >= blocks[b].Wst);
+                        model.AddHint(kv.Value, voll ? 1 : 0);
+                    }
+                    log?.Invoke($"  Teilplan: Warmstart-Hint gesetzt ({greedyA.Count} Stunden greedy vorplatziert).");
+                }
+                catch (Exception ex)
+                {
+                    log?.Invoke($"  Teilplan: Warmstart-Hint übersprungen ({ex.Message}).");
+                }
+
+                var solverA = new CpSolver();
+                string paramsA =
+                    $"max_time_in_seconds:{zeitlimitSekunden} num_search_workers:8 random_seed:{randomSeed} log_search_progress:true";
+                if (teilplanGapWst > 0)
+                {
+                    // Absoluter Gap auf die (in Wochenstunden gemessene)
+                    // Platzierungs-Zielfunktion: der Solver hört auf, sobald die
+                    // aktuelle Platzierung höchstens teilplanGapWst Wochenstunden
+                    // unter dem Optimum liegt. Fix-UNr sind mit fixGewicht
+                    // skaliert (>> Gap) und damit nie betroffen.
+                    paramsA += $" absolute_gap_limit:{teilplanGapWst}";
+                    log?.Invoke($"  Teilplan: Phase-A-Gap = {teilplanGapWst} Wochenstunden " +
+                                $"(schneller; es können bis zu {teilplanGapWst} Std zusätzlich fallen).");
+                }
+                else
+                {
+                    log?.Invoke("  Teilplan: Phase-A-Gap = 0 (exakt, voller Optimalitätsbeweis).");
+                }
+                solverA.StringParameters = paramsA;
+                using (var regA = HängeAbbruchAn(solverA, abbruch))
+                {
+                    var statusA = solverA.Solve(model);
+                    LogSolveErgebnis(log, "Teilplan-A", solverA, statusA, zeitlimitSekunden);
+
+                    if (abbruch.IsCancellationRequested ||
+                        (statusA != CpSolverStatus.Optimal && statusA != CpSolverStatus.Feasible))
+                    {
+                        log?.Invoke("  Teilplan: Phase A ohne Platzierungsentscheidung – Abbruch.");
+                        return new List<(int quality, int badUnits, int[,] belegung, string label)>();
+                    }
+
+                    var gedroppt = new List<int>();
+                    foreach (var kv in platziert)
+                    {
+                        int wert = (int)solverA.Value(kv.Value);
+                        model.Add(kv.Value == wert);   // Entscheidung für Phase B fixieren
+                        if (wert == 0) gedroppt.Add(kv.Key);
+                    }
+
+                    int platzWst = platziert.Keys.Where(u => !gedroppt.Contains(u)).Sum(u => wstProUNr[u]);
+                    int gesamtWst = platziert.Keys.Sum(u => wstProUNr[u]);
+                    log?.Invoke($"  Teilplan: {platziert.Count - gedroppt.Count}/{platziert.Count} UNr platziert " +
+                                $"({platzWst}/{gesamtWst} Wochenstunden).");
+
+                    if (gedroppt.Count == 0)
+                        log?.Invoke("  Teilplan: alle UNr fehlerfrei verplanbar – kein Unterricht fallengelassen.");
+                    else
+                    {
+                        log?.Invoke($"  Teilplan: {gedroppt.Count} UNr NICHT verplant (im Editor als offen ladbar):");
+                        foreach (var unr in gedroppt.OrderBy(u => u))
+                        {
+                            var bl2 = blocks.First(bb => bb.UNr == unr);
+                            string fix = teilplanFixUNr.Contains(unr) ? " [FIX – nur wegen Unlösbarkeit gedroppt]" : "";
+                            string fach = string.Join("/", bl2.Teile.Select(t => t.Fach).Distinct());
+                            string kl = string.Join("/", bl2.Teile.SelectMany(t => t.Klassen).Distinct());
+                            log?.Invoke($"    • UNr {unr}: {fach} {kl} ({wstProUNr[unr]} Std){fix}");
+                        }
+                    }
+                }
+            }
+
             model.Maximize(qualityExpr);
 
             // Ausgangsplan-Hints: Nur die BELEGTEN Slots bekommen einen Hint=1.

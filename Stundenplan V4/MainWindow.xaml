@@ -3,9 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Stundenplan V2"
         Height="1000"
-        Width="820"
+        Width="900"
         MinHeight="700"
-        MinWidth="760"
+        MinWidth="820"
         FontSize="15"
         WindowStartupLocation="CenterScreen">
 
@@ -25,13 +25,30 @@
                        TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/>
             <Button Content="Ausgabe-Fenster anzeigen" HorizontalAlignment="Center"
                     Margin="0,8,0,0" Padding="12,4" Click="BtnAusgabeFenster_Click"/>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
-                <CheckBox x:Name="ChkSchnellSolver" Content="Schneller Solver (Gap + Greedy-Hint)"
-                          VerticalAlignment="Center"
-                          Checked="ChkSchnellSolver_Changed" Unchecked="ChkSchnellSolver_Changed"/>
-                <Button Content="Optionen…" Margin="10,0,0,0" Padding="10,2"
-                        Click="BtnSchnellOptionen_Click"/>
+            <StackPanel Margin="0,8,0,0">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                    <CheckBox x:Name="ChkSchnellSolver" Content="Schneller Solver (Gap + Greedy-Hint)"
+                              VerticalAlignment="Center"
+                              Checked="ChkSchnellSolver_Changed" Unchecked="ChkSchnellSolver_Changed"/>
+                    <Button Content="Optionen…" Margin="10,0,0,0" Padding="10,2"
+                            Click="BtnSchnellOptionen_Click"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
+                    <CheckBox x:Name="ChkTeilplan"
+                              Content="Teilplan (max. Unterrichte, normaler Solver)"
+                              VerticalAlignment="Center"
+                              ToolTip="Verplant möglichst viele Unterrichte (nach Wochenstunden gewichtet) fehlerfrei. Fix-UNr bleiben nach Möglichkeit erhalten. Nicht verplanbare Unterrichte werden fallengelassen und erscheinen im Plan-Editor als offen. Nutzt immer den normalen Solver ohne Tausch."/>
+                    <TextBlock Text="Gap K (Std.):" VerticalAlignment="Center" Margin="16,0,4,0"/>
+                    <TextBox x:Name="TxtTeilplanGap" Text="0" Width="46"
+                             VerticalAlignment="Center" VerticalContentAlignment="Center"
+                             TextAlignment="Center"
+                             ToolTip="Phase-A-Gap in Wochenstunden. 0 = exakt (voller Beweis, langsamer). Größere Werte beenden Phase A früher; es können dann bis zu K Wochenstunden zusätzlich fallengelassen werden. Fix-UNr sind nie betroffen."/>
+                </StackPanel>
             </StackPanel>
+            <TextBlock HorizontalAlignment="Center" Margin="0,8,0,0"
+                       FontSize="12" Foreground="#444" TextWrapping="Wrap"
+                       MaxWidth="760" TextAlignment="Center" LineHeight="17"
+                       Text="Teilplan: Zeitlimit (Tabelle PM) eher niedrig wählen – Phase A schöpft es voll aus, weil der Beweis der maximalen Platzierung (= Unlösbarkeit des Restes) teuer ist. Eine gültige Teillösung liegt meist längst vorher vor. Gap K (Std.): 0 = exakt; K&#160;&gt;&#160;0 beendet Phase A früher und lässt dafür bis zu K Wochenstunden zusätzlich fallen (Fix-UNr nie)."/>
         </StackPanel>
 
         <!-- Buttons: schmaler, zweispaltig statt einer langen Reihe -> gibt dem

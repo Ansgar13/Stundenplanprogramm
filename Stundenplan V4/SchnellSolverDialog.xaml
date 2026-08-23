@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Schneller Solver – Optionen"
-        Height="600" Width="500"
+        Height="650" Width="500"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize">
 
@@ -69,7 +69,7 @@
                 </Grid.ColumnDefinitions>
 
                 <TextBlock Grid.Row="0" Grid.ColumnSpan="4" TextWrapping="Wrap" Margin="0,0,0,8"
-                    Text="Kappt den jeweiligen Straf-Term hart ab (statt ihn nur zu bestrafen) und beschleunigt so die Suche. Wird eine Kappung unlösbar, wiederholt der Solver den Grundlauf automatisch einmal ohne Kappungen."/>
+                    Text="Kappt den jeweiligen Straf-Term hart ab (statt ihn nur zu bestrafen) und beschleunigt so die Suche. Wird eine Kappung unlösbar, wiederholt der Solver den Grundlauf automatisch einmal ohne Kappungen.&#10;&#10;Wichtig: Von allen Optionen in diesem Fenster verkürzen nur die Kappungen die Zeit bis zur ersten Lösung. Die Gap-Einstellung oben beschleunigt lediglich den Optimalitätsbeweis danach, nicht das Finden der ersten Lösung."/>
 
                 <TextBlock Grid.Row="1" Grid.Column="0" Text="Hohlstunden:" VerticalAlignment="Center"/>
                 <TextBox   Grid.Row="1" Grid.Column="1" x:Name="TxtMaxHohl" Width="50" HorizontalAlignment="Left"/>

@@ -31,6 +31,18 @@ public class StundenplanInput
     // bleiben hart, nur die von ihnen verursachten harten Verstöße werden
     // geduldet; alle übrigen Regeln bleiben hart). false = altes Verhalten.
     public bool FixRelaxBeiFixInfeasible { get; set; } = false;
+
+    // Teilplan-Modus (bewusst gewählter Sonderlauf, nur normaler Solver):
+    // verplant möglichst viele Unterrichte (nach Wochenstunden gewichtet)
+    // fehlerfrei; nicht unterzubringende UNr werden fallengelassen.
+    public bool TeilplanModus { get; set; } = false;
+
+    // Absoluter Wochenstunden-Gap für Phase A des Teilplan-Modus:
+    // der Solver stoppt, sobald die aktuelle Platzierung höchstens so viele
+    // Wochenstunden unter dem theoretischen Optimum liegt. 0 = exakt
+    // (voller Optimalitätsbeweis), größere Werte = schneller, aber ggf. bis
+    // zu K Wochenstunden mehr fallengelassen. Fix-UNr sind nie betroffen.
+    public int TeilplanGapWst { get; set; } = 0;
     // Warnungen zu UV-Zeilen ohne Fach und/oder ohne Klasse (Pflichtfelder).
     public List<string> UvFachKlasseWarnungen { get; set; } = new();
     // Dieselben Zeilen wie oben, aber nur die reinen UNr-Werte (dedupliziert,
