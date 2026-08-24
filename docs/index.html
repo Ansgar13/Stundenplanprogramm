@@ -226,6 +226,10 @@
   /* Breiter Editor-Screenshot */
   .editor .showcase-head{margin-left:auto;margin-right:auto;text-align:center;}
   .shot-wide{max-width:100%;}
+  .split .wrap{display:grid;grid-template-columns:.82fr 1fr;gap:48px;align-items:center;}
+  @media(max-width:860px){.split .wrap{grid-template-columns:1fr;gap:32px;}}
+  .split .shot{max-width:360px;margin:0 auto;}
+  .split-text .sub + .sub{margin-top:14px;}
   .shot-wide img{border-radius:8px;}
   .shot-link{display:block;}
   .chips{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:26px;}
@@ -436,6 +440,16 @@
         <p>Ein echter Constraint-Solver verteilt alle Unterrichte konfliktfrei. Der schnelle Modus mit Greedy-Hint liefert auch bei großen Plänen früh ein brauchbares Ergebnis.</p>
       </div>
       <div class="card">
+        <div class="ic">🧩</div>
+        <h3>Teilplan-Modus</h3>
+        <p>Lässt sich nicht alles gemeinsam unterbringen, verplant der Teilplan-Modus möglichst viele Unterrichte fehlerfrei und lässt nur die unvermeidbaren fallen – statt einer bloßen Unlösbar-Meldung. Was verplant wird, ist garantiert konfliktfrei.</p>
+      </div>
+      <div class="card">
+        <div class="ic">🔍</div>
+        <h3>Ursachensuche bei Unlösbarkeit</h3>
+        <p>Meldet der Solver, dass kein Plan möglich ist, sucht er die Ursache automatisch: Er testet stufenweise – Räume, Fach/Klasse/Tag, Doppelstunden, freie Tage – und nennt die verantwortliche Regel bzw. die betroffene Lehrkraft oder Klasse.</p>
+      </div>
+      <div class="card">
         <div class="ic">🔀</div>
         <h3>Lehrertausch</h3>
         <p>Lehrertausch-Funktion! Über die von dir gesetzten Tauschbarkeitskennzeichen (LTKZ) legst du fest, welche Lehrkräfte gegeneinander tauschbar sind; daraus trifft der Solver eine möglichst aussichtsreiche Vorauswahl, indem er die Täusche mit den wenigsten Konflikten favorisiert.</p>
@@ -586,6 +600,25 @@
       </a>
       <figcaption>Stammdaten-Dialog · individuelle Vorgaben je Lehrkraft, gelbe Spalten aus Untis importiert</figcaption>
     </figure>
+  </div>
+</section>
+
+<!-- Minimale Änderungen -->
+<section class="section showcase split" id="minimal">
+  <div class="wrap">
+    <figure class="shot">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <a class="shot-link" href="minimale-aenderungen.png" target="_blank" rel="noopener" title="In voller Größe öffnen">
+        <img src="minimale-aenderungen.png" alt="Dialog 'Minimale Änderungen – Solver' mit Auswahl des Ausgangsplans, Stabilitätsgewicht, Zeitlimit und Anzahl Lösungen" loading="lazy">
+      </a>
+      <figcaption>Minimale Änderungen · nah am Ausgangsplan</figcaption>
+    </figure>
+    <div class="split-text">
+      <p class="eyebrow">Nachträgliche Änderungen</p>
+      <h2>Nah am bestehenden Plan bleiben.</h2>
+      <p class="sub">Verschiebt sich mitten im Schuljahr eine Vorgabe, rechnet der Modus „Minimale Änderungen" den Plan neu und bleibt dabei so nah wie möglich am Ausgangsplan – Zeitwünsche, Fixierungen und alle Qualitätskriterien gelten weiter. Über das Stabilitätsgewicht steuerst du, wie stark der Solver am bisherigen Plan festhält.</p>
+      <p class="sub">Bei langen Suchläufen zeigt der Live-Modus jederzeit den aktuellen Zwischenstand an, ohne den Solver zu unterbrechen – und du kannst den Lauf jederzeit abbrechen.</p>
+    </div>
   </div>
 </section>
 
