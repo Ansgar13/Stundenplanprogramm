@@ -16,6 +16,15 @@ namespace Stundenplan_V2
         public int DreifachHohlstunden { get; set; } // 3+ aufeinanderfolgende Hohlstunden
         public int MaxStdFolge { get; set; }          // größte aufeinanderfolgende Unterrichtsfolge
         public int Einzelstunden { get; set; }        // Tage mit genau 1 Unterrichtsstunde
+
+        // Unterrichtstage mit Stundenzahl ausserhalb des Std./Tag-Bereichs
+        // [StdTagMin, StdTagMax]. Spiegelt PlanBewertung.StdTagVerletzungen bzw.
+        // die einzelVars des Solvers (StundenplanEngine). Wird — wie dort — nur
+        // gezaehlt, wenn fuer den Lehrer StdTagMax gesetzt ist. NICHT identisch
+        // mit Einzelstunden (Tage mit genau 1 Stunde): ein 1-Stunden-Tag ist nur
+        // dann eine Verletzung, wenn StdTagMin >= 2.
+        public int StdTagVerletzungen { get; set; }
+
         public int StrafeGesamt { get; set; }
 
         // Vorgaben aus Stammdaten
@@ -137,11 +146,15 @@ namespace Stundenplan_V2
                 diag.SpaetePaedEinheitenNichtFix = spaetePaedNichtFixProLehrer.TryGetValue(lehrer, out int spnf) ? spnf : 0;
 
                 // Stammdaten zuordnen
+                int? stdTagMin = null;
+                int? stdTagMax = null;
                 if (stammdaten.TryGetValue(lehrer, out var sd))
                 {
                     diag.HohlStdSollMin = sd.HohlStdMin;
                     diag.HohlStdSollMax = sd.HohlStdMax;
                     diag.StdFolgeMax    = sd.StdFolge;
+                    stdTagMin           = sd.StdTagMin;
+                    stdTagMax           = sd.StdTagMax;
                 }
 
                 // Für jeden Tag: Stunden-Sequenz des Lehrers aufbauen
@@ -203,6 +216,18 @@ namespace Stundenplan_V2
                     // Einzelstunden: genau 1 Unterrichtsstunde am Tag
                     if (stundenMitUnterricht.Count == 1)
                         diag.Einzelstunden++;
+
+                    // Std./Tag-Bereichsverletzung: Unterrichtstag mit Stundenzahl
+                    // ausserhalb [StdTagMin, StdTagMax]. Freie Tage sind oben per
+                    // continue ausgeschlossen. Identische Regel wie PlanBewertung
+                    // (Gate: nur wenn StdTagMax gesetzt) und der Solver-einzelVars.
+                    if (stdTagMax.HasValue)
+                    {
+                        int stdProTag = stundenMitUnterricht.Count;
+                        bool unter = stdTagMin.HasValue && stdProTag < stdTagMin.Value;
+                        bool ueber = stdProTag > stdTagMax.Value;
+                        if (unter || ueber) diag.StdTagVerletzungen++;
+                    }
 
                     // Std.Folge: längste aufeinanderfolgende Unterrichtssequenz
                     int aktFolge = 0;
@@ -362,8 +387,9 @@ namespace Stundenplan_V2
             int startCol = 2;
             // Spalten je Loesung: Basis 8 (+2 fuer -2-Meldung) +2 fuer Dstd-V/TR-V
             // +1 fuer "Spät päd." (späte päd. Einheiten je Lehrer)
-            // +1 fuer "Spät-Früh" (Verstöße später Tag -> früher Folgetag).
-            int colsProLösung = (meldeLeherMinus2 ? 10 : 8) + 2 + 1 + 1;
+            // +1 fuer "Spät-Früh" (Verstöße später Tag -> früher Folgetag)
+            // +1 fuer "Std./Tag-V" (Std./Tag-Bereichsverletzungen).
+            int colsProLösung = (meldeLeherMinus2 ? 10 : 8) + 2 + 1 + 1 + 1;
             var existierendeLabels = new HashSet<string>();
 
             if (vorherLöschen)
@@ -450,20 +476,21 @@ namespace Stundenplan_V2
                 sheet.Cell(2, col + 2).Value = "Soll max";
                 sheet.Cell(2, col + 3).Value = "DoppelHohl";
                 sheet.Cell(2, col + 4).Value = "DreiHohl";
-                sheet.Cell(2, col + 5).Value = "Max Folge";
-                sheet.Cell(2, col + 6).Value = "Folge max";
+                sheet.Cell(2, col + 5).Value = "Ist-MaxFolge";
+                sheet.Cell(2, col + 6).Value = "Soll-MaxFolge";
                 sheet.Cell(2, col + 7).Value = "Einzelstd.";
                 if (meldeLeherMinus2)
                 {
                     sheet.Cell(2, col + 8).Value = "-2 Verl.";
                     sheet.Cell(2, col + 9).Value = "FreiT.-2";
                 }
-                // Dstd-V und TR-V, danach "Spät päd." als letzte Spalte
+                // Dstd-V, TR-V, "Spät päd.", "Spät-Früh", zuletzt "Std./Tag-V"
                 int vOff = meldeLeherMinus2 ? 10 : 8;
                 sheet.Cell(2, col + vOff    ).Value = "Dstd-V";
                 sheet.Cell(2, col + vOff + 1).Value = "TR-V";
                 sheet.Cell(2, col + vOff + 2).Value = "Spät päd.";
                 sheet.Cell(2, col + vOff + 3).Value = "Spät-Früh";
+                sheet.Cell(2, col + vOff + 4).Value = "Std./Tag-V";
 
                 for (int c = col; c < col + colsProLösung; c++)
                 {
@@ -530,6 +557,11 @@ namespace Stundenplan_V2
                     sheet.Cell(zeile, col + vOff + 3).Value = d.SpätFrühVerstöße;
                     if (d.SpätFrühVerstöße > 0)
                         sheet.Cell(zeile, col + vOff + 3).Style.Fill.BackgroundColor = XLColor.LightSalmon;
+
+                    // Std./Tag-V: Unterrichtstage ausserhalb des Std./Tag-Bereichs
+                    sheet.Cell(zeile, col + vOff + 4).Value = d.StdTagVerletzungen;
+                    if (d.StdTagVerletzungen > 0)
+                        sheet.Cell(zeile, col + vOff + 4).Style.Fill.BackgroundColor = XLColor.LightPink;
 
                     // Auffälligkeiten rot markieren
                     if (d.HohlstundenZuViel || d.HohlstundenZuWenig)
@@ -634,6 +666,13 @@ namespace Stundenplan_V2
                 sheet.Cell(sumZeile, col + vOffS + 3).Style.Font.Bold = true;
                 sheet.Cell(sumZeile, col + vOffS + 3).Style.Fill.BackgroundColor =
                     sumSpaetFrueh > 0 ? XLColor.LightSalmon : XLColor.LightGray;
+
+                // Summe Std./Tag-V
+                int sumStdTag = diags.Sum(d => d.StdTagVerletzungen);
+                sheet.Cell(sumZeile, col + vOffS + 4).Value = sumStdTag;
+                sheet.Cell(sumZeile, col + vOffS + 4).Style.Font.Bold = true;
+                sheet.Cell(sumZeile, col + vOffS + 4).Style.Fill.BackgroundColor =
+                    sumStdTag > 0 ? XLColor.LightPink : XLColor.LightGray;
             }
 
             // Zwei zusätzliche Zeilen direkt unter "Summe": Anzahl der späten

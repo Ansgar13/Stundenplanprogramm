@@ -36,7 +36,6 @@ namespace Stundenplan_V2
         public string Lehrer { get; set; } = "";
         public int VberWstd { get; set; }               // Vertretungsbereitschaft (Wstd)
         public int NuHoWstd => Slots.Count;             // Anzahl nutzbarer Hohlstunden
-        public int? StdFolge { get; set; }              // Vorgabe (nur zur Anzeige)
         // Konkrete NuHo-Zeitpunkte (Wochentag, Stunde) — fuer Klassenplan/Editor.
         public List<(string wtag, int stunde)> Slots { get; set; } = new();
     }
@@ -117,7 +116,6 @@ namespace Stundenplan_V2
                 {
                     Lehrer = lehrer,
                     VberWstd = vber,
-                    StdFolge = stdFolge,
                 };
 
                 // Gate: nur Lehrer mit Vber Wstd > 0 koennen NuHos haben.
@@ -224,7 +222,7 @@ namespace Stundenplan_V2
             sheet.Cell(1, 1).Style.Font.Bold = true;
             sheet.Cell(2, 1).Style.Font.Bold = true;
 
-            const int spaltenProLoesung = 3; // Vber Wstd | NuHo Wstd | Std.Folge
+            const int spaltenProLoesung = 2; // Vber Wstd | NuHo Wstd
             int startCol = 2;
 
             for (int i = 0; i < ergebnisse.Count; i++)
@@ -237,7 +235,6 @@ namespace Stundenplan_V2
 
                 sheet.Cell(2, col).Value = "Vber Wstd";
                 sheet.Cell(2, col + 1).Value = "NuHo Wstd";
-                sheet.Cell(2, col + 2).Value = "Std.Folge";
                 for (int c = col; c < col + spaltenProLoesung; c++)
                 {
                     sheet.Cell(2, c).Style.Font.Bold = true;
@@ -265,7 +262,6 @@ namespace Stundenplan_V2
 
                     sheet.Cell(zeile, col).Value = d.VberWstd;
                     sheet.Cell(zeile, col + 1).Value = d.NuHoWstd;
-                    sheet.Cell(zeile, col + 2).Value = d.StdFolge?.ToString() ?? "–";
 
                     // Vertretungsbereite Lehrer ohne einzige NuHo hervorheben.
                     if (d.VberWstd > 0 && d.NuHoWstd == 0)
