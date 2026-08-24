@@ -359,8 +359,8 @@
   <div class="wrap hero-grid">
     <div>
       <p class="eyebrow">Für Gymnasien · Windows · Open Source</p>
-      <h1>Der Stundenplan, der sich <span class="hl">wirklich selbst</span> optimiert.<span class="h1-sub">Kein Scrollen mehr durch Dutzende Pläne notwendig.</span></h1>
-      <p class="lede">Automatische Stundenplanerstellung mit echtem Optimierungs-Solver – liest und schreibt Untis-Dateien, berücksichtigt Zeitwünsche und plant auch die Oberstufe.</p>
+      <h1>Der Stundenplan, der sich <span class="hl">wirklich selbst</span> optimiert.<span class="h1-sub">Kein Scrollen mehr durch Hunderte Pläne notwendig.</span></h1>
+      <p class="lede">Automatische Stundenplanerstellung mit echtem Optimierungs-Solver – liest und schreibt Untis-Dateien und kann ALLE Anforderungen – z. B. das Vermeiden von Dreifach-Hohlstunden oder eine gleichmäßige Fächerverteilung – nicht nur bestrafen, sondern in der Lösung erzwingen.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="#download">
           Kostenlos herunterladen
@@ -513,6 +513,11 @@
         <h3>Plan bewerten & prüfen</h3>
         <p>Jeder Plan bekommt eine nachvollziehbare Bewertung, und der Prüfmodus listet alle Verletzungen auf – volle Kontrolle statt Blackbox.</p>
       </div>
+      <div class="card">
+        <div class="ic">🙋</div>
+        <h3>Vertretungsreserven (NuHos)</h3>
+        <p>Bewertet, wie gut ein Plan Vertretungsreserven über die Woche verteilt: nutzbare Hohlstunden vertretungsbereiter Lehrkräfte in den Stunden 2–5. Über einen Sollwert je Zeitslot lässt sich auf eine gleichmäßige Reserve hin planen; ein NuHo-Übersichtsplan zeigt sie je Tag und Stunde.</p>
+      </div>
     </div>
   </div>
 </section>
@@ -612,9 +617,6 @@
         <a class="btn btn-ghost" href="Stundenplan-Benutzerhandbuch.pdf" download>
           Handbuch (PDF)
         </a>
-        <a class="btn btn-ghost" href="Beispiel-Stundenplan.xlsx" download>
-          Excel-Beispieldatei
-        </a>
       </div>
       <div class="req">
         <span>Windows 10 / 11</span>
@@ -647,10 +649,6 @@
         <div class="a">Ja. Die Software liest das Untis-GPU-Format direkt ein und kann fertige Pläne auch wieder als GPU-Datei exportieren. Du musst deine Unterrichtsverteilung nicht neu erfassen und kannst beide Programme parallel nutzen.</div>
       </details>
       <details>
-        <summary>Wie kann ich einen generierten Stundenplan wieder in Untis importieren?</summary>
-        <div class="a">Obwohl Untis keine direkte Import-Schnittstelle anbietet, ist es dennoch mit einem kleinen Trick und ein paar Klicks möglich. Das Stundenplanprogramm generiert zu jedem Unterricht einen <strong>Pseudolehrer</strong>, der nur zu den Zeitslots des generierten Plans für diesen Unterricht verfügbar ist. Nach dem Import der Zeitwunschdatei und der Pseudounterrichte verplant der <strong>Schnelloptimierer</strong> von Untis die Unterrichte genau in die richtigen Zeitslots. Anschließend markierst und löschst du die importierten Pseudolehrer wieder aus den Stammdaten.</div>
-      </details>
-      <details>
         <summary>Läuft das Programm auf dem Mac?</summary>
         <div class="a">Die Software ist eine Windows-Anwendung (WPF) und benötigt Windows 10 oder 11 mit dem .NET-10-Runtime. Auf dem Mac lässt sie sich nur über eine Windows-Umgebung (z. B. Parallels oder Boot Camp) betreiben.</div>
       </details>
@@ -660,7 +658,7 @@
       </details>
       <details>
         <summary>Eignet sich das Programm für die gymnasiale Oberstufe?</summary>
-        <div class="a">Ja – gerade in der Oberstufe mit mehreren Kursen desselben Fachs hilft die <strong>Lehrertausch-Funktion</strong>. Über die von dir gesetzten Tauschbarkeitskennzeichen (LTKZ) legst du fest, welche Lehrkräfte gegeneinander tauschbar sind; daraus trifft der Solver eine möglichst aussichtsreiche Vorauswahl, indem er die Tausche mit den wenigsten Konflikten favorisiert.</div>
+        <div class="a">Ja – gerade in der Oberstufe mit mehreren Kursen desselben Fachs hilft die <strong>Lehrertausch-Funktion</strong>. Über die von dir gesetzten Tauschbarkeitskennzeichen (LTKZ) legst du fest, welche Lehrkräfte gegeneinander tauschbar sind; daraus trifft der Solver eine möglichst aussichtsreiche Vorauswahl, indem er die Tausche mit den wenigsten Konflikten favorisiert. Für die Kursplanung gibt es zudem einen eigenen Generator für EF, Q1 und Q2.</div>
       </details>
       <details>
         <summary>Was passiert, wenn sich mitten im Schuljahr etwas ändert?</summary>
@@ -757,10 +755,9 @@
     {"@type":"Question","name":"Ist die Stundenplan-Software wirklich kostenlos?","acceptedAnswer":{"@type":"Answer","text":"Ja. Das Programm ist kostenlos und quelloffen und kann an der Schule eingesetzt werden."}},
     {"@type":"Question","name":"Warum nicht direkt den Untis-Planer benutzen?","acceptedAnswer":{"@type":"Answer","text":"Der automatische Planer von Untis arbeitet heuristisch: Er setzt die Stunden nach Faustregeln und nimmt die erste brauchbare Lösung, wodurch vermeidbare Hohl- und Randstunden bleiben. Dieses Programm nutzt einen echten Optimierungs-Solver (Google OR-Tools, CP-SAT), der den ganzen Plan als mathematisches Problem löst, die Qualität beweisen kann und so schnellere und nachweislich bessere Ergebnisse liefert."}},
     {"@type":"Question","name":"Kann ich meine bestehenden Untis-Daten (GPU) importieren?","acceptedAnswer":{"@type":"Answer","text":"Ja. Die Software liest das Untis-GPU-Format direkt ein und exportiert fertige Pläne wieder als GPU-Datei."}},
-    {"@type":"Question","name":"Wie kann ich einen generierten Stundenplan wieder in Untis importieren?","acceptedAnswer":{"@type":"Answer","text":"Obwohl Untis keine direkte Import-Schnittstelle anbietet, ist es mit einem kleinen Trick möglich. Das Programm generiert zu jedem Unterricht einen Pseudolehrer, der nur zu den Zeitslots des generierten Plans verfügbar ist. Nach Import der Zeitwunschdatei und der Pseudounterrichte verplant der Schnelloptimierer von Untis die Unterrichte genau in die richtigen Zeitslots. Anschließend löscht man die importierten Pseudolehrer wieder aus den Stammdaten."}},
     {"@type":"Question","name":"Läuft das Programm auf dem Mac?","acceptedAnswer":{"@type":"Answer","text":"Es ist eine Windows-Anwendung und benötigt Windows 10 oder 11 mit .NET 10. Auf dem Mac nur über eine Windows-Umgebung."}},
     {"@type":"Question","name":"Wie werden die Zeitwünsche der Lehrkräfte berücksichtigt?","acceptedAnswer":{"@type":"Answer","text":"Freie Tage, gesperrte Stunden und Wunschzeiten werden eingelesen und vom Solver eingehalten; Zeitwünsche lassen sich zudem in Untis im- und exportieren."}},
-    {"@type":"Question","name":"Eignet sich das Programm für die gymnasiale Oberstufe?","acceptedAnswer":{"@type":"Answer","text":"Ja – gerade in der Oberstufe mit mehreren Kursen desselben Fachs hilft die Lehrertausch-Funktion. Über die von dir gesetzten Tauschbarkeitskennzeichen (LTKZ) legst du fest, welche Lehrkräfte tauschbar sind; der Solver trifft daraus eine aussichtsreiche Vorauswahl und favorisiert die Tausche mit den wenigsten Konflikten."}},
+    {"@type":"Question","name":"Eignet sich das Programm für die gymnasiale Oberstufe?","acceptedAnswer":{"@type":"Answer","text":"Ja – gerade in der Oberstufe mit mehreren Kursen desselben Fachs hilft die Lehrertausch-Funktion. Über die von dir gesetzten Tauschbarkeitskennzeichen (LTKZ) legst du fest, welche Lehrkräfte tauschbar sind; der Solver trifft daraus eine aussichtsreiche Vorauswahl und favorisiert die Tausche mit den wenigsten Konflikten. Für die Kursplanung gibt es zudem einen eigenen Generator für EF, Q1 und Q2."}},
     {"@type":"Question","name":"Was passiert, wenn sich mitten im Schuljahr etwas ändert?","acceptedAnswer":{"@type":"Answer","text":"Ein Solver-Modus für minimale Änderungen passt den bestehenden Plan an, ohne den ganzen Stundenplan umzuwerfen."}},
     {"@type":"Question","name":"Wie unterscheidet sich der Solver von einer einfachen Automatik?","acceptedAnswer":{"@type":"Answer","text":"Statt einer Heuristik nutzt das Programm einen echten Constraint-Solver (Google OR-Tools), der konfliktfreie Pläne erzeugt, Hohl- und Randstunden minimiert und maximale Teilpläne liefern kann."}},
     {"@type":"Question","name":"Wie gebe ich meine Daten ein?","acceptedAnswer":{"@type":"Answer","text":"Die gesamte Konfiguration liegt in einer einzigen Excel-Datei, in die das Programm auch alle Ergebnisse zurückschreibt. Alternativ übernimmst du die Unterrichtsverteilung per GPU-Import aus Untis."}},
