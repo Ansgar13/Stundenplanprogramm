@@ -93,6 +93,33 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
+        // CPU-KERNE / SOLVER-WORKER
+        //
+        // CP-SAT sucht mit mehreren parallelen Strategien (num_search_workers).
+        // Früher war dieser Wert fest auf 8 verdrahtet: auf schwächeren CPUs
+        // wurde damit überbucht (mehr Worker als Kerne), auf starken CPUs lagen
+        // Kerne brach. Hier koppeln wir die Worker-Zahl an die real verfügbaren
+        // logischen Prozessoren.
+        //
+        // Environment.ProcessorCount liefert die logischen Prozessoren inkl.
+        // Hyperthreading/SMT — genau die Einheiten, über die CP-SAT seine
+        // Suchprozesse verteilt. Mindestens 1, damit auch auf exotischen
+        // Umgebungen immer ein Worker läuft.
+        // =====================================================
+        private static int SolverWorkerAnzahl()
+            => Math.Max(1, Environment.ProcessorCount);
+
+        // =====================================================
+        // Meldet beim Solverstart, wie viele logische Prozessoren die Maschine
+        // hat und wie viele davon der Solver tatsächlich als Suchprozesse nutzt.
+        // Erscheint in der Ausgabebox (log-Callback).
+        // =====================================================
+        private static void LogSolverKerne(Action<string> log, int workers)
+            => log?.Invoke(
+                $"  Solverstart: {Environment.ProcessorCount} logische Prozessoren verfügbar, " +
+                $"{workers} genutzt (num_search_workers).");
+
+        // =====================================================
         // Fortschritts-Reporter für die Live-Suchanzeige.
         // Sammelt Phase, besten Zielwert der laufenden Phase, verstrichene
         // Zeit und Anzahl gefundener Lösungen; meldet gedrosselt an die UI.
@@ -5542,8 +5569,9 @@ namespace Stundenplan_V2
                 }
 
                 var solverA = new CpSolver();
+                int workerTeil = SolverWorkerAnzahl();
                 string paramsA =
-                    $"max_time_in_seconds:{zeitlimitSekunden} num_search_workers:8 random_seed:{randomSeed} log_search_progress:true";
+                    $"max_time_in_seconds:{zeitlimitSekunden} num_search_workers:{workerTeil} random_seed:{randomSeed} log_search_progress:true";
                 if (teilplanGapWst > 0)
                 {
                     // Absoluter Gap auf die (in Wochenstunden gemessene)
@@ -5560,6 +5588,7 @@ namespace Stundenplan_V2
                     log?.Invoke("  Teilplan: Phase-A-Gap = 0 (exakt, voller Optimalitätsbeweis).");
                 }
                 solverA.StringParameters = paramsA;
+                LogSolverKerne(log, workerTeil);
                 using (var regA = HängeAbbruchAn(solverA, abbruch))
                 {
                     var statusA = solverA.Solve(model);
@@ -5652,12 +5681,14 @@ namespace Stundenplan_V2
             // Hebel 1: Gap-Limit – Optimalitätsbeweis abbrechen, sobald die
             // Lücke klein genug ist. InvariantCulture erzwingt den Dezimalpunkt,
             // den CP-SAT beim Parsen erwartet (nicht das deutsche Komma).
+            int workerHaupt = SolverWorkerAnzahl();
             string schnellParams =
-                $"max_time_in_seconds:{zeitlimitSekunden} num_search_workers:8 random_seed:{randomSeed} log_search_progress:true";
+                $"max_time_in_seconds:{zeitlimitSekunden} num_search_workers:{workerHaupt} random_seed:{randomSeed} log_search_progress:true";
             if (_schnell != null)
                 schnellParams += " relative_gap_limit:" +
                     _schnell.RelativeGapLimit.ToString(System.Globalization.CultureInfo.InvariantCulture);
             solver.StringParameters = schnellParams;
+            LogSolverKerne(log, workerHaupt);
 
             // Harter Abbruch-Hebel: StopSearch() wird direkt beim Cancel
             // ausgelöst und nicht erst, wenn CP-SAT die nächste Zwischenlösung
@@ -6220,7 +6251,7 @@ namespace Stundenplan_V2
             if (_schnell != null && maxLösungen > 1)
             {
                 solver.StringParameters =
-                    $"max_time_in_seconds:{zeitlimitSekunden} num_search_workers:8 random_seed:{randomSeed} log_search_progress:true" +
+                    $"max_time_in_seconds:{zeitlimitSekunden} num_search_workers:{workerHaupt} random_seed:{randomSeed} log_search_progress:true" +
                     " relative_gap_limit:" +
                     _schnell.Phase2RelativeGapLimit.ToString(System.Globalization.CultureInfo.InvariantCulture);
             }
