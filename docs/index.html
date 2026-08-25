@@ -26,10 +26,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Stundenplan-Generator – Stundenplan-Software für Schulen, Untis-kompatibel</title>
-<meta name="description" content="Kostenlose Stundenplan-Software für Gymnasien: automatische Stundenplanerstellung mit echtem Optimierungs-Solver, Untis-Import/-Export (GPU), Lehrer-Zeitwünschen und Oberstufen-Kursplänen (EF, Q1, Q2). Für Windows.">
+<meta name="description" content="Kostenlose Stundenplan-Software für allgemeinbildende Schulen (Gymnasium, Gesamtschule, Realschule): automatische Stundenplanerstellung mit echtem Optimierungs-Solver, Untis-Import/-Export (GPU), Lehrer-Zeitwünschen und Oberstufen-Kursplänen. Für Windows.">
 <link rel="canonical" href="https://schulsoftware-ki.github.io/Stundenplanprogramm/">
 <meta name="google-site-verification" content="Ut1bomk6H1PKMaTCteryl9UNB08gkcYNLT08MfA1E-0" />
-<meta name="keywords" content="Stundenplan erstellen Software, Stundenplanprogramm Schule, Untis Alternative kostenlos, GPU importieren, automatische Stundenplanerstellung, Stundenplan Oberstufe, Stundenplan optimieren">
+<meta name="keywords" content="Stundenplan erstellen Software, Stundenplanprogramm Schule, Untis Alternative kostenlos, GPU importieren, automatische Stundenplanerstellung, Stundenplan Oberstufe, Stundenplan optimieren, Stundenplan Gymnasium, Stundenplan Gesamtschule, Stundenplan Realschule">
 
 <!-- Open Graph / Vorschaukarten -->
 <meta property="og:type" content="website">
@@ -367,7 +367,7 @@
 <section class="hero">
   <div class="wrap hero-grid">
     <div>
-      <p class="eyebrow">Für Gymnasien · Windows · Open Source</p>
+      <p class="eyebrow">Für Sek I und Sek II an allgemeinbildenden Schulen · Windows · Open Source</p>
       <h1>Der Stundenplan, der sich <span class="hl">wirklich selbst</span> optimiert.<span class="h1-sub">Kein Scrollen mehr durch Hunderte Pläne notwendig.</span></h1>
       <p class="lede">Automatische Stundenplanerstellung mit echtem Optimierungs-Solver – liest und schreibt Untis-Dateien und kann ALLE Anforderungen – z. B. das Vermeiden von Dreifach-Hohlstunden oder eine gleichmäßige Fächerverteilung – nicht nur bestrafen, sondern in der Lösung erzwingen.</p>
       <div class="cta-row">
@@ -430,29 +430,9 @@
   <div class="wrap">
     <div class="cards">
       <div class="card">
-        <div class="ic">🔁</div>
-        <h3>Vollständig Untis-kompatibel (GPU)</h3>
-        <p>Liest und schreibt echte Untis-GPU-Dateien über eigene Im- und Exportfunktionen. Bestehende Daten übernehmen, optimieren und im selben Format zurückgeben – kein doppeltes Erfassen.</p>
-      </div>
-      <div class="card">
         <div class="ic">⚡</div>
         <h3>Schneller Solver (Google OR-Tools)</h3>
         <p>Ein echter Constraint-Solver verteilt alle Unterrichte konfliktfrei. Der schnelle Modus mit Greedy-Hint liefert auch bei großen Plänen früh ein brauchbares Ergebnis. Der Solver nutzt dabei alle verfügbaren Prozessorkerne parallel.</p>
-      </div>
-      <div class="card">
-        <div class="ic">🧩</div>
-        <h3>Teilplan-Modus</h3>
-        <p>Lässt sich nicht alles gemeinsam unterbringen, verplant der Teilplan-Modus möglichst viele Unterrichte fehlerfrei und lässt nur die unvermeidbaren fallen – statt einer bloßen Unlösbar-Meldung. Was verplant wird, ist garantiert konfliktfrei.</p>
-      </div>
-      <div class="card">
-        <div class="ic">🔍</div>
-        <h3>Ursachensuche bei Unlösbarkeit</h3>
-        <p>Meldet der Solver, dass kein Plan möglich ist, sucht er die Ursache automatisch: Er testet stufenweise – Räume, Fach/Klasse/Tag, Doppelstunden, freie Tage – und nennt die verantwortliche Regel bzw. die betroffene Lehrkraft oder Klasse.</p>
-      </div>
-      <div class="card">
-        <div class="ic">🔀</div>
-        <h3>Lehrertausch</h3>
-        <p>Lehrertausch-Funktion! Über die von dir gesetzten Tauschbarkeitskennzeichen (LTKZ) legst du fest, welche Lehrkräfte gegeneinander tauschbar sind; daraus trifft der Solver eine möglichst aussichtsreiche Vorauswahl, indem er die Täusche mit den wenigsten Konflikten favorisiert.</p>
       </div>
       <div class="card">
         <div class="ic">🎚️</div>
@@ -460,14 +440,49 @@
         <p>Hohlstunden, Stundenfolge, Stunden pro Tag, Doppel-/Dreifach-Hohlstunden, freie Tage und Bad Units lassen sich je Lehrkraft in den Stammdaten (StD) einzeln als harte Regel schalten – statt sie nur zu bestrafen. So spielst du die Stärke des OR-Tools-Solvers voll aus.</p>
       </div>
       <div class="card">
-        <div class="ic">🚫</div>
-        <h3>Bad-Units-Handling</h3>
-        <p>Späte, pädagogisch ungünstige Einheiten – „Bad Units" – werden erkannt, bewertet und lassen sich je Lehrkraft hart sperren.</p>
+        <div class="ic">🔀</div>
+        <h3>Lehrertausch</h3>
+        <p>Lehrertausch-Funktion! Über die von dir gesetzten Tauschbarkeitskennzeichen (LTKZ) legst du fest, welche Lehrkräfte gegeneinander tauschbar sind; daraus trifft der Solver eine möglichst aussichtsreiche Vorauswahl, indem er die Täusche mit den wenigsten Konflikten favorisiert.</p>
+      </div>
+      <div class="card">
+        <div class="ic">🔍</div>
+        <h3>Ursachensuche bei Unlösbarkeit</h3>
+        <p>Meldet der Solver, dass kein Plan möglich ist, sucht er die Ursache automatisch: Er testet stufenweise – Räume, Fach/Klasse/Tag, Doppelstunden, freie Tage – und nennt die verantwortliche Regel bzw. die betroffene Lehrkraft oder Klasse.</p>
+      </div>
+      <div class="card">
+        <div class="ic">📊</div>
+        <h3>Plan bewerten & prüfen</h3>
+        <p>Jeder Plan bekommt eine nachvollziehbare Bewertung, und der Prüfmodus listet alle Verletzungen auf – volle Kontrolle statt Blackbox.</p>
+      </div>
+      <div class="card">
+        <div class="ic">🖱️</div>
+        <h3>Interaktiver Plan-Editor</h3>
+        <p>Fertige Pläne per Hand nachjustieren, mit Parallelanzeige und sofortiger Prüfung auf Regelverletzungen. Ein übersichtlicher Vergleichsmodus stellt zwei Pläne direkt gegenüber.</p>
+      </div>
+      <div class="card">
+        <div class="ic">🎼</div>
+        <h3>Klassenübergreifende Differenzierungsbänder</h3>
+        <p>Bündelt Fächer mehrerer Klassen zu gemeinsamen Bändern – etwa Wahlpflicht-, Religions-/Ethik- oder Kursbänder mit frei wählbaren Fächerkombinationen. Der Solver legt alle beteiligten Gruppen zeitgleich, sodass Schülerinnen und Schüler klassenübergreifend wechseln können und der Plan trotzdem konfliktfrei bleibt.</p>
+      </div>
+      <div class="card">
+        <div class="ic">🔁</div>
+        <h3>Vollständig Untis-kompatibel (GPU)</h3>
+        <p>Liest und schreibt echte Untis-GPU-Dateien über eigene Im- und Exportfunktionen. Bestehende Daten übernehmen, optimieren und im selben Format zurückgeben – kein doppeltes Erfassen.</p>
+      </div>
+      <div class="card">
+        <div class="ic">🧩</div>
+        <h3>Teilplan-Modus</h3>
+        <p>Lässt sich nicht alles gemeinsam unterbringen, verplant der Teilplan-Modus möglichst viele Unterrichte fehlerfrei und lässt nur die unvermeidbaren fallen – statt einer bloßen Unlösbar-Meldung. Was verplant wird, ist garantiert konfliktfrei.</p>
       </div>
       <div class="card">
         <div class="ic">🕘</div>
         <h3>Lehrer-Zeitwünsche berücksichtigen</h3>
         <p>Freie Tage, gesperrte Stunden und Wunschzeiten werden eingelesen und beim Planen entweder zwingend eingehalten oder per Qualitätsfunktion bestraft. Zeitwünsche lassen sich in Untis im- und exportieren.</p>
+      </div>
+      <div class="card">
+        <div class="ic">🚫</div>
+        <h3>Bad-Units-Handling</h3>
+        <p>Späte, pädagogisch ungünstige Einheiten – „Bad Units" – werden erkannt, bewertet und lassen sich je Lehrkraft hart sperren.</p>
       </div>
       <div class="card">
         <div class="ic">✏️</div>
@@ -480,19 +495,9 @@
         <p>Einzelne Unterrichte festnageln oder von der Planung ausnehmen. Der Solver arbeitet um die Fixierungen herum und behält sie bei.</p>
       </div>
       <div class="card">
-        <div class="ic">🖱️</div>
-        <h3>Interaktiver Plan-Editor</h3>
-        <p>Fertige Pläne per Hand nachjustieren, mit Parallelanzeige und sofortiger Prüfung auf Regelverletzungen.</p>
-      </div>
-      <div class="card">
-        <div class="ic">📊</div>
-        <h3>Plan bewerten & prüfen</h3>
-        <p>Jeder Plan bekommt eine nachvollziehbare Bewertung, und der Prüfmodus listet alle Verletzungen auf – volle Kontrolle statt Blackbox.</p>
-      </div>
-      <div class="card">
         <div class="ic">🙋</div>
         <h3>Vertretungsreserven (NuHos)</h3>
-        <p>Bewertet, wie gut ein Plan Vertretungsreserven über die Woche verteilt: nutzbare Hohlstunden vertretungsbereiter Lehrkräfte in den Stunden 2–5. Über einen Sollwert je Zeitslot lässt sich auf eine gleichmäßige Reserve hin planen; ein NuHo-Übersichtsplan zeigt sie je Tag und Stunde.</p>
+        <p>Bewertet, wie gut ein Plan Vertretungsreserven über die Woche verteilt: nutzbare Hohlstunden („NuHos") vertretungsbereiter Lehrkräfte in den Stunden 2–5. Über einen Sollwert je Zeitslot lässt sich auf eine gleichmäßige Reserve hin planen; ein NuHo-Übersichtsplan zeigt sie je Tag und Stunde.</p>
       </div>
     </div>
   </div>
