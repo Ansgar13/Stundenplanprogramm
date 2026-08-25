@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sitzplan-Optimierer – automatische Sitzpläne für Schulklassen</title>
+<meta name="description" content="Windows-Programm, das aus Schülerdaten, Wünschen und Raumvorgaben automatisch bewertete Sitzpläne erstellt.">
+<style>
+  :root{
+    --navy:#1b2a4a;
+    --navy-2:#22345c;
+    --steel:#2e5a8a;
+    --seat:#dce7f3;
+    --seat-line:#b9cde6;
+    --paper:#f4f6fa;
+    --ink:#1d2733;
+    --ink-soft:#5a6675;
+    --line:#dde3ec;
+    --green:#2e8b57;
+    --green-dark:#256f46;
+    --red:#c0392b;
+    --card:#ffffff;
+    --radius:10px;
+    --maxw:1080px;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0;
+    font-family:"Segoe UI","Segoe UI Web (West European)",Roboto,-apple-system,BlinkMacSystemFont,Arial,sans-serif;
+    color:var(--ink);
+    background:var(--paper);
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--steel);}
+  h1,h2,h3{line-height:1.2;margin:0;font-weight:600;letter-spacing:-0.01em;}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px;}
+
+  /* ── Kopf / Blackboard-Leiste ── */
+  .topbar{
+    background:var(--navy);
+    color:#fff;
+    padding:14px 0;
+    border-bottom:3px solid var(--steel);
+  }
+  .topbar .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+  .brand{display:flex;align-items:center;gap:12px;font-weight:600;font-size:1.05rem;}
+  .brand .mark{
+    width:26px;height:26px;border-radius:6px;flex:0 0 auto;
+    background:linear-gradient(180deg,#3f6aa5,#22345c);
+    border:1px solid #4a75b0;
+  }
+  .topnav a{color:#c9d6ea;text-decoration:none;margin-left:22px;font-size:.95rem;}
+  .topnav a:hover{color:#fff;}
+
+  /* ── Hero ── */
+  .hero{padding:64px 0 40px;}
+  .hero .wrap{display:grid;grid-template-columns:1.1fr .9fr;gap:48px;align-items:center;}
+  .eyebrow{
+    text-transform:uppercase;letter-spacing:.14em;font-size:.72rem;font-weight:600;
+    color:var(--steel);margin-bottom:14px;
+  }
+  .hero h1{font-size:2.5rem;margin-bottom:16px;}
+  .hero p.lead{font-size:1.12rem;color:var(--ink-soft);margin:0 0 28px;max-width:34ch;}
+  .cta-row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;}
+  .btn{
+    display:inline-flex;align-items:center;gap:9px;
+    padding:12px 20px;border-radius:8px;font-size:.98rem;font-weight:600;
+    text-decoration:none;border:1px solid transparent;transition:background .15s,transform .05s;
+  }
+  .btn:active{transform:translateY(1px);}
+  .btn-primary{background:var(--green);color:#fff;}
+  .btn-primary:hover{background:var(--green-dark);}
+  .btn-secondary{background:#fff;color:var(--navy);border-color:var(--line);}
+  .btn-secondary:hover{border-color:var(--steel);}
+  .btn .ic{font-size:1.05rem;line-height:1;}
+  .platform-note{font-size:.82rem;color:var(--ink-soft);margin-top:14px;}
+
+  /* ── Hero-Signatur: stilisierter Sitzplan ── */
+  .plan{
+    background:#fff;border:1px solid var(--line);border-radius:var(--radius);
+    padding:16px;box-shadow:0 12px 30px rgba(27,42,74,.08);
+  }
+  .plan .board{
+    background:var(--navy);color:#fff;text-align:center;font-size:.62rem;font-weight:600;
+    letter-spacing:.16em;padding:6px;border-radius:5px;margin-bottom:14px;
+  }
+  .plan .tables{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+  .plan .table{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+  .seat{
+    background:var(--seat);border:1px solid var(--seat-line);border-radius:6px;
+    height:34px;display:flex;align-items:center;justify-content:center;
+    font-size:.62rem;color:var(--steel);font-weight:600;
+  }
+  .seat.free{background:#f5f7fa;color:#aeb8c6;border-style:dashed;}
+  .seat.warn{background:#f9dcd8;border-color:var(--red);color:var(--red);}
+
+  /* ── Sektionen ── */
+  section{padding:56px 0;border-top:1px solid var(--line);}
+  .section-head{max-width:60ch;margin-bottom:36px;}
+  .section-head .eyebrow{margin-bottom:10px;}
+  .section-head h2{font-size:1.7rem;margin-bottom:10px;}
+  .section-head p{color:var(--ink-soft);margin:0;}
+
+  /* ── Funktionen ── */
+  .features{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;}
+  .feature{
+    background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    padding:22px;
+  }
+  .feature h3{font-size:1.05rem;margin-bottom:8px;color:var(--navy);}
+  .feature p{margin:0;color:var(--ink-soft);font-size:.94rem;}
+  .feature .tag{
+    display:inline-block;font-size:.66rem;font-weight:600;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--steel);background:#eaf1f9;
+    border-radius:5px;padding:3px 8px;margin-bottom:12px;
+  }
+
+  /* ── Screenshots ── */
+  .shots{display:grid;grid-template-columns:1fr 1fr;gap:28px;}
+  figure.shot{margin:0;background:#fff;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;}
+  figure.shot img{display:block;width:100%;height:auto;border-bottom:1px solid var(--line);background:#eef2f7;}
+  figure.shot figcaption{padding:14px 16px;}
+  figure.shot figcaption b{display:block;color:var(--navy);font-weight:600;margin-bottom:2px;font-size:.98rem;}
+  figure.shot figcaption span{color:var(--ink-soft);font-size:.88rem;}
+  figure.shot.wide{grid-column:1 / -1;}
+
+  /* ── Installation ── */
+  .install{display:grid;grid-template-columns:1.2fr .8fr;gap:36px;align-items:start;}
+  .steps{counter-reset:step;list-style:none;padding:0;margin:0;}
+  .steps li{position:relative;padding:0 0 18px 46px;color:var(--ink-soft);}
+  .steps li::before{
+    counter-increment:step;content:counter(step);
+    position:absolute;left:0;top:-2px;width:30px;height:30px;border-radius:50%;
+    background:var(--navy);color:#fff;font-weight:600;font-size:.9rem;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .steps li b{color:var(--ink);}
+  .req{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:22px;}
+  .req h3{font-size:1rem;color:var(--navy);margin-bottom:12px;}
+  .req dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:8px 14px;font-size:.92rem;}
+  .req dt{color:var(--ink-soft);}
+  .req dd{margin:0;font-weight:600;}
+
+  /* ── Fuß ── */
+  footer{background:var(--navy);color:#c9d6ea;padding:32px 0;font-size:.9rem;}
+  footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;}
+  footer a{color:#fff;}
+
+  /* ── Responsiv ── */
+  @media (max-width:860px){
+    .hero .wrap{grid-template-columns:1fr;gap:32px;}
+    .hero h1{font-size:2rem;}
+    .features{grid-template-columns:1fr 1fr;}
+    .shots{grid-template-columns:1fr;}
+    figure.shot.wide{grid-column:auto;}
+    .install{grid-template-columns:1fr;}
+    .topnav{display:none;}
+  }
+  @media (max-width:520px){
+    .features{grid-template-columns:1fr;}
+    .hero h1{font-size:1.7rem;}
+  }
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto;}}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <div class="brand"><span class="mark"></span>Sitzplan-Optimierer</div>
+    <nav class="topnav">
+      <a href="#funktionen">Funktionen</a>
+      <a href="#einblicke">Einblicke</a>
+      <a href="#installation">Installation</a>
+      <a href="https://github.com/schulsoftware-KI/SitzplanApp">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ── Hero ── -->
+<div class="hero">
+  <div class="wrap">
+    <div>
+      <div class="eyebrow">Windows-Desktop-Programm für Lehrkräfte</div>
+      <h1>Sitzpläne, die Wünsche, Regeln und den Raum berücksichtigen.</h1>
+      <p class="lead">Aus Schülerdaten, Sitzwünschen und dem Raumplan erstellt das Programm automatisch mehrere bewertete Sitzpläne – und lässt sich danach von Hand nachjustieren.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/schulsoftware-KI/SitzplanApp/releases/download/Sitzplan/SitzplanApp.exe">
+          <span class="ic">↓</span> Programm herunterladen (.exe)
+        </a>
+        <a class="btn btn-secondary" href="Sitzplan_Kurzanleitung.docx">
+          <span class="ic">📄</span> Kurzanleitung (Word)
+        </a>
+      </div>
+      <p class="platform-note">Für Windows 10/11 · eigenständige Datei, keine Installation nötig.</p>
+    </div>
+
+    <!-- Signatur: stilisierter Sitzplan, angelehnt an die Programmoberfläche -->
+    <div class="plan" aria-hidden="true">
+      <div class="board">TAFEL / VORNE</div>
+      <div class="tables">
+        <div class="table">
+          <div class="seat">1</div><div class="seat">2</div>
+          <div class="seat">3</div><div class="seat">4</div>
+        </div>
+        <div class="table">
+          <div class="seat">1</div><div class="seat">2</div>
+          <div class="seat">3</div><div class="seat">4</div>
+        </div>
+        <div class="table">
+          <div class="seat warn">!</div><div class="seat">2</div>
+          <div class="seat free">frei</div><div class="seat">4</div>
+        </div>
+        <div class="table">
+          <div class="seat">1</div><div class="seat">2</div>
+          <div class="seat">3</div><div class="seat free">frei</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Funktionen ── -->
+<section id="funktionen">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Was das Programm kann</div>
+      <h2>Von den Schülerdaten bis zum fertigen Plan</h2>
+      <p>Alle Vorgaben werden erfasst und in eine mathematische Optimierung übersetzt. Zwingende Regeln werden eingehalten, weiche Wünsche so gut wie möglich erfüllt.</p>
+    </div>
+    <div class="features">
+      <div class="feature">
+        <span class="tag">Schüler</span>
+        <h3>Merkmale erfassen</h3>
+        <p>Geschlecht, Sehschwäche, Linkshändigkeit und freie Notizen je Schülerin oder Schüler.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">Wünsche</span>
+        <h3>Neben / nicht neben</h3>
+        <p>Bis zu zwei Partnerwünsche pro Richtung, jeweils mit Priorität 1 bis 3 – von „wenn möglich“ bis „zwingend“.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">Fixierung</span>
+        <h3>Plätze festlegen</h3>
+        <p>Einen Schüler an einen konkreten Platz oder an eine ganze Tischgruppe binden.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">Verbote</span>
+        <h3>Plätze sperren</h3>
+        <p>Einzelne Plätze oder komplette Tischgruppen für bestimmte Schüler ausschließen.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">Raumplan</span>
+        <h3>Tische anordnen</h3>
+        <p>Tischgruppen frei platzieren, Sitzplätze und Ausrichtung einstellen – so entstehen echte Abstände im Raum.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">Optimierung</span>
+        <h3>Drei Vorschläge</h3>
+        <p>Der Solver erzeugt drei bewertete Lösungen und berücksichtigt dabei auch Sehschwäche vorn und Geschlechterverteilung.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">Diagnose</span>
+        <h3>Lösungen vergleichen</h3>
+        <p>Score, erfüllte Prioritäten und Warnungen aller Lösungen in einer Übersicht gegenübergestellt.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">Excel</span>
+        <h3>Import und Export</h3>
+        <p>Klassenlisten und Wünsche aus Excel einlesen und fertige Pläne wieder als Datei ausgeben.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">Nachbearbeiten</span>
+        <h3>Von Hand anpassen</h3>
+        <p>Schüler per Ziehen umsetzen und mit „Prüfen“ neu bewerten lassen.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Screenshots ── -->
+<section id="einblicke">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Einblicke</div>
+      <h2>Die Oberfläche</h2>
+      <p>Fünf Ansichten aus dem Programm.</p>
+    </div>
+    <div class="shots">
+      <figure class="shot wide">
+        <img src="screenshot-loesung.png" alt="Bewerteter Sitzplan mit Warnhinweis über eine verletzte Prio-3-Regel">
+        <figcaption>
+          <b>Lösung mit Bewertung</b>
+          <span>Fertiger Sitzplan mit Score, Warnungen und farblich markierten Regelverletzungen.</span>
+        </figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="screenshot-raumplan.png" alt="Raumplan-Editor mit Tischgruppen und geöffnetem Bearbeiten-Fenster">
+        <figcaption>
+          <b>Raumplan</b>
+          <span>Tischgruppen anordnen, Sitzplätze und Ausrichtung je Tisch einstellen.</span>
+        </figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="screenshot-fixierung.png" alt="Fixierungs-Ansicht mit Schülerliste und Sitzplatzraster">
+        <figcaption>
+          <b>Fixierung</b>
+          <span>Schüler an einen Platz oder an eine ganze Tischgruppe binden.</span>
+        </figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="screenshot-diagnose.png" alt="Tabelle mit dem Vergleich der drei Lösungen nach mehreren Kriterien">
+        <figcaption>
+          <b>Diagnose</b>
+          <span>Alle Lösungen nach Score, Prioritäten und Warnungen im direkten Vergleich.</span>
+        </figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="screenshot-wuensche.png" alt="Dialog zur Auswahl von Nicht-neben-Wünschen mit Prioritäten">
+        <figcaption>
+          <b>Wünsche wählen</b>
+          <span>Partnerwünsche festlegen und je Name eine Priorität vergeben.</span>
+        </figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ── Installation ── -->
+<section id="installation">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Loslegen</div>
+      <h2>Installation</h2>
+      <p>Herunterladen, starten – fertig. Es ist keine Einrichtung erforderlich.</p>
+    </div>
+    <div class="install">
+      <ol class="steps">
+        <li><b>Datei herunterladen.</b> Auf „Programm herunterladen“ klicken und die <b>SitzplanApp.exe</b> speichern.</li>
+        <li><b>Windows-Hinweis bestätigen.</b> Beim ersten Start kann eine Warnung des SmartScreen-Filters erscheinen – über „Weitere Informationen“ und „Trotzdem ausführen“ starten.</li>
+        <li><b>Klassenliste laden.</b> Im Programm oben rechts „Excel laden“ wählen, um mit den Schülerdaten zu beginnen.</li>
+        <li><b>Optimieren.</b> „Neuoptimierung“ starten und aus den drei Vorschlägen wählen.</li>
+      </ol>
+      <div class="req">
+        <h3>Systemvoraussetzungen</h3>
+        <dl>
+          <dt>System</dt><dd>Windows 10 oder 11 (64-Bit)</dd>
+          <dt>Installation</dt><dd>keine – einzelne .exe</dd>
+          <dt>Internet</dt><dd>nicht erforderlich</dd>
+          <dt>Dateien</dt><dd>Excel-Import und -Export</dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>Sitzplan-Optimierer · Sitzpläne für Schulklassen</span>
+    <span><a href="https://github.com/schulsoftware-KI/SitzplanApp">Projekt auf GitHub</a></span>
+  </div>
+</footer>
+
+<!-- Besucherzählung (GoatCounter) -->
+<script data-goatcounter="https://stundenplan.goatcounter.com/count"
+        async src="//gc.zgo.at/count.js"></script>
+
+</body>
+</html>
