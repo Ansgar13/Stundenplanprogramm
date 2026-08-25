@@ -460,6 +460,11 @@
         <p>Fertige Pläne per Hand nachjustieren, mit Parallelanzeige und sofortiger Prüfung auf Regelverletzungen. Ein übersichtlicher Vergleichsmodus stellt zwei Pläne direkt gegenüber.</p>
       </div>
       <div class="card">
+        <div class="ic">🛡️</div>
+        <h3>Datensicherheit – rein lokal</h3>
+        <p>Der Solver rechnet vollständig auf deinem Rechner – ohne Internetverbindung, ohne Cloud, ohne Konto. Lehrer-, Klassen- und Stundendaten verlassen den PC nie. Ideal für den datenschutzsensiblen Schulbetrieb.</p>
+      </div>
+      <div class="card">
         <div class="ic">🎼</div>
         <h3>Klassenübergreifende Differenzierungsbänder</h3>
         <p>Bündelt Fächer mehrerer Klassen zu gemeinsamen Bändern – etwa Wahlpflicht-, Religions-/Ethik- oder Kursbänder mit frei wählbaren Fächerkombinationen. Der Solver legt alle beteiligten Gruppen zeitgleich, sodass Schülerinnen und Schüler klassenübergreifend wechseln können und der Plan trotzdem konfliktfrei bleibt.</p>
@@ -659,8 +664,9 @@
   <div class="wrap">
     <div class="download">
       <p class="eyebrow" style="justify-content:center;">Download</p>
-      <h2>Jetzt kostenlos ausprobieren.</h2>
+      <h2>Kostenlos nutzen.</h2>
       <p>Exe-Datei herunterladen, starten. Keine Anmeldung, keine Lizenzgebühr.</p>
+      <p style="margin-top:10px;color:var(--primary);font-weight:600;">🔒 Datensicherheit: Der Solver läuft rein lokal – ganz ohne Internetverbindung.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="https://github.com/schulsoftware-KI/Stundenplanprogramm/releases/tag/V48" target="_blank" rel="noopener">
           Neueste Version herunterladen
@@ -679,6 +685,7 @@
         <span>Windows 10 / 11</span>
         <span>keine .NET-Installation nötig</span>
         <span>.exe direkt starten</span>
+        <span>läuft komplett offline</span>
       </div>
       <p style="margin-top:22px;color:var(--ink-soft);font-size:.95rem;">
         Das vollständige Benutzerhandbuch (Excel-Aufbau, alle 21 Funktionen, PM-Parameter und Fehlerbehebung) gibt es
@@ -709,6 +716,10 @@
       <details>
         <summary>Läuft das Programm auf dem Mac?</summary>
         <div class="a">Die Software ist eine Windows-Anwendung (WPF) und läuft unter Windows 10 oder 11 – eine separate .NET-Installation ist nicht nötig. Auf dem Mac lässt sie sich nur über eine Windows-Umgebung (z. B. Parallels oder Boot Camp) betreiben.</div>
+      </details>
+      <details>
+        <summary>Werden meine Daten hochgeladen?</summary>
+        <div class="a">Nein, alles bleibt lokal auf deinem Rechner. Der Solver rechnet vollständig offline – ohne Internetverbindung, ohne Cloud und ohne Konto. Lehrer-, Klassen- und Stundendaten verlassen den PC nicht. Das ist gerade im datenschutzsensiblen Schulbetrieb ein wichtiger Vorteil.</div>
       </details>
       <details>
         <summary>Wie werden die Zeitwünsche der Lehrkräfte berücksichtigt?</summary>
@@ -814,6 +825,7 @@
     {"@type":"Question","name":"Warum nicht direkt den Untis-Planer benutzen?","acceptedAnswer":{"@type":"Answer","text":"Der automatische Planer von Untis arbeitet heuristisch: Er setzt die Stunden nach Faustregeln und nimmt die erste brauchbare Lösung, wodurch vermeidbare Hohl- und Randstunden bleiben. Dieses Programm nutzt einen echten Optimierungs-Solver (Google OR-Tools, CP-SAT), der den ganzen Plan als mathematisches Problem löst, die Qualität beweisen kann und so schnellere und nachweislich bessere Ergebnisse liefert."}},
     {"@type":"Question","name":"Kann ich meine bestehenden Untis-Daten (GPU) importieren?","acceptedAnswer":{"@type":"Answer","text":"Ja. Die Software liest das Untis-GPU-Format direkt ein und exportiert fertige Pläne wieder als GPU-Datei."}},
     {"@type":"Question","name":"Läuft das Programm auf dem Mac?","acceptedAnswer":{"@type":"Answer","text":"Es ist eine Windows-Anwendung und läuft unter Windows 10 oder 11 ohne separate .NET-Installation. Auf dem Mac nur über eine Windows-Umgebung."}},
+    {"@type":"Question","name":"Werden meine Daten hochgeladen?","acceptedAnswer":{"@type":"Answer","text":"Nein, alles bleibt lokal auf deinem Rechner. Der Solver rechnet vollständig offline – ohne Internetverbindung, ohne Cloud und ohne Konto. Lehrer-, Klassen- und Stundendaten verlassen den PC nicht, was gerade im datenschutzsensiblen Schulbetrieb ein wichtiger Vorteil ist."}},
     {"@type":"Question","name":"Wie werden die Zeitwünsche der Lehrkräfte berücksichtigt?","acceptedAnswer":{"@type":"Answer","text":"Freie Tage, gesperrte Stunden und Wunschzeiten werden eingelesen und vom Solver eingehalten; Zeitwünsche lassen sich zudem in Untis im- und exportieren."}},
     {"@type":"Question","name":"Eignet sich das Programm für die gymnasiale Oberstufe?","acceptedAnswer":{"@type":"Answer","text":"Ja – gerade in der Oberstufe mit mehreren Kursen desselben Fachs hilft die Lehrertausch-Funktion. Über die von dir gesetzten Tauschbarkeitskennzeichen (LTKZ) legst du fest, welche Lehrkräfte tauschbar sind; der Solver trifft daraus eine aussichtsreiche Vorauswahl und favorisiert die Tausche mit den wenigsten Konflikten."}},
     {"@type":"Question","name":"Was passiert, wenn sich mitten im Schuljahr etwas ändert?","acceptedAnswer":{"@type":"Answer","text":"Ein Solver-Modus für minimale Änderungen passt den bestehenden Plan an, ohne den ganzen Stundenplan umzuwerfen."}},
