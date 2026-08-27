@@ -2,6 +2,7 @@ using Google.OrTools.Sat;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 
 namespace Stundenplan_V2
 {
@@ -96,28 +97,122 @@ namespace Stundenplan_V2
         // CPU-KERNE / SOLVER-WORKER
         //
         // CP-SAT sucht mit mehreren parallelen Strategien (num_search_workers).
-        // Früher war dieser Wert fest auf 8 verdrahtet: auf schwächeren CPUs
-        // wurde damit überbucht (mehr Worker als Kerne), auf starken CPUs lagen
-        // Kerne brach. Hier koppeln wir die Worker-Zahl an die real verfügbaren
-        // logischen Prozessoren.
+        // Wir koppeln die Worker-Zahl an die PHYSISCHEN Kerne, nicht an die
+        // logischen Prozessoren: Bei Hyperthreading/SMT teilen sich zwei
+        // logische Prozessoren eine echte Recheneinheit. Für die rechenlastige
+        // Branch-and-Bound-Suche bringt SMT kaum Mehrleistung, erzeugt aber
+        // Cache-/Speicherbandbreiten-Druck — mehr Worker als physische Kerne
+        // beschleunigen den Lauf also meist nicht und können ihn sogar bremsen.
         //
-        // Environment.ProcessorCount liefert die logischen Prozessoren inkl.
-        // Hyperthreading/SMT — genau die Einheiten, über die CP-SAT seine
-        // Suchprozesse verteilt. Mindestens 1, damit auch auf exotischen
-        // Umgebungen immer ein Worker läuft.
+        // Environment.ProcessorCount liefert nur die LOGISCHEN Prozessoren.
+        // Die physische Kernzahl gibt es in .NET nicht plattformneutral; unter
+        // Windows liefert sie GetLogicalProcessorInformation (kein NuGet nötig).
         // =====================================================
         private static int SolverWorkerAnzahl()
-            => Math.Max(1, Environment.ProcessorCount);
+        {
+            int physisch = PhysischeKernAnzahl();
+            if (physisch >= 1)
+                return physisch;
+            // Fallback: Konnte die physische Kernzahl nicht ermittelt werden
+            // (Nicht-Windows, gekapselte Umgebung, WinAPI-Fehler), nutzen wir
+            // wie bisher die logischen Prozessoren — nie weniger als 1.
+            return Math.Max(1, Environment.ProcessorCount);
+        }
 
         // =====================================================
-        // Meldet beim Solverstart, wie viele logische Prozessoren die Maschine
-        // hat und wie viele davon der Solver tatsächlich als Suchprozesse nutzt.
+        // Meldet beim Solverstart die physische/logische Kernzahl und wie viele
+        // Kerne der Solver tatsächlich als Suchprozesse nutzt.
         // Erscheint in der Ausgabebox (log-Callback).
         // =====================================================
         private static void LogSolverKerne(Action<string> log, int workers)
-            => log?.Invoke(
-                $"  Solverstart: {Environment.ProcessorCount} logische Prozessoren verfügbar, " +
-                $"{workers} genutzt (num_search_workers).");
+        {
+            int logisch = Environment.ProcessorCount;
+            int physisch = PhysischeKernAnzahl();
+            string kernInfo = physisch > 0
+                ? $"{physisch} physische Kerne ({logisch} logische Prozessoren)"
+                : $"{logisch} logische Prozessoren (physische Kernzahl nicht ermittelbar)";
+            log?.Invoke($"  Solverstart: {kernInfo}, {workers} genutzt (num_search_workers).");
+        }
+
+        // =====================================================
+        // PHYSISCHE KERNZAHL (Windows).
+        //
+        // Zählt über GetLogicalProcessorInformation die Einträge mit
+        // Relationship == RelationProcessorCore — das ist exakt die Anzahl
+        // physischer Kerne (unabhängig von Hyperthreading). Gibt 0 zurück,
+        // wenn die Ermittlung nicht möglich ist; der Aufrufer nutzt dann den
+        // logischen Fallback. Wirft nie — ein CPU-Query darf den Lauf nie kippen.
+        // =====================================================
+        private static int PhysischeKernAnzahl()
+        {
+            try
+            {
+                uint länge = 0;
+                // 1. Aufruf: nur die benötigte Puffergröße ermitteln. Schlägt
+                //    erwartungsgemäß mit ERROR_INSUFFICIENT_BUFFER (122) fehl.
+                GetLogicalProcessorInformation(IntPtr.Zero, ref länge);
+                if (länge == 0)
+                    return 0;
+
+                IntPtr puffer = Marshal.AllocHGlobal((int)länge);
+                try
+                {
+                    if (!GetLogicalProcessorInformation(puffer, ref länge))
+                        return 0;
+
+                    int größe = Marshal.SizeOf<SYSTEM_LOGICAL_PROCESSOR_INFORMATION>();
+                    int anzahl = (int)(länge / größe);
+                    int kerne = 0;
+                    IntPtr ptr = puffer;
+                    for (int i = 0; i < anzahl; i++)
+                    {
+                        var info = Marshal.PtrToStructure<SYSTEM_LOGICAL_PROCESSOR_INFORMATION>(ptr);
+                        if (info.Relationship == RelationProcessorCore)
+                            kerne++;
+                        ptr += größe;
+                    }
+                    return kerne;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(puffer);
+                }
+            }
+            catch
+            {
+                // Kein Windows / WinAPI nicht verfügbar / Marshalling-Problem:
+                // stumm auf den logischen Fallback zurückfallen.
+                return 0;
+            }
+        }
+
+        private const int RelationProcessorCore = 0;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetLogicalProcessorInformation(
+            IntPtr buffer, ref uint returnLength);
+
+        // Union der SYSTEM_LOGICAL_PROCESSOR_INFORMATION. Für die reine Zählung
+        // brauchen wir den Inhalt nicht — nur die korrekte Gesamtgröße (16 Byte),
+        // damit die Schrittweite über den Puffer stimmt. Die beiden Reserved-
+        // ULONGLONGs sind das größte Member und bestimmen die Union-Größe.
+        [StructLayout(LayoutKind.Explicit)]
+        private struct PROCESSORINFO_UNION
+        {
+            [FieldOffset(0)] public byte Flags;        // ProcessorCore.Flags
+            [FieldOffset(0)] public uint NodeNumber;   // NumaNode.NodeNumber
+            [FieldOffset(0)] public ulong Reserved0;
+            [FieldOffset(8)] public ulong Reserved1;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SYSTEM_LOGICAL_PROCESSOR_INFORMATION
+        {
+            public UIntPtr ProcessorMask;
+            public int Relationship;   // LOGICAL_PROCESSOR_RELATIONSHIP
+            public PROCESSORINFO_UNION ProcessorInformation;
+        }
 
         // =====================================================
         // Fortschritts-Reporter für die Live-Suchanzeige.

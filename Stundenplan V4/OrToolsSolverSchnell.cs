@@ -28,6 +28,19 @@ public class OrToolsSolverSchnell : ISolver
         System.Threading.CancellationToken abbruch = default,
         Func<bool> darfDiagnose = null)
     {
+        // Gekoppelte Zwei-Phasen-Vorplanung (opt-in): erst die stark
+        // verkoppelten Unterrichte (UNr mit hohem Kopplungsgrad, z.B.
+        // Oberstufenschienen) vorplanen (mehrere diverse Anker), dann jeden
+        // Anker fixiert im Gesamtplan lösen und die beste Gesamtlösung
+        // zurückgeben. Der Orchestrator ruft dieselbe Engine wie unten, nur
+        // mehrfach und mit fixierten Kern-Unterrichten – die Engine selbst
+        // bleibt unverändert.
+        if (_optionen != null && _optionen.GekoppelteVorplanung)
+        {
+            return GekoppelteVorplanung.Solve(
+                input, _optionen, log, out debug, fortschritt, abbruch, darfDiagnose);
+        }
+
         return StundenplanEngine.Planen(
             input.ExcelPfad,
             input.Blocks,

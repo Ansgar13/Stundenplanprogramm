@@ -42,6 +42,13 @@ namespace Stundenplan_V2
             TxtMaxSpätFrüh.Text        = CapText(o.MaxSpätFrühGesamt);
             TxtMaxDoppelSelberTag.Text = CapText(o.MaxDoppelSelberTagGesamt);
             TxtMaxBadUnits.Text        = CapText(o.MaxBadUnitsGesamt);
+
+            ChkGekoppelt.IsChecked = o.GekoppelteVorplanung;
+            TxtMinGleicheUNr.Text  = o.MinGleicheUNr.ToString(CultureInfo.InvariantCulture);
+            TxtAnzahlAnker.Text    = o.AnzahlAnker.ToString(CultureInfo.InvariantCulture);
+            TxtAnkerAbstand.Text   = o.AnkerAbstandBloecke.ToString(CultureInfo.InvariantCulture);
+            ChkP1Limit.IsChecked   = o.Phase1EigenesZeitlimit;
+            TxtP1Limit.Text        = o.Phase1ZeitlimitSekunden.ToString(CultureInfo.InvariantCulture);
         }
 
         // Anteil (0..1) -> ganzzahlige Prozentanzeige, wenn möglich.
@@ -92,6 +99,19 @@ namespace Stundenplan_V2
             neu.MaxDoppelSelberTagGesamt = mDoppelTag;
             neu.MaxBadUnitsGesamt      = mBadUnits;
 
+            // --- Gekoppelte Vorplanung ---
+            if (!TryLesePositivInt(TxtMinGleicheUNr, "Kern ab … gleichen UNr", out int minGleich, mindest: 2)) return;
+            if (!TryLesePositivInt(TxtAnzahlAnker, "Anzahl Anker", out int anker, mindest: 1)) return;
+            if (!TryLesePositivInt(TxtAnkerAbstand, "Anker-Mindestabstand", out int abstand, mindest: 1)) return;
+            if (!TryLesePositivInt(TxtP1Limit, "Phase-1-Zeitlimit", out int p1limit, mindest: 1)) return;
+
+            neu.GekoppelteVorplanung = ChkGekoppelt.IsChecked == true;
+            neu.MinGleicheUNr        = minGleich;
+            neu.AnzahlAnker          = anker;
+            neu.AnkerAbstandBloecke  = abstand;
+            neu.Phase1EigenesZeitlimit  = ChkP1Limit.IsChecked == true;
+            neu.Phase1ZeitlimitSekunden = p1limit;
+
             Optionen = neu;
             DialogResult = true;
             Close();
@@ -124,6 +144,22 @@ namespace Stundenplan_V2
                 return false;
             }
             anteil = p / 100.0;
+            return true;
+        }
+
+        // Pflicht-Ganzzahl >= mindest (für Kopplungsgrad, Ankerzahl, Ankerabstand).
+        private bool TryLesePositivInt(TextBox box, string bezeichnung, out int wert, int mindest = 1)
+        {
+            wert = mindest;
+            string t = (box.Text ?? "").Trim();
+            if (!int.TryParse(t, NumberStyles.Integer, CultureInfo.InvariantCulture, out int v) || v < mindest)
+            {
+                MessageBox.Show($"'{bezeichnung}' muss eine ganze Zahl >= {mindest} sein.",
+                    "Fehler", MessageBoxButton.OK, MessageBoxImage.Warning);
+                box.Focus();
+                return false;
+            }
+            wert = v;
             return true;
         }
 

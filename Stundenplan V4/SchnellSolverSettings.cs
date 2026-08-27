@@ -33,6 +33,13 @@ namespace Stundenplan_V2
         private const string K_MaxSpaetFrueh  = "MaxSpaetFrueh";
         private const string K_MaxDoppelTag   = "MaxDoppelSelberTag";
         private const string K_MaxBadUnits    = "MaxBadUnits";
+        // Gekoppelte Vorplanung
+        private const string K_Gekoppelt      = "GekoppelteVorplanung";
+        private const string K_MinGleicheUNr  = "MinGleicheUNr";
+        private const string K_AnzahlAnker    = "AnzahlAnker";
+        private const string K_AnkerAbstand   = "AnkerAbstand";
+        private const string K_P1EigenLimit   = "Phase1EigenesZeitlimit";
+        private const string K_P1LimitSek     = "Phase1ZeitlimitSekunden";
 
         /// <summary>
         /// Lädt die Optionen aus der Datei. Liefert immer ein gültiges
@@ -105,6 +112,24 @@ namespace Stundenplan_V2
                         case var k when k == K_MaxBadUnits.ToLowerInvariant():
                             o.MaxBadUnitsGesamt = ParseCap(wert);
                             break;
+                        case var k when k == K_Gekoppelt.ToLowerInvariant():
+                            o.GekoppelteVorplanung = ParseBool(wert, o.GekoppelteVorplanung);
+                            break;
+                        case var k when k == K_MinGleicheUNr.ToLowerInvariant():
+                            { var v = ParseCap(wert); if (v.HasValue && v.Value >= 2) o.MinGleicheUNr = v.Value; }
+                            break;
+                        case var k when k == K_AnzahlAnker.ToLowerInvariant():
+                            { var v = ParseCap(wert); if (v.HasValue && v.Value >= 1) o.AnzahlAnker = v.Value; }
+                            break;
+                        case var k when k == K_AnkerAbstand.ToLowerInvariant():
+                            { var v = ParseCap(wert); if (v.HasValue && v.Value >= 1) o.AnkerAbstandBloecke = v.Value; }
+                            break;
+                        case var k when k == K_P1EigenLimit.ToLowerInvariant():
+                            o.Phase1EigenesZeitlimit = ParseBool(wert, o.Phase1EigenesZeitlimit);
+                            break;
+                        case var k when k == K_P1LimitSek.ToLowerInvariant():
+                            { var v = ParseCap(wert); if (v.HasValue && v.Value >= 1) o.Phase1ZeitlimitSekunden = v.Value; }
+                            break;
                     }
                 }
             }
@@ -171,6 +196,12 @@ namespace Stundenplan_V2
                 Zeile(K_MaxSpaetFrueh, Cap(o.MaxSpätFrühGesamt),      "leer = keine Kappung");
                 Zeile(K_MaxDoppelTag,  Cap(o.MaxDoppelSelberTagGesamt),"leer = keine Kappung");
                 Zeile(K_MaxBadUnits,   Cap(o.MaxBadUnitsGesamt),      "Bad Units (späte päd. Einheiten); leer = keine Kappung");
+                Zeile(K_Gekoppelt,   o.GekoppelteVorplanung ? "true" : "false", "Gekoppelte Zwei-Phasen-Vorplanung an/aus");
+                Zeile(K_MinGleicheUNr, o.MinGleicheUNr.ToString(CultureInfo.InvariantCulture), "Kern ab so vielen gleichen UNr (Kopplungsgrad, >= 2)");
+                Zeile(K_AnzahlAnker, o.AnzahlAnker.ToString(CultureInfo.InvariantCulture),        "Anzahl Phase-1-Anker (>= 1)");
+                Zeile(K_AnkerAbstand, o.AnkerAbstandBloecke.ToString(CultureInfo.InvariantCulture), "Mindest-Blockabstand der Anker (>= 1)");
+                Zeile(K_P1EigenLimit, o.Phase1EigenesZeitlimit ? "true" : "false", "Eigenes (kürzeres) Zeitlimit für Phase 1 an/aus");
+                Zeile(K_P1LimitSek,   o.Phase1ZeitlimitSekunden.ToString(CultureInfo.InvariantCulture), "Zeitlimit je Phase-1-Solve in Sekunden (>= 1)");
 
                 wb.Save();
                 return true;
