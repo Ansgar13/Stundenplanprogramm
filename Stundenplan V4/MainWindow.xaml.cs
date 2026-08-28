@@ -23,9 +23,15 @@ namespace Stundenplan_V2
         // weil der Dialog ein neues Optionen-Objekt zurückgibt.
         private SchnellSolverOptionen schnellOptionen = new SchnellSolverOptionen();
 
-        // Verhindert, dass das Setzen von ChkSchnellSolver.IsChecked WÄHREND des
-        // Ladens aus Excel gleich wieder ein Speichern auslöst (Rückkopplung).
-        private bool _schnellSettingsLaden = false;
+        // Ob der schnelle Solver für den nächsten Lauf gewählt ist (früher die
+        // Kopf-Checkbox "Schneller Solver"). Wird aus dem Sheet "Solver-Set"
+        // geladen und im Solverlauf-Dialog (Button 10) gesetzt.
+        private bool _schnellAktiv = false;
+
+        // Teilplan-Modus für den nächsten Lauf (früher Kopf-Checkbox "Teilplan")
+        // samt Phase-A-Gap in Wochenstunden (früher Textfeld). Nicht persistiert.
+        private bool _teilplanAktiv = false;
+        private int  _teilplanGapK  = 0;
 
         // label = "oT_1", "oT_2", "T_5+7_1" usw.
         // blocks = die für diese Lösung gültigen Blöcke (ggf. mit getauschten Lehrern)
@@ -821,13 +827,8 @@ namespace Stundenplan_V2
             try
             {
                 var geladen = SchnellSolverSettings.Lade(excelPfad, out bool aktiv, out bool gefunden);
-                _schnellSettingsLaden = true;
-                try
-                {
-                    schnellOptionen = geladen;
-                    if (ChkSchnellSolver != null) ChkSchnellSolver.IsChecked = aktiv;
-                }
-                finally { _schnellSettingsLaden = false; }
+                schnellOptionen = geladen;
+                _schnellAktiv = aktiv;
 
                 if (gefunden && zeigeWarnungen)
                     Log($"Schnellsolver-Optionen aus Sheet '{SchnellSolverSettings.SheetName}' geladen " +
@@ -872,46 +873,82 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
-        // BUTTON 3 – STUNDENPLANERSTELLUNG
+        // BUTTON 10 – SOLVERLAUF EINSTELLEN & STARTEN
         // =====================================================
-        // Öffnet den Optionen-Dialog des schnellen Solvers. Die gewählten Werte
-        // werden in schnellOptionen übernommen und beim nächsten Lauf verwendet.
-        private void BtnSchnellOptionen_Click(object sender, RoutedEventArgs e)
+        // Öffnet den zusammenfassenden Solverlauf-Dialog (Modus, Aufgabentyp,
+        // gemeinsame PM-Laufwerte, Schnellsolver-Optionen). Je nach Wahl im
+        // Dialog werden die Einstellungen nur gespeichert oder gespeichert UND
+        // der Lauf sofort gestartet.
+        private async void BtnSolverlauf_Click(object sender, RoutedEventArgs e)
         {
-            var dialog = new SchnellSolverDialog(schnellOptionen) { Owner = this };
-            if (dialog.ShowDialog() != true) return;
+            if (string.IsNullOrEmpty(excelPfad) || input == null)
+            {
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 1).");
+                return;
+            }
 
+            var dialog = new SolverlaufDialog(
+                excelPfad,
+                schnellOptionen, _schnellAktiv,
+                _teilplanAktiv, _teilplanGapK,
+                () => LadeExcelDatenNeu(zeigeWarnungen: false))
+            { Owner = this };
+
+            if (dialog.ShowDialog() != true) return; // Abbrechen
+
+            // Auswahl übernehmen.
             schnellOptionen = dialog.Optionen;
-            Log($"Schnellsolver-Optionen aktualisiert: Gap {schnellOptionen.RelativeGapLimit:P0}, " +
-                $"Phase-2-Gap {schnellOptionen.Phase2RelativeGapLimit:P0}, " +
-                $"Greedy-Hint {(schnellOptionen.GreedyStartHint ? "an" : "aus")}, " +
-                $"Kappungen {(schnellOptionen.HatCaps ? "gesetzt" : "keine")}.");
+            _schnellAktiv   = dialog.SchnellAktiv;
+            _teilplanAktiv  = dialog.TeilplanAktiv;
+            _teilplanGapK   = dialog.TeilplanGapK;
 
+            // Schnellsolver-Optionen + Aktiv-Flag ins Sheet "Solver-Set" schreiben.
             SpeichereSchnellSettings();
+
+            // Geänderte PM-Laufwerte (Zeitlimit, Lösungszahlen, Mindestabstand)
+            // in die Tabelle "PM" schreiben und die Excel-Daten neu einlesen,
+            // damit der Lauf sie sofort verwendet.
+            if (dialog.PmGeaendert && dialog.PmWerte != null)
+            {
+                if (PmLaufwerte.Speichere(excelPfad, dialog.PmWerte, out string pmFehler))
+                {
+                    LadeExcelDatenNeu(zeigeWarnungen: false);
+                    Log("PM-Laufwerte (Zeitlimit/Lösungszahlen/Mindestabstand) gespeichert und Excel-Daten neu eingelesen.");
+                }
+                else
+                {
+                    // Nicht persistierbar (z.B. Datei in Excel geöffnet): für DIESEN
+                    // Lauf wenigstens im Speicher anwenden, damit die Wahl greift.
+                    input.ZeitlimitSekunden             = dialog.PmWerte.ZeitlimitSekunden;
+                    input.AnzahlLösungenOhneTausch      = dialog.PmWerte.AnzahlOhneTausch;
+                    input.AnzahlLösungenMitTausch       = dialog.PmWerte.AnzahlMitTausch;
+                    input.MindestAbstandLösungenBloecke = dialog.PmWerte.MindestAbstandBloecke;
+                    Log($"Hinweis: PM-Laufwerte konnten nicht gespeichert werden ({pmFehler}). " +
+                        "Sie gelten nur für diesen Lauf.");
+                }
+            }
+
+            if (dialog.Ergebnis == SolverlaufErgebnis.Starten)
+                await FuehreSolverlaufAus();
         }
 
-        // Checkbox "Schneller Solver" an/aus -> Zustand mitpersistieren.
-        // Wird beim Laden aus Excel unterdrückt (Guard), um Rückkopplung zu
-        // vermeiden.
-        private void ChkSchnellSolver_Changed(object sender, RoutedEventArgs e)
-        {
-            if (_schnellSettingsLaden) return;
-            SpeichereSchnellSettings();
-        }
-
-        // Schreibt die aktuellen Optionen samt Checkbox-Zustand in das Sheet
-        // "Solver-Set". Ohne geladene Datei stillschweigend nichts tun.
+        // Schreibt die aktuellen Schnellsolver-Optionen samt Aktiv-Flag in das
+        // Sheet "Solver-Set". Ohne geladene Datei stillschweigend nichts tun.
         private void SpeichereSchnellSettings()
         {
             if (string.IsNullOrEmpty(excelPfad)) return;
-            bool aktiv = ChkSchnellSolver?.IsChecked == true;
-            if (SchnellSolverSettings.Speichere(excelPfad, schnellOptionen, aktiv, out string fehler))
+            if (SchnellSolverSettings.Speichere(excelPfad, schnellOptionen, _schnellAktiv, out string fehler))
                 Log($"Schnellsolver-Optionen in Sheet '{SchnellSolverSettings.SheetName}' gespeichert.");
             else
                 Log($"Hinweis: Schnellsolver-Optionen konnten nicht gespeichert werden ({fehler}).");
         }
 
-        private async void BtnSchritt2_Click(object sender, RoutedEventArgs e)
+        // =====================================================
+        // SOLVERLAUF AUSFÜHREN (früher der Handler BtnSchritt2_Click).
+        // Nutzt die im Solverlauf-Dialog gewählten Felder _schnellAktiv,
+        // _teilplanAktiv und _teilplanGapK.
+        // =====================================================
+        private async System.Threading.Tasks.Task FuehreSolverlaufAus()
         {
             if (input == null)
             {
@@ -994,23 +1031,21 @@ namespace Stundenplan_V2
             string debug = "";
             List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> solutions = null;
 
-            // Solver-Wahl: schneller Solver nur, wenn die Checkbox gesetzt ist.
-            // Der schnelle Service wird mit den aktuell eingestellten Optionen
-            // frisch gebaut, damit Änderungen aus dem Options-Dialog sofort wirken.
-            bool schnell = ChkSchnellSolver?.IsChecked == true;
+            // Solver-Wahl: schneller Solver nur, wenn im Solverlauf-Dialog
+            // gewählt. Der schnelle Service wird mit den aktuell eingestellten
+            // Optionen frisch gebaut, damit die Einstellungen sofort wirken.
+            bool schnell = _schnellAktiv;
 
             // Teilplan-Modus (bewusst gewählt): nur normaler Solver, kein
             // Tausch. Der schnelle Solver wird dafür zwangsweise abgeschaltet.
-            bool teilplan = ChkTeilplan?.IsChecked == true;
+            bool teilplan = _teilplanAktiv;
             input.TeilplanModus = teilplan;
             if (teilplan)
             {
                 schnell = false;
 
-                // Gap K (Wochenstunden) aus der Eingabe lesen; ungültig/leer -> 0 (exakt).
-                int gapK = 0;
-                if (!int.TryParse(TxtTeilplanGap?.Text?.Trim(), out gapK) || gapK < 0)
-                    gapK = 0;
+                // Gap K (Wochenstunden) aus dem Solverlauf-Dialog; < 0 -> 0 (exakt).
+                int gapK = _teilplanGapK < 0 ? 0 : _teilplanGapK;
                 input.TeilplanGapWst = gapK;
 
                 Log("Teilplan-Modus AKTIV: maximale fehlerfreie Teilverplanung (nach Wochenstunden), " +

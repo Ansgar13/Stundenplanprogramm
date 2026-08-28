@@ -1,0 +1,240 @@
+<Window x:Class="Stundenplan_V2.SolverlaufDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Solverlauf einstellen &amp; starten"
+        Height="820" Width="560"
+        MinHeight="480" MinWidth="520" MaxHeight="1000"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResize">
+
+    <!-- 2 Zeilen: scrollbarer Inhalt (oben) + fest verankerte Buttons (unten). -->
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="0,0,10,0">
+            <StackPanel>
+
+                <TextBlock TextWrapping="Wrap" Margin="0,0,0,10"
+                           Text="Alle Einstellungen eines Solverlaufs an einer Stelle. Unten wählen: nur speichern oder speichern und sofort starten."/>
+
+                <!-- ===================== MODUS ===================== -->
+                <GroupBox Header="Solver-Modus" Margin="0,0,0,8">
+                    <StackPanel Margin="5">
+                        <RadioButton x:Name="RbNormal" GroupName="Modus"
+                                     Content="Normaler Solver (bis Optimum bzw. Zeitlimit)"
+                                     Margin="0,2,0,2"
+                                     Checked="Rb_Changed"/>
+                        <RadioButton x:Name="RbSchnell" GroupName="Modus"
+                                     Content="Schneller Solver (Gap + Greedy-Hint, optional Kappungen)"
+                                     Margin="0,2,0,2"
+                                     Checked="Rb_Changed"/>
+                        <TextBlock x:Name="LblSchnellIgnoriert" TextWrapping="Wrap" Margin="0,4,0,0"
+                                   FontSize="12" Foreground="#B00" Visibility="Collapsed"
+                                   Text="Hinweis: Da Teilplan gewählt ist, wird der schnelle Solver für diesen Lauf nicht verwendet (die Modus-Wahl bleibt gespeichert)."/>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- ===================== AUFGABENTYP ===================== -->
+                <GroupBox Header="Aufgabentyp" Margin="0,0,0,8">
+                    <StackPanel Margin="5">
+                        <RadioButton x:Name="RbVollplan" GroupName="Aufgabe"
+                                     Content="Vollplan (alle Unterrichte verplanen)"
+                                     Margin="0,2,0,2"
+                                     Checked="Rb_Changed"/>
+                        <RadioButton x:Name="RbTeilplan" GroupName="Aufgabe"
+                                     Content="Teilplan – maximale fehlerfreie Teilverplanung"
+                                     Margin="0,2,0,2"
+                                     Checked="Rb_Changed"/>
+                        <TextBlock TextWrapping="Wrap" Margin="0,4,0,0" FontSize="12" Foreground="#555"
+                                   Text="Teilplan nutzt immer den normalen Solver ohne Tausch. Nicht verplanbare Unterrichte erscheinen im Plan-Editor als offen; Fix-UNr bleiben nach Möglichkeit erhalten."/>
+
+                        <StackPanel x:Name="PanelTeilplanGap" Orientation="Horizontal" Margin="0,8,0,0">
+                            <TextBlock Text="Phase-A-Gap K (Wochenstunden):" VerticalAlignment="Center"/>
+                            <TextBox x:Name="TxtTeilplanGapK" Text="0" Width="60" Margin="8,0,0,0"
+                                     VerticalContentAlignment="Center" TextAlignment="Center"/>
+                            <TextBlock VerticalAlignment="Center" Margin="8,0,0,0" FontSize="12" Foreground="#555"
+                                       Text="0 = exakt; K &gt; 0 endet Phase A früher (bis zu K Std. mehr fallen)."/>
+                        </StackPanel>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- ===================== GEMEINSAME PM-LAUFWERTE ===================== -->
+                <GroupBox Header="Gemeinsame Laufwerte (Tabelle PM) – gelten für beide Solver" Margin="0,0,0,8">
+                    <Grid Margin="5">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="230"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Zeitlimit (Sekunden):" VerticalAlignment="Center"/>
+                        <TextBox   Grid.Row="0" Grid.Column="1" x:Name="TxtZeitlimit" Width="80" HorizontalAlignment="Left"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Anzahl Lösungen ohne Tausch:" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                        <TextBox   Grid.Row="1" Grid.Column="1" x:Name="TxtAnzahlOhne" Width="80" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Anzahl Lösungen mit Tausch:" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                        <TextBox   Grid.Row="2" Grid.Column="1" x:Name="TxtAnzahlMit" Width="80" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Mindestabstand Lösungen (Blöcke):" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                        <TextBox   Grid.Row="3" Grid.Column="1" x:Name="TxtMindestAbstand" Width="80" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+
+                        <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button Content="Alle PM-Parameter…" Padding="10,3" Click="BtnPmAlle_Click"/>
+                            <TextBlock VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" Foreground="#555"
+                                       TextWrapping="Wrap"
+                                       Text="Weitere Werte (Gewichte, Strafen, freie Tage …). Achtung: dabei werden die vier Werte oben aus der Datei neu gelesen."/>
+                        </StackPanel>
+                    </Grid>
+                </GroupBox>
+
+                <!-- ===================== SCHNELLSOLVER-BLOCK ===================== -->
+                <!-- IsEnabled folgt dem Modus: nur aktiv, wenn 'Schneller Solver' gewählt ist. -->
+                <StackPanel x:Name="PanelSchnell">
+
+                    <!-- Gap -->
+                    <GroupBox Header="Schnellsolver · Optimierungs-Genauigkeit (Gap)" Margin="0,0,0,8">
+                        <Grid Margin="5">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="260"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.ColumnSpan="2" TextWrapping="Wrap" Margin="0,0,0,6"
+                                Text="Kleinerer Wert = genauer, aber langsamer. 0 = bis zum beweisbaren Optimum (bzw. Zeitlimit). Empfehlung: 2 % für die Bestlösung, 8 % für Folgelösungen."/>
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Gap Bestlösung (%):" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" x:Name="TxtGap" Text="2" Width="60" HorizontalAlignment="Left"/>
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Gap Folgelösungen (%):" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" x:Name="TxtGapPhase2" Text="8" Width="60" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+                        </Grid>
+                    </GroupBox>
+
+                    <!-- Startlösung -->
+                    <GroupBox Header="Schnellsolver · Startlösung" Margin="0,0,0,8">
+                        <CheckBox x:Name="ChkGreedy" Margin="5"
+                                  Content="Greedy-Start-Hint beim ersten Plan setzen (empfohlen)"
+                                  IsChecked="True"/>
+                    </GroupBox>
+
+                    <!-- Harte Kappungen -->
+                    <GroupBox Header="Schnellsolver · Harte Kappungen – Gesamtzahl je Term (leer = aus)" Margin="0,0,0,8">
+                        <Grid Margin="5">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="160"/>
+                                <ColumnDefinition Width="60"/>
+                                <ColumnDefinition Width="160"/>
+                                <ColumnDefinition Width="60"/>
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.ColumnSpan="4" TextWrapping="Wrap" Margin="0,0,0,8"
+                                Text="Kappt den jeweiligen Straf-Term hart ab (statt ihn nur zu bestrafen) und beschleunigt so die Suche. Wird eine Kappung unlösbar, wiederholt der Solver den Grundlauf automatisch einmal ohne Kappungen.&#10;&#10;Wichtig: Von allen Optionen in diesem Block verkürzen nur die Kappungen die Zeit bis zur ersten Lösung. Die Gap-Einstellung oben beschleunigt lediglich den Optimalitätsbeweis danach, nicht das Finden der ersten Lösung."/>
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Hohlstunden:" VerticalAlignment="Center"/>
+                            <TextBox   Grid.Row="1" Grid.Column="1" x:Name="TxtMaxHohl" Width="50" HorizontalAlignment="Left"/>
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="Doppel-Hohlstunden:" VerticalAlignment="Center"/>
+                            <TextBox   Grid.Row="1" Grid.Column="3" x:Name="TxtMaxDoppelHohl" Width="50" HorizontalAlignment="Left"/>
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Dreifach-Hohlstunden:" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBox   Grid.Row="2" Grid.Column="1" x:Name="TxtMaxDreifachHohl" Width="50" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+                            <TextBlock Grid.Row="2" Grid.Column="2" Text="Stundenfolge:" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBox   Grid.Row="2" Grid.Column="3" x:Name="TxtMaxStdFolge" Width="50" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+
+                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Späte LK-Stunden:" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBox   Grid.Row="3" Grid.Column="1" x:Name="TxtMaxSpäteLk" Width="50" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+                            <TextBlock Grid.Row="3" Grid.Column="2" Text="Hauptfach spät:" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBox   Grid.Row="3" Grid.Column="3" x:Name="TxtMaxHauptfachSpät" Width="50" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="Spät→früh:" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBox   Grid.Row="4" Grid.Column="1" x:Name="TxtMaxSpätFrüh" Width="50" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+                            <TextBlock Grid.Row="4" Grid.Column="2" Text="Doppel selber Tag:" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBox   Grid.Row="4" Grid.Column="3" x:Name="TxtMaxDoppelSelberTag" Width="50" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+
+                            <TextBlock Grid.Row="5" Grid.Column="0" Text="Bad Units (päd. spät):" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBox   Grid.Row="5" Grid.Column="1" x:Name="TxtMaxBadUnits" Width="50" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+                        </Grid>
+                    </GroupBox>
+
+                    <!-- Gekoppelte Vorplanung -->
+                    <GroupBox Header="Schnellsolver · Gekoppelte Vorplanung (erst Kopplungen, dann Rest)" Margin="0,0,0,4">
+                        <Grid Margin="5">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="260"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.ColumnSpan="2" TextWrapping="Wrap" Margin="0,0,0,8"
+                                Text="Plant zuerst nur die stark verkoppelten Unterrichte und erzeugt mehrere gute Anker; fixiert dann jeden Anker und löst den Gesamtplan. Am Ende gewinnt die beste Gesamtlösung. Kern = Unterrichte, deren UNr auf mindestens so vielen UV-Zeilen steht (Kopplungsgrad). Manuelle Fixierungen werden in Phase 1 als feste Hindernisse berücksichtigt.&#10;Kann je nach Ankerzahl deutlich länger dauern (mehrere Gesamtläufe)."/>
+
+                            <CheckBox Grid.Row="1" Grid.ColumnSpan="2" x:Name="ChkGekoppelt" Margin="0,0,0,6"
+                                      Content="Gekoppelte Vorplanung aktivieren"/>
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Kern ab … gleichen UNr (Kopplungsgrad):" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" x:Name="TxtMinGleicheUNr" Text="3" Width="60"
+                                     HorizontalAlignment="Left"/>
+
+                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Anzahl Anker:" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" x:Name="TxtAnzahlAnker" Text="5" Width="60"
+                                     HorizontalAlignment="Left" Margin="0,6,0,0"/>
+
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="Anker-Mindestabstand (Blöcke):" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBox Grid.Row="4" Grid.Column="1" x:Name="TxtAnkerAbstand" Text="10" Width="60"
+                                     HorizontalAlignment="Left" Margin="0,6,0,0"/>
+
+                            <StackPanel Grid.Row="5" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,8,0,0">
+                                <CheckBox x:Name="ChkP1Limit" Content="Eigenes Zeitlimit für Phase 1:" VerticalAlignment="Center"/>
+                                <TextBox x:Name="TxtP1Limit" Text="90" Width="60" Margin="8,0,0,0"/>
+                                <TextBlock Text="Sekunden je Solve" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                            </StackPanel>
+                        </Grid>
+                    </GroupBox>
+
+                    <Button Content="Schnellsolver-Standardwerte" HorizontalAlignment="Left"
+                            Margin="0,4,0,0" Padding="10,3" Click="BtnZuruecksetzenSchnell_Click"/>
+                </StackPanel>
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Buttons: immer sichtbar, außerhalb des Scrollbereichs -->
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button x:Name="BtnStart" Content="Planen starten" Width="130" Margin="0,0,8,0"
+                    Click="BtnStart_Click"/>
+            <Button Content="Nur speichern" Width="120" Margin="0,0,8,0"
+                    Click="BtnSpeichern_Click"/>
+            <Button Content="Abbrechen" Width="100"
+                    Click="BtnAbbrechen_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -25,30 +25,10 @@
                        TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/>
             <Button Content="Ausgabe-Fenster anzeigen" HorizontalAlignment="Center"
                     Margin="0,8,0,0" Padding="12,4" Click="BtnAusgabeFenster_Click"/>
-            <StackPanel Margin="0,8,0,0">
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                    <CheckBox x:Name="ChkSchnellSolver" Content="Schneller Solver (Gap + Greedy-Hint)"
-                              VerticalAlignment="Center"
-                              Checked="ChkSchnellSolver_Changed" Unchecked="ChkSchnellSolver_Changed"/>
-                    <Button Content="Optionen…" Margin="10,0,0,0" Padding="10,2"
-                            Click="BtnSchnellOptionen_Click"/>
-                </StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
-                    <CheckBox x:Name="ChkTeilplan"
-                              Content="Teilplan (max. Unterrichte, normaler Solver)"
-                              VerticalAlignment="Center"
-                              ToolTip="Verplant möglichst viele Unterrichte (nach Wochenstunden gewichtet) fehlerfrei. Fix-UNr bleiben nach Möglichkeit erhalten. Nicht verplanbare Unterrichte werden fallengelassen und erscheinen im Plan-Editor als offen. Nutzt immer den normalen Solver ohne Tausch."/>
-                    <TextBlock Text="Gap K (Std.):" VerticalAlignment="Center" Margin="16,0,4,0"/>
-                    <TextBox x:Name="TxtTeilplanGap" Text="0" Width="46"
-                             VerticalAlignment="Center" VerticalContentAlignment="Center"
-                             TextAlignment="Center"
-                             ToolTip="Phase-A-Gap in Wochenstunden. 0 = exakt (voller Beweis, langsamer). Größere Werte beenden Phase A früher; es können dann bis zu K Wochenstunden zusätzlich fallengelassen werden. Fix-UNr sind nie betroffen."/>
-                </StackPanel>
-            </StackPanel>
             <TextBlock HorizontalAlignment="Center" Margin="0,8,0,0"
                        FontSize="12" Foreground="#444" TextWrapping="Wrap"
                        MaxWidth="760" TextAlignment="Center" LineHeight="17"
-                       Text="Teilplan: Zeitlimit (Tabelle PM) eher niedrig wählen – Phase A schöpft es voll aus, weil der Beweis der maximalen Platzierung (= Unlösbarkeit des Restes) teuer ist. Eine gültige Teillösung liegt meist längst vorher vor. Gap K (Std.): 0 = exakt; K&#160;&gt;&#160;0 beendet Phase A früher und lässt dafür bis zu K Wochenstunden zusätzlich fallen (Fix-UNr nie)."/>
+                       Text="Solver-Modus, Aufgabentyp (Vollplan/Teilplan), Zeitlimit und alle Schnellsolver-Optionen werden gebündelt über Knopf 10 „Solverlauf“ eingestellt und gestartet."/>
         </StackPanel>
 
         <!-- Buttons: schmaler, zweispaltig statt einer langen Reihe -> gibt dem
@@ -104,7 +84,7 @@
             <Button Grid.Row="3" Grid.Column="0" Content="8. Gezielt fixieren und ignorieren" Margin="0,0,6,10" Click="BtnFixierenIgnorieren_Click"/>
             <Button Grid.Row="3" Grid.Column="1" Content="9. PM-Parameter bearbeiten" Margin="6,0,0,10" Click="BtnPmBearbeiten_Click"/>
 
-            <Button Grid.Row="4" Grid.Column="0" Content="10. Stundenplanerstellung" Margin="0,0,6,10" Click="BtnSchritt2_Click"/>
+            <Button Grid.Row="4" Grid.Column="0" Content="10. Solverlauf (einstellen &amp; starten)" Margin="0,0,6,10" Click="BtnSolverlauf_Click"/>
             <Button Grid.Row="4" Grid.Column="1" Content="11. Plan-Editor (interaktiv)" Margin="6,0,0,10" Click="BtnPlanEditor_Click"/>
 
             <Button Grid.Row="5" Grid.Column="0" Content="12. Lösung sichern" Margin="0,0,6,10" Click="BtnLoesungSichern_Click"/>
