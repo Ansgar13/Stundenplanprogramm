@@ -139,6 +139,16 @@ public class StundenplanInput
     // Tag"; Default 5, falls die Zeile fehlt).
     public int StrafeDoppelSelberTag { get; set; } = 5;
 
+    // "Fächer beliebig oft am Tag" (PM, Spalte B kommasepariert): diese Fächer
+    // (exakter Fach-String, Groß/Klein egal) dürfen pro Klasse MEHR als einmal
+    // pro Tag verplant werden – sie sind von der Tagesregel "Fach pro Klasse pro
+    // Tag" ausgenommen und ihre Vorkommen müssen nicht benachbart liegen. Ein
+    // Block wird nur befreit, wenn ALLE seine Fächer gelistet sind. Wird zusätzlich
+    // in der statischen Ausnahmeliste PlanValidator.BeliebigOftFaecher gespiegelt,
+    // die Solver-Engine UND Validator gemeinsam lesen.
+    public HashSet<string> BeliebigOftFaecher { get; set; }
+        = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+
     // =====================================================
     // "Später Tag -> späterer Beginn am Folgetag" (pro Lehrer opt-in).
     // Hat ein Lehrer an Tag d eine Stunde >= SpätGrenzeFolgetag, soll er

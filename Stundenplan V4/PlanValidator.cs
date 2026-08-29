@@ -226,6 +226,12 @@ namespace Stundenplan_V2
 
                         // Klassen-Sperre
                         foreach (var k in t.Klassen)
+                        {
+                            // Ausnahmen ZWK: -3-Sperre dieser Klasse ist für die
+                            // betreffenden Fächer (block-weit) abgeschaltet — dann
+                            // ist die Platzierung keine Verletzung.
+                            if (AusnahmenZwk.Aktuell.IstIgnoriert(blocks[b], k))
+                                continue;
                             if (slots[s].KlassenWunsch.TryGetValue(k, out int kw) && kw == -3)
                                 verletzungen.Add(new Verletzung(
                                     "Zeitwunsch Klasse",
@@ -233,82 +239,108 @@ namespace Stundenplan_V2
                                     blocks[b].UNr, t.Lehrer, FachWert(blocks[b]),
                                     $"Klasse {k} hat -3 Sperre",
                                     ZeilenText: blocks[b].Zeilentext));
+                        }
                     }
                 }
             }
 
+            // Gemeinsame (Klasse, Fach)-Doppelstundengruppen für die Abschnitte
+            // 5, 6 und 8b — dieselbe Gruppierung/Erkennung wie der Solver
+            // (DoppelGruppen): A/B-Wochen zweispurig, KKK-parallel als eine
+            // Stunde, Min/Max aggregiert (Min=min, Max=max), (E)=OR.
+            var doppelG = DoppelGruppen.BaueGruppen(blocks);
+
             // =====================================================
-            // 5. DOPPELSTUNDEN: minD/maxD verletzt
+            // 5. DOPPELSTUNDEN: minD/maxD verletzt  (UNr-übergreifend je Gruppe)
+            //    Min/Max sind die aggregierten Gruppenwerte. Da eine Gruppe aus
+            //    mehreren UNrn bestehen kann, wird nur beurteilt, wenn ALLE
+            //    Mitglieder vollständig belegt sind (sonst ist die Doppelstruktur
+            //    nicht bewertbar) — analog zur bisherigen "nur wenn Block
+            //    vollständig fixiert"-Filterung. Als UNr wird ein (dann
+            //    vollständiges) Mitglied gesetzt, damit die nachgelagerte
+            //    Doppelstunden-Filterung (istVollständig[UNr]) die Meldung behält.
             // =====================================================
-            for (int b = 0; b < B; b++)
+            foreach (var g in doppelG.Gruppen)
             {
-                int minD = blocks[b].Teile.Max(t => t.MinDoppel);
-                int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
+                int minD = g.MinDoppel;
+                int maxD = g.MaxDoppel;
                 if (minD == 0 && maxD == 0) continue;
 
-                // Zähle tatsächliche Doppelstunden
-                int doppelCount = 0;
-                var slotsSorted = blockSlots[b].OrderBy(s => s).ToList();
-                for (int i = 0; i < slotsSorted.Count - 1; i++)
+                bool alleVollständig = g.Mitglieder.All(b =>
                 {
-                    int s1 = slotsSorted[i];
-                    int s2 = slotsSorted[i + 1];
-                    if (slots[s1].WTag == slots[s2].WTag &&
-                        slots[s1].Stunde + 1 == slots[s2].Stunde)
-                        doppelCount++;
+                    int ist = 0;
+                    for (int s = 0; s < S; s++) if (belegung[b, s] == 1) ist++;
+                    return ist >= blocks[b].Wst;
+                });
+                if (!alleVollständig) continue;
+
+                int doppelCount = 0;
+                for (int s = 0; s < S - 1; s++)
+                {
+                    if (slots[s].WTag != slots[s + 1].WTag) continue;
+                    if (slots[s].Stunde + 1 != slots[s + 1].Stunde) continue;
+                    if (DoppelGruppen.IstDoppel(g, belegung, s)) doppelCount++;
                 }
 
-                if (doppelCount < minD)
+                if (doppelCount < minD || doppelCount > maxD)
+                {
+                    int repUnr = blocks[g.Mitglieder[0]].UNr;
+                    var betroffene = g.Mitglieder.Select(b => blocks[b].UNr).Distinct().ToList();
+                    string lehrer = string.Join(", ", g.Mitglieder
+                        .SelectMany(b => blocks[b].Teile
+                            .Where(t => t.Fach == g.Fach && t.Klassen.Contains(g.Klasse))
+                            .Select(t => t.Lehrer))
+                        .Where(x => !string.IsNullOrWhiteSpace(x)).Distinct());
+
                     verletzungen.Add(new Verletzung(
                         "Doppelstunden",
-                        "", 0, blocks[b].UNr,
-                        string.Join(", ", blocks[b].Teile.Select(t => t.Lehrer).Distinct())
-                            + " | " + string.Join(", ", blocks[b].Teile.SelectMany(t => t.Klassen).Distinct()),
-                        FachWert(blocks[b]),
-                        $"minD={minD}, maxD={maxD}, tatsächlich={doppelCount}",
-                        ZeilenText: blocks[b].Zeilentext));
-                else if (doppelCount > maxD)
-                    verletzungen.Add(new Verletzung(
-                        "Doppelstunden",
-                        "", 0, blocks[b].UNr,
-                        string.Join(", ", blocks[b].Teile.Select(t => t.Lehrer).Distinct())
-                            + " | " + string.Join(", ", blocks[b].Teile.SelectMany(t => t.Klassen).Distinct()),
-                        FachWert(blocks[b]),
-                        $"minD={minD}, maxD={maxD}, tatsächlich={doppelCount}",
-                        ZeilenText: blocks[b].Zeilentext));
+                        "", 0, repUnr,
+                        lehrer + " | " + g.Klasse,
+                        g.Fach,
+                        $"Klasse {g.Klasse}/{g.Fach}: minD={minD}, maxD={maxD}, tatsächlich={doppelCount} | UNr: {string.Join(", ", betroffene)}",
+                        Klasse: g.Klasse,
+                        BetroffeneUNrn: betroffene));
+                }
             }
 
             // =====================================================
             // 6. PAUSEN-VERLETZUNG: Doppelstunde über große Pause ohne (E)
+            //    UNr-übergreifend je Gruppe; (E) = OR über die Mitglieder.
             // =====================================================
             if (grossePausen != null && grossePausen.Count > 0)
             {
-                for (int b = 0; b < B; b++)
+                foreach (var g in doppelG.Gruppen)
                 {
-                    if (blocks[b].DoppelÜberPauseErlaubt) continue;
+                    if (g.DoppelÜberPauseErlaubt) continue; // (E) = OR über Mitglieder
 
-                    var slotsSorted = blockSlots[b].OrderBy(s => s).ToList();
-                    for (int i = 0; i < slotsSorted.Count - 1; i++)
+                    for (int s = 0; s < S - 1; s++)
                     {
-                        int s1 = slotsSorted[i];
-                        int s2 = slotsSorted[i + 1];
-                        if (slots[s1].WTag != slots[s2].WTag) continue;
-                        if (slots[s1].Stunde + 1 != slots[s2].Stunde) continue;
+                        if (slots[s].WTag != slots[s + 1].WTag) continue;
+                        if (slots[s].Stunde + 1 != slots[s + 1].Stunde) continue;
 
                         bool istPause = grossePausen.Any(p =>
-                            p.stundeVor == slots[s1].Stunde &&
-                            p.stundeNach == slots[s2].Stunde);
+                            p.stundeVor == slots[s].Stunde &&
+                            p.stundeNach == slots[s + 1].Stunde);
+                        if (!istPause) continue;
+                        if (!DoppelGruppen.IstDoppel(g, belegung, s)) continue;
 
-                        if (istPause)
-                            verletzungen.Add(new Verletzung(
-                                "Pausen-Verletzung",
-                                slots[s1].WTag, slots[s1].Stunde,
-                                blocks[b].UNr,
-                                string.Join(", ", blocks[b].Teile.Select(t => t.Lehrer).Distinct())
-                                    + " | " + string.Join(", ", blocks[b].Teile.SelectMany(t => t.Klassen).Distinct()),
-                                FachWert(blocks[b]),
-                                $"Doppelstunde über Pause {slots[s1].Stunde}→{slots[s2].Stunde}",
-                                ZeilenText: blocks[b].Zeilentext));
+                        var betroffene = g.Mitglieder
+                            .Where(b => belegung[b, s] == 1 || belegung[b, s + 1] == 1)
+                            .Select(b => blocks[b].UNr).Distinct().ToList();
+                        string lehrer = string.Join(", ", g.Mitglieder
+                            .SelectMany(b => blocks[b].Teile
+                                .Where(t => t.Fach == g.Fach && t.Klassen.Contains(g.Klasse))
+                                .Select(t => t.Lehrer))
+                            .Where(x => !string.IsNullOrWhiteSpace(x)).Distinct());
+
+                        verletzungen.Add(new Verletzung(
+                            "Pausen-Verletzung",
+                            slots[s].WTag, slots[s].Stunde, 0,
+                            lehrer,
+                            g.Fach,
+                            $"Klasse {g.Klasse}: Doppelstunde über Pause {slots[s].Stunde}→{slots[s + 1].Stunde} | UNr: {string.Join(", ", betroffene)}",
+                            Klasse: g.Klasse,
+                            BetroffeneUNrn: betroffene));
                     }
                 }
             }
@@ -582,21 +614,21 @@ namespace Stundenplan_V2
 
                         if (count <= 1) continue; // 0 oder 1 immer zulässig
 
-                        // hatDoppel: echte, zusammenhängende Doppelstunde INNERHALB
-                        // einer einzelnen UNr an diesem Tag
+                        // hatDoppel: echte Doppelstunde der (Klasse,Fach)-GRUPPE an
+                        // diesem Tag — jetzt UNr-übergreifend (DoppelGruppen),
+                        // A/B-zweispurig, KKK-parallel als eine Stunde. Spiegelt
+                        // das g.D-hatDoppel des Solvers ("Sum(x) <= 1 + hatDoppel").
                         bool hatDoppel = false;
-                        foreach (var b in blockIdxs)
-                        {
+                        var ggFK = doppelG.Finde(klasse, fach);
+                        if (ggFK != null)
                             foreach (var s in tagSlots)
                             {
                                 if (s + 1 >= S) continue;
-                                if (belegung[b, s] == 1 && belegung[b, s + 1] == 1 &&
-                                    slots[s].WTag == slots[s + 1].WTag &&
-                                    slots[s].Stunde + 1 == slots[s + 1].Stunde)
+                                if (slots[s].WTag != slots[s + 1].WTag) continue;
+                                if (slots[s].Stunde + 1 != slots[s + 1].Stunde) continue;
+                                if (DoppelGruppen.IstDoppel(ggFK, belegung, s))
                                 { hatDoppel = true; break; }
                             }
-                            if (hatDoppel) break;
-                        }
 
                         int limit = hatDoppel ? 2 : 1;
                         if (count > limit)

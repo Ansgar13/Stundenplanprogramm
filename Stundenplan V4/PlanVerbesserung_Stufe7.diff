@@ -1,0 +1,68 @@
+--- PlanVerbesserung.orig.cs	2026-08-29 08:31:36.192504585 +0000
++++ PlanVerbesserung.cs	2026-08-29 08:31:55.241784733 +0000
+@@ -431,20 +431,27 @@
+                 }
+             }
+ 
+-            // Große Pausen: Doppelstunde über große Pause verbieten (außer erlaubt)
++            // Doppelstunden UNr-übergreifend je (Klasse, Fach) — wie im echten
++            // Solver (DoppelGruppen): A/B zweispurig, KKK-parallel als eine Stunde.
++            // Wird für die große-Pausen-Regel UND die Zielfunktion (frühe/späte
++            // Doppel) gemeinsam genutzt, damit die Verbesserung denselben
++            // Doppelstundenbegriff wie der Hauptsolver verwendet.
++            var doppelGVerb = DoppelGruppen.Baue(model, x, blocks, slots);
++
++            // Große Pausen: Gruppen-Doppelstunde über große Pause verbieten
++            // (außer (E) = OR über die Mitglieder der Gruppe).
+             if (input.GrossePausen != null && input.GrossePausen.Count > 0)
+             {
+-                for (int b = 0; b < B; b++)
++                foreach (var g in doppelGVerb.Gruppen)
+                 {
+-                    if (blocks[b].DoppelÜberPauseErlaubt) continue;
++                    if (g.DoppelÜberPauseErlaubt) continue;
+                     for (int s = 0; s < S - 1; s++)
+                     {
+-                        if (slots[s].WTag != slots[s + 1].WTag) continue;
++                        if (g.D[s] == null) continue;
+                         bool istPause = input.GrossePausen.Any(p =>
+                             p.stundeVor == slots[s].Stunde &&
+                             p.stundeNach == slots[s + 1].Stunde);
+-                        if (istPause)
+-                            model.Add(x[b, s] + x[b, s + 1] <= 1);
++                        if (istPause) model.Add(g.D[s] == 0);
+                     }
+                 }
+             }
+@@ -597,24 +604,16 @@
+             var earlyVars = new List<BoolVar>();
+             var lateVars  = new List<BoolVar>();
+ 
+-            var dVars = new BoolVar[B, S];
+-            for (int b = 0; b < B; b++)
+-            {
++            // Frühe/späte Doppelstunden aus den (Klasse,Fach)-Gruppen (oben
++            // gebaut) — identisch zum Solver-Ziel. Früh/Spät-Grenze wie dort:
++            // erste Stunde <= 5 = früh.
++            foreach (var g in doppelGVerb.Gruppen)
+                 for (int s = 0; s < S - 1; s++)
+                 {
+-                    if (slots[s].WTag == slots[s + 1].WTag &&
+-                        slots[s].Stunde + 1 == slots[s + 1].Stunde)
+-                    {
+-                        dVars[b, s] = model.NewBoolVar($"d_{b}_{s}");
+-                        model.Add(x[b, s] == 1).OnlyEnforceIf(dVars[b, s]);
+-                        model.Add(x[b, s + 1] == 1).OnlyEnforceIf(dVars[b, s]);
+-                        model.Add(x[b, s] + x[b, s + 1] - dVars[b, s] <= 1);
+-
+-                        if (slots[s].Stunde <= 5) earlyVars.Add(dVars[b, s]);
+-                        else lateVars.Add(dVars[b, s]);
+-                    }
++                    if (g.D[s] == null) continue;
++                    if (slots[s].Stunde <= 5) earlyVars.Add(g.D[s]);
++                    else lateVars.Add(g.D[s]);
+                 }
+-            }
+ 
+             // Harte StD-Regeln (Sheet StD): dieselbe Formulierung wie im echten
+             // Solver und im Diagnosemodell. Das Teilmodell hat ein volles

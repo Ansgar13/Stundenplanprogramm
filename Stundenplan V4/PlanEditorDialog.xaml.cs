@@ -3923,6 +3923,11 @@ namespace Stundenplan_V2
             LeereTauschvorschlaege();
             SetStatus("Tausch ausgefuehrt (" + kette.Glieder.Count + " Beteiligte).", false);
 
+            // Verletzungen zum neuen _belegung VOR jedem Neuzeichnen berechnen —
+            // auch die unten evtl. via CboKlasse-SelectionChanged ausgeloeste
+            // Neuzeichnung soll bereits den aktuellen Warnungsstand einfaerben.
+            PruefeUndZeigeWarnungen();
+
             // Klassenplan auf die betreffende Klasse setzen (loest Neuzeichnen aus)
             if (zielKlasse != null)
             {
@@ -3933,14 +3938,12 @@ namespace Stundenplan_V2
                     ZeichneLehrerGrid();
                     ZeichneAlleAngehefteten();
                     ZeichneParkbereich();
-                    PruefeUndZeigeWarnungen();
                     return;
                 }
             }
 
             ZeichneBeideGrids();
             ZeichneParkbereich();
-            PruefeUndZeigeWarnungen();
         }
 
         // =====================================================
@@ -6617,9 +6620,9 @@ namespace Stundenplan_V2
             LeereTauschvorschlaege();   // raeumt auch Lehrervergleich + Pfeile auf
             LeereVerschiebungen();
             SetStatus("Verschiebung mit Ausweich ausgefuehrt.", false);
+            PruefeUndZeigeWarnungen();
             ZeichneBeideGrids();
             ZeichneParkbereich();
-            PruefeUndZeigeWarnungen();
         }
 
         // Vorschau einer Verschiebung (analog FixiereKette): Zeile markieren,
@@ -7733,9 +7736,12 @@ namespace Stundenplan_V2
                           + _slots[zielSlot].WTag + " Std" + _slots[zielSlot].Stunde + ".", false);
                 _dragQuelle = null;
                 _letzterDragOverSlot = -2;
+                // Warnungen zum neuen _belegung VOR dem Zeichnen berechnen
+                // (siehe VersucheVerschieben) — sonst faerbt sich die neu
+                // eingeplante Zelle erst beim naechsten Neuzeichnen.
+                PruefeUndZeigeWarnungen();
                 ZeichneBeideGrids();
                 ZeichneParkbereich();
-                PruefeUndZeigeWarnungen();
                 return;
             }
 
@@ -7868,9 +7874,13 @@ namespace Stundenplan_V2
 
             SetStatus("Verschoben: UNr " + _blocks[blockIdx].UNr
                       + (fixIdx.Count > 0 ? " (inkl. Fixierung)." : "."), false);
+            // Erst die Verletzungen zum NEUEN _belegung berechnen, DANN zeichnen —
+            // sonst faerbt ZeichneBeideGrids die Zellen noch mit dem alten
+            // Verletzungsstand, und die neue Warnung (gelbe Zelle + Tooltip)
+            // erscheint erst beim naechsten Neuzeichnen (z.B. Klick auf die Zelle).
+            PruefeUndZeigeWarnungen();
             ZeichneBeideGrids();
             ZeichneParkbereich();
-            PruefeUndZeigeWarnungen();
         }
 
         // Prüft, ob Block in seinen (neuen) Slots einen harten Ressourcenkonflikt erzeugt.
@@ -7913,6 +7923,10 @@ namespace Stundenplan_V2
                 // --- Harte Zeitsperre (-3) fuer Klasse ---
                 foreach (var klasse in block.Teile.SelectMany(t => t.Klassen).Distinct())
                 {
+                    // Ausnahmen ZWK: -3-Sperre dieser Klasse ist für die
+                    // betreffenden Fächer (block-weit) abgeschaltet.
+                    if (AusnahmenZwk.Aktuell.IstIgnoriert(block, klasse))
+                        continue;
                     if (_slots[s].KlassenWunsch != null &&
                         _slots[s].KlassenWunsch.TryGetValue(klasse, out int kw) && kw == -3)
                         { Add("Klasse " + klasse + " hat Sperre (-3) in " + _slots[s].WTag + " Std" + _slots[s].Stunde); if (nurErster) return alle; }

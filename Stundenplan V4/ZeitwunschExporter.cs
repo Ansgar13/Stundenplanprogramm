@@ -80,6 +80,11 @@ namespace Stundenplan_V2
                         sp.Columns(1, letzte).AdjustToContents();
                 }
 
+                // Dieser Export speichert an der zentralen Vor-dem-Speichern-Stelle
+                // vorbei; Spaltenbreiten daher hier direkt optimieren (ZWL, ZWK,
+                // Spätschwelle und alle übrigen Datentabellen).
+                SpaltenBreiten.Optimieren(workbook);
+
                 workbook.Save();
             }
         }

@@ -351,23 +351,23 @@ namespace Stundenplan_V2
             int S = slots.Count;
 
             // -------------------------------------------------
-            // Doppelstunden zählen
+            // Doppelstunden zählen  (UNr-übergreifend je (Klasse, Fach))
+            // Gruppierung/Erkennung EXAKT wie im Solver (DoppelGruppen), damit
+            // angezeigte und optimierte Qualität deckungsgleich bleiben:
+            // A/B-Wochen zweispurig getrennt, KKK-parallel als eine Stunde.
+            // Früh/Spät-Grenze wie im Solver-Ziel: erste Stunde <= 5 = früh.
             // -------------------------------------------------
-            for (int b = 0; b < B; b++)
+            var doppelG = DoppelGruppen.BaueGruppen(blocks);
+            foreach (var g in doppelG.Gruppen)
             {
                 for (int s = 0; s < S - 1; s++)
                 {
-                    if (slots[s].WTag == slots[s + 1].WTag &&
-                        slots[s].Stunde + 1 == slots[s + 1].Stunde)
-                    {
-                        if (belegung[b, s] == 1 && belegung[b, s + 1] == 1)
-                        {
-                            if (slots[s].Stunde <= 5)
-                                result.Early++;
-                            else
-                                result.Late++;
-                        }
-                    }
+                    if (slots[s].WTag != slots[s + 1].WTag) continue;
+                    if (slots[s].Stunde + 1 != slots[s + 1].Stunde) continue;
+                    if (!DoppelGruppen.IstDoppel(g, belegung, s)) continue;
+
+                    if (slots[s].Stunde <= 5) result.Early++;
+                    else result.Late++;
                 }
             }
 

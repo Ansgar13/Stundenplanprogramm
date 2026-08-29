@@ -1,0 +1,64 @@
+--- /mnt/project/PlanValidator.cs	1979-12-31 00:00:00.000000000 +0000
++++ PlanValidator.cs	2026-08-29 13:45:00.669463492 +0000
+@@ -7,6 +7,15 @@
+ {
+     public static class PlanValidator
+     {
++        // "Fächer beliebig oft am Tag" (PM, Spalte B). Zentrale, prozessweite
++        // Ausnahmeliste (analog PlanBewertung.AusgenommeneSpaetFaecher): wird vom
++        // ExcelLoader beim Laden gesetzt und sowohl von der Solver-Engine
++        // (StundenplanEngine, harte Tagesregel) als auch hier im Validator gelesen.
++        // Fächer aus dieser Liste sind von der "Fach pro Klasse pro Tag"-Regel
++        // ausgenommen (Groß/Klein egal). Leer = bisheriges Verhalten.
++        public static HashSet<string> BeliebigOftFaecher { get; set; }
++            = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++
+         public record Verletzung(
+             string Kategorie,
+             string Tag,
+@@ -351,6 +360,15 @@
+             // =====================================================
+             for (int b = 0; b < B; b++)
+             {
++                // "Fächer beliebig oft am Tag": Block von der Tagesregel ausnehmen,
++                // aber nur wenn ALLE seine Fächer gelistet sind (gemischte/gekoppelte
++                // Blöcke bleiben regulär geprüft). Muss zur Solver-Engine passen,
++                // sonst würde ein bewusst mehrfach verplantes Fach hier fälschlich
++                // als Verstoß gemeldet.
++                if (BeliebigOftFaecher != null && blocks[b].Teile.Count > 0 &&
++                    blocks[b].Teile.All(t => BeliebigOftFaecher.Contains(t.Fach)))
++                    continue;
++
+                 int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
+ 
+                 var proTag = blockSlots[b]
+@@ -530,12 +548,18 @@
+                     }
+                 }
+                 foreach (var kv in fachZähler)
++                {
++                    // "Fächer beliebig oft am Tag": dieses Fach ist von der
++                    // Fach-pro-Klasse-pro-Tag-Regel ausgenommen (wie im Solver).
++                    if (BeliebigOftFaecher != null && BeliebigOftFaecher.Contains(kv.Key.fach))
++                        continue;
+                     if (kv.Value > 2)
+                         verletzungen.Add(new Verletzung(
+                             "Fach pro Klasse pro Tag", kv.Key.tag, 0, 0,
+                             "", kv.Key.fach,
+                             $"Klasse {kv.Key.klasse}: {kv.Value}x {kv.Key.fach} an {kv.Key.tag} (max 2)",
+                             Klasse: kv.Key.klasse));
++                }
+             }
+ 
+             // =====================================================
+@@ -568,6 +592,10 @@
+                 foreach (var kv in fkBlocks)
+                 {
+                     var (klasse, fach) = kv.Key;
++                    // "Fächer beliebig oft am Tag": dieses Fach ist von der
++                    // harten Fach/Klasse/Tag-Doppel-Regel ausgenommen (wie im Solver).
++                    if (BeliebigOftFaecher != null && BeliebigOftFaecher.Contains(fach))
++                        continue;
+                     var blockIdxs = kv.Value;
+ 
+                     // KKK-Gruppen bilden (leeres KKK = eigener Einzelblock)

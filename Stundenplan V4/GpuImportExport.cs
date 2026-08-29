@@ -956,6 +956,10 @@ namespace Stundenplan_V2
                 }
             }
 
+            // Speichert an der zentralen Vor-dem-Speichern-Stelle vorbei; das
+            // "Plan"-Blatt (und übrige Datentabellen) daher hier optimieren.
+            SpaltenBreiten.Optimieren(wb);
+
             wb.Save();
             return row - 2;
         }

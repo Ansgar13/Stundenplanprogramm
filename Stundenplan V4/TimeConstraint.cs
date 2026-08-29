@@ -38,6 +38,10 @@ namespace Stundenplan_V2
                         // Klassen gesperrt (nur -3, -2 wird für Klassen nicht unterstützt)
                         foreach (var k in t.Klassen)
                         {
+                            // Ausnahmen ZWK: für die betreffenden Fächer (block-weit)
+                            // ist die -3-Sperre dieser Klasse abgeschaltet.
+                            if (AusnahmenZwk.Aktuell.IstIgnoriert(blocks[b], k))
+                                continue;
                             if (slots[s].KlassenWunsch.TryGetValue(k, out int kw) && kw == -3)
                                 model.Add(x[b, s] == 0);
                         }

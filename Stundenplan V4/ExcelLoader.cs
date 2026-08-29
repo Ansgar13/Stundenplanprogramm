@@ -676,6 +676,50 @@ namespace Stundenplan_V2
             PlanBewertung.ErsteSpaeteStunde = ersteSpaeteStunde;
 
             // =====================================================
+            // AUSNAHMEN ZWK – Sheet "Ausnahmen ZWK" (direkt hinter SpätSchwelle)
+            // Spalte A = Fach, Spalte B = kommaseparierte Klassen. Es dürfen
+            // mehrere Fächer (mehrere Zeilen) genannt werden. Für die betreffenden
+            // Unterrichte dieser Fächer wird die harte -3-Klassensperre der
+            // genannten Klassen abgeschaltet (block-weit über die ganze UNr,
+            // s. AusnahmenZwk). Fehlt das Sheet, gilt AusnahmenZwk.Leer =
+            // unverändertes Verhalten. Wie ErsteSpaeteStunde wird der Wert IMMER
+            // gesetzt, damit nach dem Laden einer Datei ohne Einträge nicht der
+            // Stand der zuvor geladenen Datei stehen bleibt.
+            // =====================================================
+            var ausnahmenZwkRoh = new Dictionary<string, HashSet<string>>(
+                StringComparer.OrdinalIgnoreCase);
+
+            if (workbook.Worksheets.TryGetWorksheet("Ausnahmen ZWK", out var sheetAusnZwk))
+            {
+                foreach (var row in sheetAusnZwk.RangeUsed()?.RowsUsed()
+                                    ?? Enumerable.Empty<IXLRangeRow>())
+                {
+                    string fach = row.Cell(1).GetString().Trim();
+                    string klassenRoh = row.Cell(2).GetString().Trim();
+                    if (fach.Length == 0 || klassenRoh.Length == 0) continue;
+
+                    // Überschriften-Zeile ("Fach" | "ignorierte ZWK von") tolerant
+                    // überspringen.
+                    if (string.Equals(fach, "Fach", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (!ausnahmenZwkRoh.TryGetValue(fach, out var set))
+                    {
+                        set = new HashSet<string>(StringComparer.Ordinal);
+                        ausnahmenZwkRoh[fach] = set;
+                    }
+                    foreach (var k in klassenRoh.Split(
+                                 new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        string kl = k.Trim();
+                        if (kl.Length > 0) set.Add(kl);
+                    }
+                }
+            }
+
+            AusnahmenZwk.Aktuell = new AusnahmenZwk(ausnahmenZwkRoh);
+
+            // =====================================================
             // STAMMDATEN – HohlStd. soll + Std.Folge
             // =====================================================
             var lehrerStammdaten = new Dictionary<string, LehrerStammdaten>();

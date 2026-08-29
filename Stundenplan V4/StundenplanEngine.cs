@@ -671,8 +671,13 @@ namespace Stundenplan_V2
                     for (int s = 0; s < S; s++)
                         foreach (var t in blocks[b].Teile)
                             foreach (var k in t.Klassen)
+                            {
+                                // Ausnahmen ZWK: block-weit abgeschaltete -3-Sperre.
+                                if (AusnahmenZwk.Aktuell.IstIgnoriert(blocks[b], k))
+                                    continue;
                                 if (slots[s].KlassenWunsch.TryGetValue(k, out int kw) && kw == -3)
                                     model.Add(x[b, s] == 0);
+                            }
             }
 
             // Lehrer-Sperren (außer für deaktivierte Lehrer)
@@ -719,61 +724,50 @@ namespace Stundenplan_V2
             if (mitRäume && fachraumLimit != null)
                 RoomConstraint.Add(model, x, blocks, fachraumLimit, S);
 
-            // === OPTIONAL: Doppelstunden ===
-            BoolVar[,] d = null;
+            // === OPTIONAL: Doppelstunden ===  (UNr-übergreifend je (Klasse, Fach))
+            // Wie im echten Solver (PlanenIntern): Doppelstunde ist Eigenschaft
+            // der (Klasse, Fach)-Gruppe (DoppelGruppen). Die beiden Diagnose-
+            // Ausschlussmengen (UNr-basiert) werden auf Gruppenebene gedeutet:
+            // eine Gruppe ist betroffen, sobald EIN Mitglied in der Menge liegt.
+            DoppelGruppen doppelGDiag = null;
             if (mitDoppelstunden)
             {
-                d = new BoolVar[B, S];
-                for (int b = 0; b < B; b++)
-                    for (int s = 0; s < S - 1; s++)
-                        if (slots[s].WTag == slots[s + 1].WTag &&
-                            slots[s].Stunde + 1 == slots[s + 1].Stunde)
-                        {
-                            d[b, s] = model.NewBoolVar($"d_dop_{b}_{s}");
-                            model.Add(x[b, s] == 1).OnlyEnforceIf(d[b, s]);
-                            model.Add(x[b, s + 1] == 1).OnlyEnforceIf(d[b, s]);
-                            model.Add(x[b, s] + x[b, s + 1] - d[b, s] <= 1);
-                        }
+                doppelGDiag = DoppelGruppen.Baue(model, x, blocks, slots);
 
-                // Große Pausen
+                bool GruppeAusgeschlossen(DoppelGruppen.Gruppe g) =>
+                    doppelstundenAusschlussFürUNr != null &&
+                    g.Mitglieder.Any(b => doppelstundenAusschlussFürUNr.Contains(blocks[b].UNr));
+
+                int GruppeMinD(DoppelGruppen.Gruppe g) =>
+                    (ignoriereMinDoppelFürUNr != null &&
+                     g.Mitglieder.Any(b => ignoriereMinDoppelFürUNr.Contains(blocks[b].UNr)))
+                        ? 0 : g.MinDoppel;
+
+                // Große Pausen ((E) = OR über Mitglieder)
                 if (grossePausen != null && grossePausen.Count > 0)
-                {
-                    for (int b = 0; b < B; b++)
+                    foreach (var g in doppelGDiag.Gruppen)
                     {
-                        if (blocks[b].DoppelÜberPauseErlaubt) continue;
+                        if (g.DoppelÜberPauseErlaubt) continue;
                         for (int s = 0; s < S - 1; s++)
                         {
-                            if (d[b, s] == null) continue;
-                            int stundeVon = slots[s].Stunde;
-                            int stundeNach = slots[s + 1].Stunde;
+                            if (g.D[s] == null) continue;
                             bool istPause = grossePausen.Any(p =>
-                                p.stundeVor == stundeVon && p.stundeNach == stundeNach);
-                            if (istPause) model.Add(d[b, s] == 0);
+                                p.stundeVor == slots[s].Stunde && p.stundeNach == slots[s + 1].Stunde);
+                            if (istPause) model.Add(g.D[s] == 0);
                         }
                     }
-                }
 
-                // MinDoppel / MaxDoppel
-                for (int b = 0; b < B; b++)
+                // MinDoppel / MaxDoppel (aggregiert; Ausschluss = Min UND Max weg)
+                foreach (var g in doppelGDiag.Gruppen)
                 {
-                    // Für die erweiterte Diagnose-Bisektion: Block komplett von
-                    // der Doppelstunden-Zählung ausschließen (weder Min- noch
-                    // Max-Grenze) — anders als 'ignoriereMinDoppelFürUNr', das
-                    // nur die Minimum-Grenze aufhebt, aber die Maximum-Grenze
-                    // (inkl. möglichem Max=0) weiterhin erzwingt.
-                    if (doppelstundenAusschlussFürUNr != null && doppelstundenAusschlussFürUNr.Contains(blocks[b].UNr))
-                        continue;
+                    if (GruppeAusgeschlossen(g)) continue;
 
-                    int minD = blocks[b].Teile.Max(t => t.MinDoppel);
-                    int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
-                    // Für die Diagnose-Bisektion (ErmittleDoppelstundenKombinationskonflikt):
-                    // Dopp.Std.-Minimum für ausgewählte UNrn testweise ignorieren,
-                    // um herauszufinden, ob GENAU diese das Modell blockieren.
-                    if (ignoriereMinDoppelFürUNr != null && ignoriereMinDoppelFürUNr.Contains(blocks[b].UNr))
-                        minD = 0;
+                    int minD = GruppeMinD(g);
+                    int maxD = g.MaxDoppel;
+
                     var dVars = new List<BoolVar>();
                     for (int s = 0; s < S - 1; s++)
-                        if (d[b, s] != null) dVars.Add(d[b, s]);
+                        if (g.D[s] != null) dVars.Add(g.D[s]);
                     if (dVars.Count > 0)
                     {
                         model.Add(LinearExpr.Sum(dVars) >= minD);
@@ -781,19 +775,11 @@ namespace Stundenplan_V2
                     }
                 }
 
-                // ZUSAMMENHANGS-CONSTRAINT: Bei Bloecken mit maxD>0 (Doppelstunden erlaubt)
-                // duerfen an einem Tag NICHT zwei (oder mehr) Einzelstunden ohne Doppelstunde
-                // liegen. Die bisherige Tagesregel prueft nur die ANZAHL Stunden pro Tag
-                // (<=1 ohne Doppel-Vorgabe, <=2 mit Doppel-Vorgabe), nicht aber, ob zwei
-                // Stunden tatsaechlich zusammenhaengen. Ohne diesen Constraint kann der
-                // Solver z.B. zwei Einzelstunden an verschiedenen Tagesenden platzieren,
-                // was an dem Tag wie eine aufgeloeste Doppelstunde wirkt, aber keine ist.
-                // Formal: xSum(Tag) <= 1 + 2 * dSum(Tag) — ohne zusammenhaengende
-                // Doppelstunde an diesem Tag (dSum=0) ist nur 1 Stunde erlaubt; mit
-                // einer Doppelstunde (dSum=1) duerfen es bis zu 3 sein (die generelle
-                // Tagesregel-Obergrenze von 2 greift unabhaengig weiterhin).
-                // Per 'mitZusammenhangsConstraint' abschaltbar — nur für die Sequenz-
-                // diagnose gedacht, um diesen Constraint isoliert testen zu können.
+                // ZUSAMMENHANGS-CONSTRAINT (pro Gruppe): xOcc(Tag) <= 1 + 2*dSum(Tag).
+                // x-Zählung KKK-aware über BaueFachKlasseTagVars. A/B-Gruppen werden
+                // hier übersprungen (getrennte Wochen würden die x-Summe sonst
+                // fälschlich verdoppeln) — Diagnose-Sonderfall; im echten Solver gibt
+                // es diesen Constraint ohnehin nicht.
                 if (mitZusammenhangsConstraint)
                     foreach (var tag in tage)
                     {
@@ -802,50 +788,42 @@ namespace Stundenplan_V2
                             .Where(z => z.z.WTag == tag)
                             .Select(z => z.i)
                             .ToList();
+                        var daySlotsDSet = new HashSet<int>(daySlotsD);
 
-                        for (int b = 0; b < B; b++)
+                        foreach (var g in doppelGDiag.Gruppen)
                         {
-                            if (doppelstundenAusschlussFürUNr != null && doppelstundenAusschlussFürUNr.Contains(blocks[b].UNr))
-                                continue;
+                            if (GruppeAusgeschlossen(g)) continue;
+                            if (g.MaxDoppel <= 0) continue;       // ohne Doppel-Vorgabe greift limit=1
+                            if (g.HatABTrennung) continue;        // A/B: x-Summe nicht eindeutig
 
-                            int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
-                            if (maxD <= 0) continue; // ohne Doppel-Vorgabe greift bereits limit=1 oben
-
-                            var xVarsTag = daySlotsD.Select(s => x[b, s]).ToList();
-                            if (xVarsTag.Count == 0) continue;
+                            var xOcc = BaueFachKlasseTagVars(
+                                model, x, blocks, g.Mitglieder, daySlotsD,
+                                $"diag_zus_{tag}_{g.Klasse}_{g.Fach}");
+                            if (xOcc.Count == 0) continue;
 
                             var dVarsTag = new List<BoolVar>();
-                            for (int idx = 0; idx < daySlotsD.Count - 1; idx++)
-                            {
-                                int s = daySlotsD[idx];
-                                if (d[b, s] != null) dVarsTag.Add(d[b, s]);
-                            }
+                            foreach (var s in daySlotsD)
+                                if (s + 1 < S && daySlotsDSet.Contains(s + 1) && g.D[s] is not null)
+                                    dVarsTag.Add(g.D[s]);
 
-                            model.Add(LinearExpr.Sum(xVarsTag) <= 1 + 2 * LinearExpr.Sum(dVarsTag));
+                            model.Add(LinearExpr.Sum(xOcc) <= 1 + 2 * LinearExpr.Sum(dVarsTag));
                         }
                     }
 
-                // Verbot späte Doppelstunden
+                // Verbot späte Doppelstunden (Fix-Ausnahme: beide Slots durch
+                // Mitglieder fixiert -> bewusst gesetzt, Verbot aus)
                 if (verbotSpäteDoppel)
-                {
-                    for (int b = 0; b < B; b++)
+                    foreach (var g in doppelGDiag.Gruppen)
                         for (int s = 0; s < S - 1; s++)
                         {
-                            if (d[b, s] == null) continue;
-                            if (slots[s].Stunde >= PlanBewertung.ErsteSpaeteStunde)
-                            {
-                                // Ausnahme: Wenn beide aufeinanderfolgenden Slots für
-                                // diese UNr per FixUNrn vorgegeben sind, gilt das Verbot
-                                // nicht — der User hat die Doppelstunde dort bewusst gesetzt.
-                                bool beideFixiert =
-                                    slots[s    ].FixUNrn.Contains(blocks[b].UNr) &&
-                                    slots[s + 1].FixUNrn.Contains(blocks[b].UNr);
-                                if (beideFixiert) continue;
-
-                                model.Add(d[b, s] == 0);
-                            }
+                            if (g.D[s] == null) continue;
+                            if (slots[s].Stunde < PlanBewertung.ErsteSpaeteStunde) continue;
+                            bool beideFixiert =
+                                g.Mitglieder.Any(b => slots[s    ].FixUNrn.Contains(blocks[b].UNr)) &&
+                                g.Mitglieder.Any(b => slots[s + 1].FixUNrn.Contains(blocks[b].UNr));
+                            if (beideFixiert) continue;
+                            model.Add(g.D[s] == 0);
                         }
-                }
             }
 
             // freeDiag wird im FreeDay-Block belegt und im FreeHour-Block fuer
@@ -989,20 +967,22 @@ namespace Stundenplan_V2
                     {
                         var vars = BaueFachKlasseTagVars(model, x, blocks, kv.Value, daySlots, $"diag_fpkt_{tag}_{kv.Key.klasse}_{kv.Key.fach}");
 
-                        if (d != null)
+                        if (doppelGDiag != null)
                         {
                             // Exakt wie im echten Solver: Sum(x) <= 1 + hatDoppel.
-                            // hatDoppel zählt nur eine Doppelstunde INNERHALB einer UNr;
-                            // zwei verschiedene UNrn desselben (Klasse,Fach) können daher
-                            // pro Tag nicht gemeinsam liegen.
+                            // hatDoppel jetzt UNr-übergreifend aus der (Klasse,Fach)-
+                            // Gruppe (DoppelGruppen), A/B-zweispurig, KKK-parallel als
+                            // eine Stunde. Zwei benachbarte Einzelstunden desselben
+                            // Fachs aus zwei UNrn bilden damit eine erlaubte Doppelstunde.
+                            var ggFK = doppelGDiag.Finde(kv.Key.klasse, kv.Key.fach);
                             var doppelVars = new List<BoolVar>();
-                            foreach (var b in kv.Value)
+                            if (ggFK != null)
                                 foreach (var s in daySlots)
                                 {
                                     if (s + 1 >= S) continue;
                                     if (!daySlotsSet.Contains(s + 1)) continue;
-                                    if (d[b, s] == null) continue;
-                                    doppelVars.Add(d[b, s]);
+                                    if (ggFK.D[s] == null) continue;
+                                    doppelVars.Add(ggFK.D[s]);
                                 }
                             var hatDoppel = model.NewBoolVar("diag_hatDoppel");
                             if (doppelVars.Count > 0)
@@ -1823,81 +1803,72 @@ namespace Stundenplan_V2
             List<(int stundeVor, int stundeNach)> grossePausen)
         {
             var meldungen = new List<string>();
+            var gruppen = DoppelGruppen.BaueGruppen(blocks);
 
-            // Fixierte Slot-Indizes je Block sammeln
-            var fixSlotsProBlock = new Dictionary<int, List<int>>();
-            for (int s = 0; s < S; s++)
-                foreach (var unr in slots[s].FixUNrn)
-                {
-                    int bIdx = blocks.FindIndex(b => b.UNr == unr);
-                    if (bIdx < 0) continue;
-                    if (!fixSlotsProBlock.TryGetValue(bIdx, out var liste))
-                        fixSlotsProBlock[bIdx] = liste = new List<int>();
-                    liste.Add(s);
-                }
+            // Ist ein Mitglied der Spur in Slot s per FixUNrn vorgegeben?
+            bool SpurFixiert(List<int> spur, int s) =>
+                spur.Any(b => slots[s].FixUNrn.Contains(blocks[b].UNr));
 
-            foreach (var kv in fixSlotsProBlock.OrderBy(kv => blocks[kv.Key].UNr))
+            foreach (var g in gruppen.Gruppen.OrderBy(x => x.Klasse).ThenBy(x => x.Fach))
             {
-                var block = blocks[kv.Key];
-                var fixSlots = kv.Value.OrderBy(s => s).ToList();
-                var fixSlotsSet = new HashSet<int>(fixSlots);
-                int minD = block.Teile.Count > 0 ? block.Teile.Max(t => t.MinDoppel) : 0;
-                int maxD = block.Teile.Count > 0 ? block.Teile.Max(t => t.MaxDoppel) : 0;
+                int minD = g.MinDoppel;
+                int maxD = g.MaxDoppel;
 
-                // Benachbarte Fix-Slot-Paare = fixierte Doppelstunden
+                // Fixierte Doppelstunden der Gruppe: benachbarte Paare, in denen
+                // EINE Spur (A oder B) beide Slots per FixUNrn belegt hat. A und B
+                // werden nie gemischt (getrennte Wochen bilden keine gemeinsame
+                // Doppelstunde).
                 var fixDoppelPaare = new List<(int s1, int s2)>();
-                foreach (int s in fixSlots)
+                for (int s = 0; s < S - 1; s++)
                 {
-                    int sNext = s + 1;
-                    if (fixSlotsSet.Contains(sNext) &&
-                        slots[s].WTag == slots[sNext].WTag &&
-                        slots[s].Stunde + 1 == slots[sNext].Stunde)
-                        fixDoppelPaare.Add((s, sNext));
+                    if (slots[s].WTag != slots[s + 1].WTag) continue;
+                    if (slots[s].Stunde + 1 != slots[s + 1].Stunde) continue;
+                    bool aFix = SpurFixiert(g.SpurA, s) && SpurFixiert(g.SpurA, s + 1);
+                    bool bFix = g.HatABTrennung && SpurFixiert(g.SpurB, s) && SpurFixiert(g.SpurB, s + 1);
+                    if (aFix || bFix) fixDoppelPaare.Add((s, s + 1));
                 }
 
-                string OrtVon((int s1, int s2) p) =>
+                string Ort((int s1, int s2) p) =>
                     $"{slots[p.s1].WTag} Std.{slots[p.s1].Stunde}-{slots[p.s2].Stunde}";
+                string Wer = $"Klasse {g.Klasse}/Fach {g.Fach}";
+                string UNrListe = string.Join(", ", g.Mitglieder.Select(b => blocks[b].UNr).Distinct());
 
-                // 1) Dopp.Std.-Maximum durch Fix-Slots überschritten
+                // 1) Aggregiertes Dopp.Std.-Maximum durch Fix-Slots überschritten
                 if (maxD > 0 && fixDoppelPaare.Count > maxD)
                     meldungen.Add(
-                        $"UNr {block.UNr}: {fixDoppelPaare.Count} fixierte Doppelstunde(n), aber Dopp.Std.-Maximum ist {maxD} " +
-                        $"({string.Join(", ", fixDoppelPaare.Select(OrtVon))})");
+                        $"{Wer} (UNr {UNrListe}): {fixDoppelPaare.Count} fixierte Doppelstunde(n), aber Dopp.Std.-Maximum ist {maxD} " +
+                        $"({string.Join(", ", fixDoppelPaare.Select(Ort))})");
 
-                // 2) Fixierte Doppelstunde über einer großen Pause (ohne (E)-Freigabe)
-                if (!block.DoppelÜberPauseErlaubt && grossePausen != null)
+                // 2) Fixierte Doppelstunde über einer großen Pause (Gruppen-(E) = OR)
+                if (!g.DoppelÜberPauseErlaubt && grossePausen != null)
                     foreach (var p in fixDoppelPaare)
                     {
                         bool istPause = grossePausen.Any(gp =>
                             gp.stundeVor == slots[p.s1].Stunde && gp.stundeNach == slots[p.s2].Stunde);
                         if (istPause)
                             meldungen.Add(
-                                $"UNr {block.UNr}: fixierte Doppelstunde {OrtVon(p)} liegt über einer großen Pause " +
-                                $"— Spalte (E) ist für diese UNr nicht gesetzt.");
+                                $"{Wer} (UNr {UNrListe}): fixierte Doppelstunde {Ort(p)} liegt über einer großen Pause " +
+                                "— Spalte (E) ist für keine beteiligte UNr gesetzt.");
                     }
 
-                // Hinweis: 'verbotSpäteDoppel' wird bewusst NICHT geprüft — der echte
-                // Solver (siehe VERBOT SPÄTE DOPPELSTUNDEN weiter unten) exemptiert
-                // Doppelstunden, bei denen beide Slots per FixUNrn vorgegeben sind,
-                // von diesem Verbot. Jedes Paar in fixDoppelPaare besteht per
-                // Konstruktion aus zwei für diese UNr fixierten Slots und ist damit
-                // immer exemptiert — eine Meldung hier wäre also stets ein falsches
-                // Positiv und stünde im Widerspruch zum tatsächlichen Solver-Verhalten.
+                // Hinweis wie bisher: 'verbotSpäteDoppel' wird bewusst NICHT geprüft
+                // — der echte Solver exemptiert vollständig fixierte Doppelstunden
+                // von diesem Verbot; eine Meldung hier wäre stets ein falsches Positiv.
 
-                // 3) Vollständig fixierter Block erreicht Dopp.Std.-Minimum nicht.
-                //    Nur melden, wenn schon die reine ADJAZENZ nicht ausreicht
-                //    (also selbst ohne große-Pause-Sperre zu wenige benachbarte
-                //    Fix-Slot-Paare existieren). Ist genug Adjazenz vorhanden und
-                //    nur durch eine große Pause blockiert, wurde das bereits
-                //    unter 2) konkret gemeldet — eine zusätzliche "0 Paare"-
-                //    Meldung wäre dort redundant und irreführend, da ja sehr wohl
-                //    ein Paar existiert (nur eben eines, das durch eine andere
-                //    Regel verboten ist).
-                if (minD > 0 && fixSlots.Count == block.Wst && fixDoppelPaare.Count < minD)
+                // 3) Alle Mitglieder vollständig fixiert, aber aggregiertes
+                //    Gruppen-Minimum nicht erreicht (zu wenige der Fix-Slots liegen
+                //    benachbart). Nur reine Adjazenz — über große Pausen gesperrte
+                //    Paare wurden bereits unter 2) konkret gemeldet.
+                bool alleVollFixiert = g.Mitglieder.All(b =>
+                {
+                    int fix = 0;
+                    for (int s = 0; s < S; s++) if (slots[s].FixUNrn.Contains(blocks[b].UNr)) fix++;
+                    return fix >= blocks[b].Wst;
+                });
+                if (minD > 0 && alleVollFixiert && fixDoppelPaare.Count < minD)
                     meldungen.Add(
-                        $"UNr {block.UNr}: vollständig fixiert ({fixSlots.Count} von {block.Wst} Wst), benötigt " +
-                        $"mind. {minD} Doppelstunde(n) (Dopp.Std.), aber nur {fixDoppelPaare.Count} der fixierten Slots " +
-                        $"liegen überhaupt benachbart (zu wenige mögliche Doppelstunden-Paare).");
+                        $"{Wer} (UNr {UNrListe}): vollständig fixiert, benötigt mind. {minD} Doppelstunde(n) (Dopp.Std.), " +
+                        $"aber nur {fixDoppelPaare.Count} der fixierten Slots liegen benachbart (zu wenige mögliche Doppelstunden-Paare).");
             }
 
             return meldungen;
@@ -1926,14 +1897,19 @@ namespace Stundenplan_V2
             bool verbotSpäteDoppel)
         {
             var meldungen = new List<string>();
+            var gruppen = DoppelGruppen.BaueGruppen(blocks);
 
             bool SlotGesperrtFürBlock(int s, UnterrichtsBlock block)
             {
                 foreach (var t in block.Teile)
                 {
                     foreach (var k in t.Klassen)
+                    {
+                        // Ausnahmen ZWK: block-weit abgeschaltete -3-Sperre.
+                        if (AusnahmenZwk.Aktuell.IstIgnoriert(block, k)) continue;
                         if (slots[s].KlassenWunsch.TryGetValue(k, out int kw) && kw == -3)
                             return true;
+                    }
                     if (!ignoriereLehrerSperren.Contains(t.Lehrer) &&
                         slots[s].LehrerWunsch.TryGetValue(t.Lehrer, out int lw) && lw == -3)
                         return true;
@@ -1941,9 +1917,15 @@ namespace Stundenplan_V2
                 return false;
             }
 
-            foreach (var block in blocks)
+            // Ist die Spur in Slot s nutzbar (mind. ein Mitglied nicht −3-gesperrt)?
+            bool SpurNutzbar(List<int> spur, int s) =>
+                spur.Any(b => !SlotGesperrtFürBlock(s, blocks[b]));
+            bool SpurFixiert(List<int> spur, int s) =>
+                spur.Any(b => slots[s].FixUNrn.Contains(blocks[b].UNr));
+
+            foreach (var g in gruppen.Gruppen.OrderBy(x => x.Klasse).ThenBy(x => x.Fach))
             {
-                int minD = block.Teile.Count > 0 ? block.Teile.Max(t => t.MinDoppel) : 0;
+                int minD = g.MinDoppel;
                 if (minD <= 0) continue;
 
                 int gültigePaare = 0;
@@ -1951,26 +1933,24 @@ namespace Stundenplan_V2
                 {
                     if (slots[s].WTag != slots[s + 1].WTag) continue;
                     if (slots[s].Stunde + 1 != slots[s + 1].Stunde) continue;
-                    if (SlotGesperrtFürBlock(s, block) || SlotGesperrtFürBlock(s + 1, block)) continue;
 
-                    if (!block.DoppelÜberPauseErlaubt && grossePausen != null &&
+                    // Mögliche Gruppen-Doppelstunde: EINE Spur (A oder B) an beiden
+                    // Slots nutzbar. A/B nie gemischt.
+                    bool aOk = SpurNutzbar(g.SpurA, s) && SpurNutzbar(g.SpurA, s + 1);
+                    bool bOk = g.HatABTrennung && SpurNutzbar(g.SpurB, s) && SpurNutzbar(g.SpurB, s + 1);
+                    if (!aOk && !bOk) continue;
+
+                    if (!g.DoppelÜberPauseErlaubt && grossePausen != null &&
                         grossePausen.Any(p => p.stundeVor == slots[s].Stunde && p.stundeNach == slots[s + 1].Stunde))
                         continue;
 
-                    // Verbot später Doppelstunden — mit derselben Ausnahme wie
-                    // im echten Modell (siehe VERBOT SPÄTE DOPPELSTUNDEN):
-                    // sind BEIDE Slots per FixUNrn für diese UNr vorgegeben,
-                    // gilt das Verbot nicht, der Anwender hat die Doppelstunde
-                    // dort bewusst gesetzt. Ohne diese Ausnahme zählte ein
-                    // Block, dessen Dopp.Std.-Minimum genau durch eine fixierte
-                    // späte Doppelstunde erfüllt ist, hier als "0 mögliche
-                    // Zeitfenster" — ein falsches Positiv. Das Schwesterverfahren
-                    // ErmittleDoppelstundenKonflikte berücksichtigt das bereits.
+                    // Verbot später Doppelstunden — Ausnahme wie im Modell: beide
+                    // Slots EINER Spur per FixUNrn vorgegeben.
                     if (verbotSpäteDoppel && slots[s].Stunde >= PlanBewertung.ErsteSpaeteStunde)
                     {
                         bool beideFixiert =
-                            slots[s    ].FixUNrn.Contains(block.UNr) &&
-                            slots[s + 1].FixUNrn.Contains(block.UNr);
+                            (SpurFixiert(g.SpurA, s) && SpurFixiert(g.SpurA, s + 1)) ||
+                            (g.HatABTrennung && SpurFixiert(g.SpurB, s) && SpurFixiert(g.SpurB, s + 1));
                         if (!beideFixiert) continue;
                     }
 
@@ -1978,12 +1958,15 @@ namespace Stundenplan_V2
                 }
 
                 if (gültigePaare < minD)
+                {
+                    string UNrListe = string.Join(", ", g.Mitglieder.Select(b => blocks[b].UNr).Distinct());
                     meldungen.Add(
-                        $"UNr {block.UNr}: benötigt mind. {minD} Doppelstunde(n) (Dopp.Std.), aber im gesamten " +
+                        $"Klasse {g.Klasse}/Fach {g.Fach} (UNr {UNrListe}): benötigt mind. {minD} Doppelstunde(n) (Dopp.Std.), aber im gesamten " +
                         $"Zeitraster bleiben nach Abzug aller Klassen-/Lehrer-−3-Sperren" +
                         $"{(grossePausen != null && grossePausen.Count > 0 ? ", großer Pausen" : "")}" +
                         $"{(verbotSpäteDoppel ? "/verbotSpäteDoppel" : "")} nur {gültigePaare} mögliche(s) " +
                         $"Doppelstunden-Zeitfenster übrig.");
+                }
             }
 
             return meldungen;
@@ -2010,14 +1993,19 @@ namespace Stundenplan_V2
             HashSet<string> ignoriereLehrerSperren)
         {
             var meldungen = new List<string>();
+            var gruppen = DoppelGruppen.BaueGruppen(blocks);
 
             bool SlotGesperrtFürBlock(int s, UnterrichtsBlock block)
             {
                 foreach (var t in block.Teile)
                 {
                     foreach (var k in t.Klassen)
+                    {
+                        // Ausnahmen ZWK: block-weit abgeschaltete -3-Sperre.
+                        if (AusnahmenZwk.Aktuell.IstIgnoriert(block, k)) continue;
                         if (slots[s].KlassenWunsch.TryGetValue(k, out int kw) && kw == -3)
                             return true;
+                    }
                     if (!ignoriereLehrerSperren.Contains(t.Lehrer) &&
                         slots[s].LehrerWunsch.TryGetValue(t.Lehrer, out int lw) && lw == -3)
                         return true;
@@ -2027,17 +2015,25 @@ namespace Stundenplan_V2
 
             var tage = slots.Select(z => z.WTag).Distinct().ToList();
 
-            foreach (var block in blocks)
+            foreach (var g in gruppen.Gruppen.OrderBy(x => x.Klasse).ThenBy(x => x.Fach))
             {
-                int maxD = block.Teile.Count > 0 ? block.Teile.Max(t => t.MaxDoppel) : 0;
-                if (maxD <= 0) continue; // Regel greift nur für Blöcke mit Doppelstunden-Erlaubnis
+                if (g.MaxDoppel <= 0) continue;   // Regel greift nur bei Doppel-Erlaubnis
+                if (g.HatABTrennung) continue;    // A/B: der Modell-Constraint überspringt sie ebenfalls
+
+                // Benötigte Wochenstunden der Gruppe (Summe der Mitglieder; für die
+                // hier relevanten Nicht-A/B-Gruppen die tatsächliche Stundenzahl
+                // dieses Fachs in der Klasse). Reine Kapazitätsrechnung.
+                int benötigt = g.Mitglieder.Sum(b => blocks[b].Wst);
+
+                // Slot für die Gruppe nutzbar, wenn mind. ein Mitglied nicht −3-gesperrt.
+                bool SlotNutzbar(int s) => g.Mitglieder.Any(b => !SlotGesperrtFürBlock(s, blocks[b]));
 
                 int kapazität = 0;
                 foreach (var tag in tage)
                 {
                     var freieSlotsTag = slots
                         .Select((z, i) => new { z, i })
-                        .Where(z => z.z.WTag == tag && !SlotGesperrtFürBlock(z.i, block))
+                        .Where(z => z.z.WTag == tag && SlotNutzbar(z.i))
                         .Select(z => z.i)
                         .OrderBy(i => i)
                         .ToList();
@@ -2057,11 +2053,14 @@ namespace Stundenplan_V2
                     kapazität += hatBenachbartesPaar ? freieSlotsTag.Count : Math.Min(freieSlotsTag.Count, 1);
                 }
 
-                if (kapazität < block.Wst)
+                if (kapazität < benötigt)
+                {
+                    string UNrListe = string.Join(", ", g.Mitglieder.Select(b => blocks[b].UNr).Distinct());
                     meldungen.Add(
-                        $"UNr {block.UNr}: benötigt {block.Wst} Wst, aber unter der Zusammenhangs-Regel " +
+                        $"Klasse {g.Klasse}/Fach {g.Fach} (UNr {UNrListe}): benötigt {benötigt} Wst, aber unter der Zusammenhangs-Regel " +
                         $"(max. 1 Einzelstunde pro Tag ohne zusammenhängende Doppelstunde) bleiben wegen der " +
                         $"Klassen-/Lehrer-−3-Sperren rechnerisch nur {kapazität} Stunde(n)/Woche erreichbar.");
+                }
             }
 
             return meldungen;
@@ -2101,16 +2100,22 @@ namespace Stundenplan_V2
             const int proTestTimeout = 5;
             const int maxKandidaten = 30;
 
-            var problemUNrn = blocks
-                .Where(b => b.Teile.Count > 0 && b.Teile.Max(t => t.MinDoppel) > 0)
-                .Select(b => b.UNr)
-                .Distinct()
-                .ToList();
+            var gruppen = DoppelGruppen.BaueGruppen(blocks);
+            string GName(DoppelGruppen.Gruppe g) => $"{g.Klasse}/{g.Fach}";
+            HashSet<int> UnrMengeVon(IEnumerable<DoppelGruppen.Gruppe> gs) =>
+                new HashSet<int>(gs.SelectMany(g => g.Mitglieder.Select(b => blocks[b].UNr)));
 
-            if (problemUNrn.Count == 0)
+            // LöseModellMitFlags deutet die UNr-Ausschlussmengen auf Gruppenebene
+            // (Gruppe betroffen, sobald ein Mitglied enthalten ist). Teilen sich
+            // zwei Gruppen eine UNr (Block mit mehreren Klassen/Fächern), schließt
+            // der Ausschluss der einen die andere mit ein — die Bisektion ist dann
+            // entsprechend gröber. Für den Diagnose-Hinweis genügt das.
+
+            var problemGruppen = gruppen.Gruppen.Where(g => g.MinDoppel > 0).ToList();
+            if (problemGruppen.Count == 0)
                 return meldungen;
 
-            bool IstFeasible(HashSet<int> ignorierteMinDoppel)
+            bool IstFeasibleMinIgnoriert(IEnumerable<DoppelGruppen.Gruppe> ignorierteGruppen)
             {
                 var status = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                     mitKlassenSperren: true,
@@ -2119,31 +2124,21 @@ namespace Stundenplan_V2
                     grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel, mitDoppelstunden: true,
                     mitFachProKlasseProTag: true,
                     timeoutSekunden: proTestTimeout,
-                    ignoriereMinDoppelFürUNr: ignorierteMinDoppel);
+                    ignoriereMinDoppelFürUNr: UnrMengeVon(ignorierteGruppen));
                 return status == CpSolverStatus.Optimal || status == CpSolverStatus.Feasible;
             }
 
-            // Baseline: wird es feasible, wenn ALLE Dopp.Std.-Minima ignoriert werden?
-            var alleIgnoriert = new HashSet<int>(problemUNrn);
-            if (!IstFeasible(alleIgnoriert))
+            // Baseline: wird es feasible, wenn ALLE Gruppen-Minima ignoriert werden?
+            if (!IstFeasibleMinIgnoriert(problemGruppen))
             {
-                // Liegt nicht (nur) am Minimum selbst — evtl. an Max.Grenze/
-                // Zusammenhangs-Regel in Kombination mit FixUNr-Slots. Zweite,
-                // stärkere Stufe: Blöcke NICHT nur beim Minimum, sondern
-                // komplett (Min UND Max UND Zusammenhangs-Regel) aus der
-                // Doppelstunden-Zählung ausschließen. Kandidaten diesmal ALLE
-                // Blöcke mit irgendeiner Dopp.Std.-Vorgabe (Min>0 ODER Max>0),
-                // da auch ein reines Max=0 in Kombination mit FixUNr-Slots
-                // (die dann eine ungewollte Doppelstunde erzwingen) infeasible
-                // machen kann.
-                var problemUNrn2 = blocks
-                    .Where(b => b.Teile.Count > 0 &&
-                                (b.Teile.Max(t => t.MinDoppel) > 0 || b.Teile.Max(t => t.MaxDoppel) > 0))
-                    .Select(b => b.UNr)
-                    .Distinct()
+                // Zweite, stärkere Stufe: Gruppen komplett aus der Doppelstunden-
+                // Zählung ausschließen (Min UND Max UND Zusammenhang). Kandidaten:
+                // Gruppen mit irgendeiner Dopp.Std.-Vorgabe (Min>0 ODER Max>0).
+                var problemGruppen2 = gruppen.Gruppen
+                    .Where(g => g.MinDoppel > 0 || g.MaxDoppel > 0)
                     .ToList();
 
-                bool IstFeasibleVollAusschluss(HashSet<int> ausgeschlossen)
+                bool IstFeasibleVollAusschluss(IEnumerable<DoppelGruppen.Gruppe> ausgeschlossen)
                 {
                     var status = LöseModellMitFlags(blocks, slots, B, S, ignoriereLehrerSperren,
                         mitKlassenSperren: true,
@@ -2152,82 +2147,80 @@ namespace Stundenplan_V2
                         grossePausen: grossePausen, verbotSpäteDoppel: verbotSpäteDoppel, mitDoppelstunden: true,
                         mitFachProKlasseProTag: true,
                         timeoutSekunden: proTestTimeout,
-                        doppelstundenAusschlussFürUNr: ausgeschlossen);
+                        doppelstundenAusschlussFürUNr: UnrMengeVon(ausgeschlossen));
                     return status == CpSolverStatus.Optimal || status == CpSolverStatus.Feasible;
                 }
 
-                var alleAusgeschlossen2 = new HashSet<int>(problemUNrn2);
-                if (problemUNrn2.Count == 0 || !IstFeasibleVollAusschluss(alleAusgeschlossen2))
+                if (problemGruppen2.Count == 0 || !IstFeasibleVollAusschluss(problemGruppen2))
                 {
-                    // Auch das hilft nicht — liegt tatsächlich außerhalb der
-                    // Doppelstunden-Mechanik (Räume/Klassen-Sperren o. Ä.).
+                    // Auch das hilft nicht — liegt außerhalb der Doppelstunden-Mechanik.
                     return meldungen;
                 }
 
-                if (problemUNrn2.Count > maxKandidaten)
+                if (problemGruppen2.Count > maxKandidaten)
                 {
                     meldungen.Add(
-                        $"Werden ALLE {problemUNrn2.Count} UNrn mit Dopp.Std.-Vorgabe (Min oder Max) vollständig " +
-                        "aus der Doppelstunden-Zählung ausgeschlossen, wird das Modell lösbar — die Ursache liegt " +
-                        "also im Zusammenspiel mehrerer dieser UNrn (Minimum, Maximum oder Zusammenhangs-Regel " +
-                        $"gemeinsam mit FixUNr-Slots). Zu viele Kandidaten ({problemUNrn2.Count} > {maxKandidaten}) " +
-                        $"für eine automatische Eingrenzung; betroffene UNrn: {string.Join(", ", problemUNrn2)}.");
+                        $"Werden ALLE {problemGruppen2.Count} (Klasse/Fach)-Gruppen mit Dopp.Std.-Vorgabe (Min oder Max) " +
+                        "vollständig aus der Doppelstunden-Zählung ausgeschlossen, wird das Modell lösbar — die Ursache " +
+                        "liegt also im Zusammenspiel mehrerer dieser Gruppen (Minimum, Maximum oder Zusammenhangs-Regel " +
+                        $"gemeinsam mit FixUNr-Slots). Zu viele Kandidaten ({problemGruppen2.Count} > {maxKandidaten}) " +
+                        $"für eine automatische Eingrenzung; betroffene Gruppen: {string.Join(", ", problemGruppen2.Select(GName))}.");
                     return meldungen;
                 }
 
-                // Greedy Vorwärtssuche wie unten, aber mit vollständigem Ausschluss.
-                var ausgeschlossen2 = new HashSet<int>(problemUNrn2);
-                var schuldige2 = new List<int>();
-                foreach (var unr in problemUNrn2)
+                // Greedy Vorwärtssuche mit vollständigem Ausschluss.
+                var ausgeschlossen2 = new List<DoppelGruppen.Gruppe>(problemGruppen2);
+                var schuldige2 = new List<DoppelGruppen.Gruppe>();
+                foreach (var g in problemGruppen2)
                 {
-                    ausgeschlossen2.Remove(unr);
+                    ausgeschlossen2.Remove(g);
                     if (!IstFeasibleVollAusschluss(ausgeschlossen2))
                     {
-                        ausgeschlossen2.Add(unr);
-                        schuldige2.Add(unr);
+                        ausgeschlossen2.Add(g);
+                        schuldige2.Add(g);
                     }
                 }
 
                 if (schuldige2.Count > 0)
                     meldungen.Add(
-                        "Diese UNrn sind (in Kombination) für die Infeasibility verantwortlich — betroffen ist " +
-                        "nicht nur das Dopp.Std.-Minimum, sondern auch Maximum bzw. die Zusammenhangs-Regel " +
+                        "Diese (Klasse/Fach)-Gruppen sind (in Kombination) für die Infeasibility verantwortlich — betroffen " +
+                        "ist nicht nur das Dopp.Std.-Minimum, sondern auch Maximum bzw. die Zusammenhangs-Regel " +
                         "(zwei Einzelstunden ohne echte Doppelstunde am selben Tag), meist im Zusammenspiel mit " +
-                        "FixUNr-Slots dieser UNrn: " +
-                        string.Join(", ", schuldige2.Select(u => "UNr " + u)) + ".");
+                        "FixUNr-Slots dieser Gruppen: " +
+                        string.Join(", ", schuldige2.Select(GName)) + ".");
 
                 return meldungen;
             }
 
-            if (problemUNrn.Count > maxKandidaten)
+            if (problemGruppen.Count > maxKandidaten)
             {
                 meldungen.Add(
-                    $"Wird das Dopp.Std.-Minimum für ALLE {problemUNrn.Count} UNrn mit Doppelstunden-Vorgabe ignoriert, " +
-                    "wird das Modell lösbar — die Ursache liegt also in der Kombination mehrerer dieser UNrn. " +
-                    $"Zu viele Kandidaten ({problemUNrn.Count} > {maxKandidaten}) für eine automatische Eingrenzung; " +
-                    $"betroffene UNrn: {string.Join(", ", problemUNrn)}.");
+                    $"Wird das Dopp.Std.-Minimum für ALLE {problemGruppen.Count} (Klasse/Fach)-Gruppen mit Doppelstunden-" +
+                    "Vorgabe ignoriert, wird das Modell lösbar — die Ursache liegt also in der Kombination mehrerer dieser " +
+                    $"Gruppen. Zu viele Kandidaten ({problemGruppen.Count} > {maxKandidaten}) für eine automatische " +
+                    $"Eingrenzung; betroffene Gruppen: {string.Join(", ", problemGruppen.Select(GName))}.");
                 return meldungen;
             }
 
-            // Greedy Vorwärtssuche: UNrn nacheinander wieder scharf schalten.
-            var ignoriert = new HashSet<int>(problemUNrn);
-            var schuldige = new List<int>();
-            foreach (var unr in problemUNrn)
+            // Greedy Vorwärtssuche: Gruppen nacheinander wieder scharf schalten.
+            var ignoriert = new List<DoppelGruppen.Gruppe>(problemGruppen);
+            var schuldige = new List<DoppelGruppen.Gruppe>();
+            foreach (var g in problemGruppen)
             {
-                ignoriert.Remove(unr);
-                if (!IstFeasible(ignoriert))
+                ignoriert.Remove(g);
+                if (!IstFeasibleMinIgnoriert(ignoriert))
                 {
-                    ignoriert.Add(unr); // bleibt ignoriert, sonst bricht der weitere Test
-                    schuldige.Add(unr);
+                    ignoriert.Add(g); // bleibt ignoriert, sonst bricht der weitere Test
+                    schuldige.Add(g);
                 }
             }
 
             if (schuldige.Count > 0)
                 meldungen.Add(
-                    "Diese UNrn benötigen zusammen mehr Doppelstunden-Zeitfenster, als bei den aktuellen " +
-                    "Zeitwunsch-Sperren/Räumen gemeinsam verfügbar sind (Modell wird erst lösbar, wenn deren " +
-                    "Dopp.Std.-Minimum reduziert oder deren Zeitwunsch-Sperren gelockert werden): " +
-                    string.Join(", ", schuldige.Select(u => "UNr " + u)) + ".");
+                    "Diese (Klasse/Fach)-Gruppen benötigen zusammen mehr Doppelstunden-Zeitfenster, als bei den aktuellen " +
+                    "Zeitwunsch-Sperren/Räumen gemeinsam verfügbar sind (Modell wird erst lösbar, wenn deren Dopp.Std.-" +
+                    "Minimum reduziert oder deren Zeitwunsch-Sperren gelockert werden): " +
+                    string.Join(", ", schuldige.Select(GName)) + ".");
 
             return meldungen;
         }
@@ -4495,24 +4488,14 @@ namespace Stundenplan_V2
             FreeHourConstraint.Add(model, x, freeBand, blocks, slots, lehrerListe, tageListe, freieStundenBereich, B);
 
             // =====================================================
-            // DOPPELSTUNDENVARIABLEN
+            // DOPPELSTUNDENVARIABLEN  (UNr-übergreifend je (Klasse, Fach))
+            // Doppelstunde ist jetzt Eigenschaft der (Klasse, Fach)-Gruppe,
+            // nicht mehr einer einzelnen UNr. A/B-Wochen sind zweispurig
+            // getrennt (A+B bilden nie gemeinsam eine Doppelstunde), KKK-
+            // parallele Blöcke im selben Slot zählen als eine Stunde. Siehe
+            // DoppelGruppen.cs. g.D[s] ersetzt das frühere d[b,s].
             // =====================================================
-            BoolVar[,] d = new BoolVar[B, S];
-
-            for (int b = 0; b < B; b++)
-            {
-                for (int s = 0; s < S - 1; s++)
-                {
-                    if (slots[s].WTag == slots[s + 1].WTag &&
-                        slots[s].Stunde + 1 == slots[s + 1].Stunde)
-                    {
-                        d[b, s] = model.NewBoolVar($"d_b{b}_s{s}");
-                        model.Add(x[b, s] == 1).OnlyEnforceIf(d[b, s]);
-                        model.Add(x[b, s + 1] == 1).OnlyEnforceIf(d[b, s]);
-                        model.Add(x[b, s] + x[b, s + 1] - d[b, s] <= 1);
-                    }
-                }
-            }
+            var doppelG = DoppelGruppen.Baue(model, x, blocks, slots);
 
             // =====================================================
             // GROSSE PAUSEN: Doppelstunden nicht über Pause
@@ -4520,59 +4503,77 @@ namespace Stundenplan_V2
             // =====================================================
             if (grossePausen != null && grossePausen.Count > 0)
             {
-                for (int b = 0; b < B; b++)
+                foreach (var g in doppelG.Gruppen)
                 {
-                    if (blocks[b].DoppelÜberPauseErlaubt) continue;
+                    if (g.DoppelÜberPauseErlaubt) continue; // (E) = OR über die Mitglieder
 
                     for (int s = 0; s < S - 1; s++)
                     {
-                        if (d[b, s] == null) continue;
+                        if (g.D[s] == null) continue;
 
                         int stundeVon = slots[s].Stunde;
                         int stundeNach = slots[s + 1].Stunde;
 
-                        // Prüfe ob dieser Übergang eine große Pause überschreitet
                         bool istPause = grossePausen.Any(p =>
                             p.stundeVor == stundeVon && p.stundeNach == stundeNach);
+                        if (!istPause) continue;
 
-                        // Fix-Relax: sind beide Slots für diesen Block fixiert,
-                        // ist die Doppelstunde über der Pause fixierungsbedingt
-                        // -> dulden (d nicht auf 0 zwingen).
-                        if (fixRelax && fixSlot[b, s] && fixSlot[b, s + 1])
+                        // Fix-Relax (pragmatisch): Doppelstunde über der Pause ist
+                        // fixierungsbedingt -> dulden, wenn ein Mitglied Slot s und
+                        // (evtl. anderes Mitglied) Slot s+1 per FixUNrn belegt.
+                        if (fixRelax &&
+                            g.Mitglieder.Any(b => fixSlot[b, s]) &&
+                            g.Mitglieder.Any(b => fixSlot[b, s + 1]))
                             continue;
 
-                        if (istPause)
-                            model.Add(d[b, s] == 0);
+                        model.Add(g.D[s] == 0);
                     }
                 }
             }
-            for (int b = 0; b < B; b++)
+            foreach (var g in doppelG.Gruppen)
             {
-                // Fix-Relax: ist der Block vollständig (oder über-) fixiert, ist
-                // seine Doppelstunden-Struktur allein durch die Fixierung
-                // bestimmt und nicht mehr veränderbar. Die Min/Max-Schranken
-                // würden dann nur Unlösbarkeit erzeugen -> überspringen.
-                if (fixRelax && fixSlotAnzahl[b] >= blocks[b].Wst)
+                // Fix-Relax: sind ALLE Mitglieder vollständig (oder über-)
+                // fixiert, ist die Doppelstunden-Struktur der Gruppe allein
+                // durch die Fixierung bestimmt -> Min/Max überspringen.
+                if (fixRelax && g.Mitglieder.All(b => fixSlotAnzahl[b] >= blocks[b].Wst))
                     continue;
 
-                int minD = blocks[b].Teile.Max(t => t.MinDoppel);
-                int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
+                // Aggregierte Vorgaben (größter Spielraum): Max = max, Min = min.
+                int minD = g.MinDoppel;
+                int maxD = g.MaxDoppel;
 
                 var dVars = new List<BoolVar>();
                 for (int s = 0; s < S - 1; s++)
-                    if (d[b, s] != null) dVars.Add(d[b, s]);
+                    if (g.D[s] != null) dVars.Add(g.D[s]);
+                if (dVars.Count == 0) continue;
 
-                if (dVars.Count > 0)
+                if (teilplanModus && minD > 0)
                 {
-                    if (teilplanModus && minD > 0)
-                        // Untergrenze nur für platzierte UNr; eine fallengelassene
-                        // UNr (x alle 0) darf minD nicht erzwingen.
+                    // Untergrenze nur, wenn mind. ein Mitglied der Gruppe platziert
+                    // ist; ist die ganze Gruppe fallengelassen, darf minD nicht
+                    // erzwungen werden. gruppePlatziert = OR der platziert-Flags.
+                    var platzFlags = g.Mitglieder
+                        .Select(b => platziert[blocks[b].UNr])
+                        .Distinct()
+                        .ToList();
+                    if (platzFlags.Count == 1)
+                    {
                         model.Add(LinearExpr.Sum(dVars) >= minD)
-                             .OnlyEnforceIf(platziert[blocks[b].UNr]);
+                             .OnlyEnforceIf(platzFlags[0]);
+                    }
                     else
-                        model.Add(LinearExpr.Sum(dVars) >= minD);
-                    model.Add(LinearExpr.Sum(dVars) <= maxD);
+                    {
+                        var gruppePlatziert = model.NewBoolVar($"grpplatz_{g.Klasse}_{g.Fach}");
+                        foreach (var p in platzFlags) model.Add(gruppePlatziert >= p);
+                        model.Add(gruppePlatziert <= LinearExpr.Sum(platzFlags));
+                        model.Add(LinearExpr.Sum(dVars) >= minD)
+                             .OnlyEnforceIf(gruppePlatziert);
+                    }
                 }
+                else
+                    model.Add(LinearExpr.Sum(dVars) >= minD);
+
+                model.Add(LinearExpr.Sum(dVars) <= maxD);
             }
 
             // =====================================================
@@ -4582,22 +4583,22 @@ namespace Stundenplan_V2
             // =====================================================
             if (verbotSpäteDoppel)
             {
-                for (int b = 0; b < B; b++)
+                foreach (var g in doppelG.Gruppen)
                 {
                     for (int s = 0; s < S - 1; s++)
                     {
-                        if (d[b, s] == null) continue;
-                        if (slots[s].Stunde >= PlanBewertung.ErsteSpaeteStunde)
-                        {
-                            // Ausnahme: Wenn beide aufeinanderfolgenden Slots für
-                            // diese UNr per FixUNrn vorgegeben sind, gilt das Verbot nicht.
-                            bool beideFixiert =
-                                slots[s    ].FixUNrn.Contains(blocks[b].UNr) &&
-                                slots[s + 1].FixUNrn.Contains(blocks[b].UNr);
-                            if (beideFixiert) continue;
+                        if (g.D[s] == null) continue;
+                        if (slots[s].Stunde < PlanBewertung.ErsteSpaeteStunde) continue;
 
-                            model.Add(d[b, s] == 0);
-                        }
+                        // Ausnahme (pragmatisch): beide Slots per FixUNrn durch
+                        // Mitglieder dieser Gruppe belegt -> vom Anwender bewusst
+                        // gesetzte (ggf. UNr-übergreifende) Doppelstunde, Verbot aus.
+                        bool beideFixiert =
+                            g.Mitglieder.Any(b => slots[s    ].FixUNrn.Contains(blocks[b].UNr)) &&
+                            g.Mitglieder.Any(b => slots[s + 1].FixUNrn.Contains(blocks[b].UNr));
+                        if (beideFixiert) continue;
+
+                        model.Add(g.D[s] == 0);
                     }
                 }
             }
@@ -4691,15 +4692,20 @@ namespace Stundenplan_V2
                 {
                     var vars = BaueFachKlasseTagVars(model, x, blocks, kv.Value, daySlots, $"fpkt_{tag}_{kv.Key.klasse}_{kv.Key.fach}");
 
-                    // Doppelstunden-Variablen für diese (klasse,fach) an diesem Tag sammeln
+                    // Doppelstunden dieser (klasse,fach) an diesem Tag: jetzt
+                    // UNr-übergreifend aus der Gruppe. Genau hier entsteht die
+                    // gewünschte Konsistenz zur "gleiche Fächer nicht mehrmals am
+                    // Tag"-Logik: zwei benachbarte Einzelstunden desselben Fachs
+                    // aus zwei UNrn werden als erlaubte Doppelstunde erkannt.
+                    var gFpkt = doppelG.Finde(kv.Key.klasse, kv.Key.fach);
                     var doppelVars = new List<BoolVar>();
-                    foreach (var b in kv.Value)
+                    if (gFpkt != null)
                         foreach (var s in daySlots)
                         {
                             if (s + 1 >= S) continue;
                             if (!daySlotsSet.Contains(s + 1)) continue;
-                            if (d[b, s] == null) continue;
-                            doppelVars.Add(d[b, s]);
+                            if (gFpkt.D[s] == null) continue;
+                            doppelVars.Add(gFpkt.D[s]);
                         }
 
                     // hatDoppel = OR(doppelVars)
@@ -4769,14 +4775,15 @@ namespace Stundenplan_V2
                             if (!fachKlasseMap.TryGetValue((klasse, fach), out var bloeckeDesFachs))
                                 continue;
 
+                            var gDst = doppelG.Finde(klasse, fach);
                             var doppelVars = new List<BoolVar>();
-                            foreach (var b in bloeckeDesFachs)
+                            if (gDst != null)
                                 foreach (var s in daySlots)
                                 {
                                     if (s + 1 >= S) continue;
                                     if (!daySlotsSet.Contains(s + 1)) continue;
-                                    if (d[b, s] == null) continue;
-                                    doppelVars.Add(d[b, s]);
+                                    if (gDst.D[s] == null) continue;
+                                    doppelVars.Add(gDst.D[s]);
                                 }
 
                             if (doppelVars.Count == 0) continue; // Fach an dem Tag gar nicht als Doppel möglich
@@ -4812,12 +4819,12 @@ namespace Stundenplan_V2
             var earlyVars = new List<BoolVar>();
             var lateVars = new List<BoolVar>();
 
-            for (int b = 0; b < B; b++)
+            foreach (var g in doppelG.Gruppen)
                 for (int s = 0; s < S - 1; s++)
                 {
-                    if (d[b, s] == null) continue;
-                    if (slots[s].Stunde <= 5) earlyVars.Add(d[b, s]);
-                    else lateVars.Add(d[b, s]);
+                    if (g.D[s] == null) continue;
+                    if (slots[s].Stunde <= 5) earlyVars.Add(g.D[s]);
+                    else lateVars.Add(g.D[s]);
                 }
 
             var freeRewardVars = new List<BoolVar>();
@@ -5914,16 +5921,18 @@ namespace Stundenplan_V2
                         DiagLog(log, $"  [Diagnose] ⚠️ Lehrer {lehrer}: {wst} Wst, {sperren} Sperren → nur {verfügbar} Slots übrig!");
                 }
 
-                // Blöcke mit unmöglichen Doppelstunden
-                for (int b = 0; b < B; b++)
+                // Gruppen mit unmöglichen Doppelstunden (UNr-übergreifend je
+                // Klasse/Fach): weniger mögliche Doppelslot-Positionen als das
+                // aggregierte Dopp.Std.-Minimum der Gruppe.
+                foreach (var g in doppelG.Gruppen)
                 {
-                    int minD = blocks[b].Teile.Max(t => t.MinDoppel);
+                    int minD = g.MinDoppel;
                     if (minD == 0) continue;
                     var dVarsB = new List<BoolVar>();
                     for (int s = 0; s < S - 1; s++)
-                        if (d[b, s] != null) dVarsB.Add(d[b, s]);
+                        if (g.D[s] != null) dVarsB.Add(g.D[s]);
                     if (dVarsB.Count < minD)
-                        DiagLog(log, $"  [Diagnose] UNr {blocks[b].UNr}: minD={minD} aber nur {dVarsB.Count} mögliche Doppelslots");
+                        DiagLog(log, $"  [Diagnose] Klasse {g.Klasse}/Fach {g.Fach}: minD={minD} aber nur {dVarsB.Count} mögliche Doppelslots");
                 }
 
                 // =====================================================
@@ -6025,8 +6034,13 @@ namespace Stundenplan_V2
                             if (slot.LehrerWunsch.TryGetValue(t.Lehrer, out int lw) && lw == -3)
                                 DiagLog(log, $"  [Diagnose] FixUNr {unr} ({slot.WTag} Std.{slot.Stunde}): Lehrer {t.Lehrer} hat -3 Sperre!");
                             foreach (var k in t.Klassen)
+                            {
+                                // Ausnahmen ZWK: block-weit abgeschaltete -3-Sperre
+                                // -> kein Fix-vs-Sperre-Konflikt.
+                                if (AusnahmenZwk.Aktuell.IstIgnoriert(block, k)) continue;
                                 if (slot.KlassenWunsch.TryGetValue(k, out int kw) && kw == -3)
                                     DiagLog(log, $"  [Diagnose] FixUNr {unr} ({slot.WTag} Std.{slot.Stunde}): Klasse {k} hat -3 Sperre!");
+                            }
                         }
                     }
                 }
