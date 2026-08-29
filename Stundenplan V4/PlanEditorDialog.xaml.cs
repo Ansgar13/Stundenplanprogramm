@@ -7461,7 +7461,12 @@ namespace Stundenplan_V2
 
             bool IstRelevant(PlanValidator.Verletzung v) =>
                 ((v.Kategorie == "Doppelstunden" || v.Kategorie == "Tagesregel") && unrn.Contains(v.UNr))
-                || (v.Kategorie == "Spät-Früh" && bewegteLehrer.Contains(v.Lehrer));
+                || (v.Kategorie == "Spät-Früh" && bewegteLehrer.Contains(v.Lehrer))
+                // "Pausen-Verletzung" traegt UNr=0; Zuordnung ueber BetroffeneUNrn,
+                // damit auch eine erst durch die Verschiebung entstehende
+                // (ggf. UNr-uebergreifende) Doppelstunde ueber die Pause gemeldet wird.
+                || (v.Kategorie == "Pausen-Verletzung" && v.BetroffeneUNrn != null
+                    && v.BetroffeneUNrn.Any(u => unrn.Contains(u)));
 
             // UNr UND Lehrer gehoeren in den Schluessel: bei mehreren UNrn (Tausch)
             // wuerde sonst eine schon vorher bestehende Verletzung des einen Blocks
@@ -8111,6 +8116,18 @@ namespace Stundenplan_V2
 
                     return false;
                 }
+
+                // "Pausen-Verletzung" (Doppelstunde über große Pause, UNr = 0):
+                // haengt nicht an einer einzelnen UNr, sondern an BetroffeneUNrn
+                // (beide beteiligten Bloecke — auch bei UNr-uebergreifenden
+                // Doppelstunden aus zwei verschiedenen UNrn) plus dem Tag und den
+                // beiden Pausenstunden (v.Stunde = Stunde vor der Pause, v.Stunde+1
+                // = danach). So wird die Warnung an BEIDEN Kacheln sichtbar.
+                if (v.UNr == 0 && v.Kategorie == "Pausen-Verletzung")
+                    return v.Tag == tag
+                        && v.BetroffeneUNrn != null
+                        && v.BetroffeneUNrn.Contains(block.UNr)
+                        && (stunde == v.Stunde || stunde == v.Stunde + 1);
 
                 // An eine konkrete UNr gebundene Verletzungen wie bisher.
                 return v.UNr == block.UNr

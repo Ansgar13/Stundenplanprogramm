@@ -61,6 +61,22 @@ namespace Stundenplan_V2
         // gesetzt; false = altes Verhalten (Abbruch/Diagnose wie bisher).
         private static bool _fixRelaxErlaubt = false;
 
+        // "Fächer beliebig oft am Tag": Fächer aus dieser (prozessweiten, vom
+        // ExcelLoader gesetzten) Liste sind von der Tagesregel "Fach pro Klasse
+        // pro Tag" ausgenommen und dürfen mehrfach – auch nicht benachbart – pro
+        // Tag liegen. Engine und PlanValidator lesen dieselbe Liste, damit
+        // erzeugte Pläne nicht anschließend als Verstoß gemeldet werden.
+        private static bool FachBeliebigOft(string fach) =>
+            fach != null &&
+            PlanValidator.BeliebigOftFaecher != null &&
+            PlanValidator.BeliebigOftFaecher.Contains(fach);
+
+        // Ein Block wird nur befreit, wenn er Teile hat und ALLE Teile ein
+        // gelistetes Fach tragen (gemischte/gekoppelte Blöcke bleiben regulär).
+        private static bool BlockBeliebigOft(UnterrichtsBlock block) =>
+            block != null && block.Teile.Count > 0 &&
+            block.Teile.All(t => FachBeliebigOft(t.Fach));
+
         /// <summary>
         /// True, sobald der Nutzer den Lauf abgebrochen hat. Wird an allen
         /// Schleifengrenzen und vor jedem Solve-Aufruf geprüft, damit nach
@@ -713,6 +729,7 @@ namespace Stundenplan_V2
                         .ToList();
                     for (int b = 0; b < B; b++)
                     {
+                        if (BlockBeliebigOft(blocks[b])) continue; // "beliebig oft am Tag"
                         int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
                         int limit = (maxD == 0 && blocks[b].Wst >= 2) ? 1 : 2;
                         model.Add(LinearExpr.Sum(daySlots.Select(z => x[b, z.i])) <= limit);
@@ -761,6 +778,7 @@ namespace Stundenplan_V2
                 foreach (var g in doppelGDiag.Gruppen)
                 {
                     if (GruppeAusgeschlossen(g)) continue;
+                    if (FachBeliebigOft(g.Fach)) continue; // "beliebig oft am Tag": keine Min/Max
 
                     int minD = GruppeMinD(g);
                     int maxD = g.MaxDoppel;
@@ -793,6 +811,7 @@ namespace Stundenplan_V2
                         foreach (var g in doppelGDiag.Gruppen)
                         {
                             if (GruppeAusgeschlossen(g)) continue;
+                            if (FachBeliebigOft(g.Fach)) continue; // "beliebig oft am Tag"
                             if (g.MaxDoppel <= 0) continue;       // ohne Doppel-Vorgabe greift limit=1
                             if (g.HatABTrennung) continue;        // A/B: x-Summe nicht eindeutig
 
@@ -965,6 +984,7 @@ namespace Stundenplan_V2
                     var daySlotsSet = new HashSet<int>(daySlots);
                     foreach (var kv in fachKlasseMap)
                     {
+                        if (FachBeliebigOft(kv.Key.fach)) continue; // "beliebig oft am Tag"
                         var vars = BaueFachKlasseTagVars(model, x, blocks, kv.Value, daySlots, $"diag_fpkt_{tag}_{kv.Key.klasse}_{kv.Key.fach}");
 
                         if (doppelGDiag != null)
@@ -4532,6 +4552,10 @@ namespace Stundenplan_V2
             }
             foreach (var g in doppelG.Gruppen)
             {
+                // "Fächer beliebig oft am Tag": auch die Doppelstunden-Min/Max-
+                // Vorgaben dieser Fächer werden NICHT erzwungen.
+                if (FachBeliebigOft(g.Fach)) continue;
+
                 // Fix-Relax: sind ALLE Mitglieder vollständig (oder über-)
                 // fixiert, ist die Doppelstunden-Struktur der Gruppe allein
                 // durch die Fixierung bestimmt -> Min/Max überspringen.
@@ -4655,6 +4679,7 @@ namespace Stundenplan_V2
 
                 for (int b = 0; b < B; b++)
                 {
+                    if (BlockBeliebigOft(blocks[b])) continue; // "beliebig oft am Tag"
                     int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
                     int limit = (maxD == 0 && blocks[b].Wst >= 2) ? 1 : 2;
                     model.Add(LinearExpr.Sum(daySlots.Select(z => x[b, z.i])) <= limit);
@@ -4690,6 +4715,7 @@ namespace Stundenplan_V2
 
                 foreach (var kv in fachKlasseMap)
                 {
+                    if (FachBeliebigOft(kv.Key.fach)) continue; // "beliebig oft am Tag"
                     var vars = BaueFachKlasseTagVars(model, x, blocks, kv.Value, daySlots, $"fpkt_{tag}_{kv.Key.klasse}_{kv.Key.fach}");
 
                     // Doppelstunden dieser (klasse,fach) an diesem Tag: jetzt

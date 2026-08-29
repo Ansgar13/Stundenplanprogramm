@@ -444,6 +444,10 @@ namespace Stundenplan_V2
             var doppelSelberTagFaecher = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             int strafeDoppelSelberTag = 5;
 
+            // "Fächer beliebig oft am Tag": kommaseparierte Liste exakter Fach-Strings
+            // (Spalte B). Diese Fächer dürfen pro Klasse mehrfach pro Tag liegen.
+            var beliebigOftFaecher = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             // Hinweise auf PM-Werte, die sich nicht sauber lesen ließen.
             var pmWarnungen = new List<string>();
 
@@ -469,6 +473,17 @@ namespace Stundenplan_V2
                     {
                         if (!string.IsNullOrWhiteSpace(wert))
                             ausgenommeneSpaetFaecher = new HashSet<string>(
+                                wert.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)),
+                                StringComparer.OrdinalIgnoreCase);
+                    }
+                    // "Fächer beliebig oft am Tag": kommaseparierte Liste exakter
+                    // Fach-Strings. Das Wort "beliebig" ist eindeutig und kollidiert
+                    // mit keiner anderen PM-Beschriftung; bewusst früh geprüft, damit
+                    // kein generischer Zweig die Zeile abfängt. Groß/Klein egal.
+                    else if (label.Contains("beliebig"))
+                    {
+                        if (!string.IsNullOrWhiteSpace(wert))
+                            beliebigOftFaecher = new HashSet<string>(
                                 wert.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)),
                                 StringComparer.OrdinalIgnoreCase);
                     }
@@ -1090,6 +1105,12 @@ namespace Stundenplan_V2
             PlanBewertung.AusgenommeneSpaetFaecher = ausgenommeneSpaetFaecher;
             PlanBewertung.SpaetSchwelleJeWst = spaetSchwelle;
 
+            // "Fächer beliebig oft am Tag": zentrale, prozessweite Ausnahmeliste,
+            // die Solver-Engine UND Validator gemeinsam lesen (analog zu den
+            // Spät-Statics oben), damit erlaubte Mehrfach-Verplanung und Prüfung
+            // garantiert konsistent bleiben.
+            PlanValidator.BeliebigOftFaecher = beliebigOftFaecher;
+
             // Spät-Früh-Regel: Schwellen + Marker-Sets für die parallele Zählung
             // in PlanBewertung.Berechne (damit angezeigte Qualität und Solver-Ziel
             // für die -2-Verstöße identisch bleiben — analog zu den Spät-Statics).
@@ -1155,6 +1176,7 @@ namespace Stundenplan_V2
                 SpaetSchwelleJeWst = spaetSchwelle,
                 DoppelSelberTagFaecher = doppelSelberTagFaecher,
                 StrafeDoppelSelberTag = strafeDoppelSelberTag,
+                BeliebigOftFaecher = beliebigOftFaecher,
                 SpätGrenzeFolgetag = spätGrenzeFolgetag,
                 FrühGrenzeFolgetag = frühGrenzeFolgetag,
                 StrafeSpätFrüh = strafeSpätFrüh,

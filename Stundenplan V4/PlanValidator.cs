@@ -7,6 +7,15 @@ namespace Stundenplan_V2
 {
     public static class PlanValidator
     {
+        // "Fächer beliebig oft am Tag" (PM, Spalte B). Zentrale, prozessweite
+        // Ausnahmeliste (analog PlanBewertung.AusgenommeneSpaetFaecher): wird vom
+        // ExcelLoader beim Laden gesetzt und sowohl von der Solver-Engine
+        // (StundenplanEngine, harte Tagesregel) als auch hier im Validator gelesen.
+        // Fächer aus dieser Liste sind von der "Fach pro Klasse pro Tag"-Regel
+        // ausgenommen (Groß/Klein egal). Leer = bisheriges Verhalten.
+        public static HashSet<string> BeliebigOftFaecher { get; set; }
+            = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         public record Verletzung(
             string Kategorie,
             string Tag,
@@ -262,6 +271,11 @@ namespace Stundenplan_V2
             // =====================================================
             foreach (var g in doppelG.Gruppen)
             {
+                // "Fächer beliebig oft am Tag": Doppelstunden-Min/Max dieser Fächer
+                // werden nicht erzwungen (wie im Solver) und daher auch nicht geprüft.
+                if (BeliebigOftFaecher != null && BeliebigOftFaecher.Contains(g.Fach))
+                    continue;
+
                 int minD = g.MinDoppel;
                 int maxD = g.MaxDoppel;
                 if (minD == 0 && maxD == 0) continue;
@@ -358,6 +372,15 @@ namespace Stundenplan_V2
             // =====================================================
             for (int b = 0; b < B; b++)
             {
+                // "Fächer beliebig oft am Tag": Block von der Tagesregel ausnehmen,
+                // aber nur wenn ALLE seine Fächer gelistet sind (gemischte/gekoppelte
+                // Blöcke bleiben regulär geprüft). Muss zur Solver-Engine passen,
+                // sonst würde ein bewusst mehrfach verplantes Fach hier fälschlich
+                // als Verstoß gemeldet.
+                if (BeliebigOftFaecher != null && blocks[b].Teile.Count > 0 &&
+                    blocks[b].Teile.All(t => BeliebigOftFaecher.Contains(t.Fach)))
+                    continue;
+
                 int maxD = blocks[b].Teile.Max(t => t.MaxDoppel);
 
                 var proTag = blockSlots[b]
@@ -537,12 +560,18 @@ namespace Stundenplan_V2
                     }
                 }
                 foreach (var kv in fachZähler)
+                {
+                    // "Fächer beliebig oft am Tag": dieses Fach ist von der
+                    // Fach-pro-Klasse-pro-Tag-Regel ausgenommen (wie im Solver).
+                    if (BeliebigOftFaecher != null && BeliebigOftFaecher.Contains(kv.Key.fach))
+                        continue;
                     if (kv.Value > 2)
                         verletzungen.Add(new Verletzung(
                             "Fach pro Klasse pro Tag", kv.Key.tag, 0, 0,
                             "", kv.Key.fach,
                             $"Klasse {kv.Key.klasse}: {kv.Value}x {kv.Key.fach} an {kv.Key.tag} (max 2)",
                             Klasse: kv.Key.klasse));
+                }
             }
 
             // =====================================================
@@ -575,6 +604,10 @@ namespace Stundenplan_V2
                 foreach (var kv in fkBlocks)
                 {
                     var (klasse, fach) = kv.Key;
+                    // "Fächer beliebig oft am Tag": dieses Fach ist von der
+                    // harten Fach/Klasse/Tag-Doppel-Regel ausgenommen (wie im Solver).
+                    if (BeliebigOftFaecher != null && BeliebigOftFaecher.Contains(fach))
+                        continue;
                     var blockIdxs = kv.Value;
 
                     // KKK-Gruppen bilden (leeres KKK = eigener Einzelblock)

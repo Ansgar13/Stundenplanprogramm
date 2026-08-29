@@ -972,7 +972,26 @@ namespace Stundenplan_V2
             // Log- und Fortschrittsmeldungen kommen vom Hintergrund-Thread und
             // werden auf den UI-Thread marshallt.
             Action<string> logUi = s => Dispatcher.BeginInvoke(new Action(() => Log(s)));
-            Action<SolverFortschritt> prog = f => Dispatcher.BeginInvoke(new Action(() => fenster.Aktualisiere(f)));
+            Action<SolverFortschritt> prog = f => Dispatcher.BeginInvoke(new Action(() =>
+            {
+                // Aufbereitung im großen Ausgabefenster ("lösbar"/"unlösbar" groß,
+                // Leerzeilen) exakt an die Diagnose-Phase koppeln. Diese Phasen
+                // ("Ursachensuche startet …", "Ursachensuche — …",
+                //  "Ursachensuche beendet …", "Ursachensuche abgebrochen.")
+                // sendet die Engine direkt an der Diagnose-Grenze – unabhaengig
+                // davon, ueber welchen Solver-Weg die Diagnose laeuft.
+                var phase = f?.Phase;
+                if (!string.IsNullOrEmpty(phase) &&
+                    phase.StartsWith("Ursachensuche", StringComparison.Ordinal))
+                {
+                    if (phase.Contains("beendet") || phase.Contains("abgebrochen"))
+                        _ausgabeFenster?.UrsachensucheEnde();
+                    else
+                        _ausgabeFenster?.UrsachensucheStart();
+                }
+
+                fenster.Aktualisiere(f);
+            }));
 
             // Rückfrage vor der Ursachensuche. Der Solver-Thread ruft diesen
             // Callback synchron auf, sobald Unlösbarkeit feststeht und die
@@ -1012,7 +1031,13 @@ namespace Stundenplan_V2
                         "[Nein] = keine Suche, Lauf sofort beenden",
                         "Unlösbar – Ursache suchen?",
                         MessageBoxButton.YesNo, MessageBoxImage.Question);
-                    return antwort == MessageBoxResult.Yes;
+                    bool ursacheSuchen = antwort == MessageBoxResult.Yes;
+
+                    // Nur wenn tatsächlich gesucht wird, den Aufbereitungs-Modus
+                    // des großen Ausgabefensters einschalten (läuft im UI-Thread).
+                    if (ursacheSuchen) _ausgabeFenster?.UrsachensucheStart();
+
+                    return ursacheSuchen;
                 }
                 finally
                 {
@@ -1073,6 +1098,10 @@ namespace Stundenplan_V2
             {
                 fenster.Close();
                 cts.Dispose();
+
+                // Aufbereitung wieder abschalten – egal ob Lauf erfolgreich war,
+                // fehlschlug oder abgebrochen wurde (falls Diagnose lief).
+                _ausgabeFenster?.UrsachensucheEnde();
             }
 
 
