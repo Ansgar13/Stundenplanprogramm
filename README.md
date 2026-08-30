@@ -3,8 +3,7 @@
 Ein Windows-Desktop-Programm (WPF, .NET 10) zur automatischen Erstellung von
 Schul-Stundenplänen. Die Unterrichtsverteilung wird aus einer Excel-Arbeitsmappe
 gelesen, mit dem CP-SAT-Solver von **Google OR-Tools** verplant und wahlweise
-wieder nach **Untis** zurückgespielt.Siehe auch hier: https://ansgar13.github.io/Stundenplanprogramm/
-
+wieder nach **Untis** zurückgespielt.Siehe auch hier: https://schulsoftware-ki.github.io/Stundenplanprogramm/
 - **Framework:** .NET 10 (`net10.0-windows`), WPF
 - **Namespace:** `Stundenplan_V2`
 - **Abhängigkeiten:** `Google.OrTools` 9.15.6755, `ClosedXML` 0.105.0
