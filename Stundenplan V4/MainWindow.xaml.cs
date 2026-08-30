@@ -325,6 +325,10 @@ namespace Stundenplan_V2
                 excelPfad = dlg.FileName;
                 TxtDatei.Text = "Datei: " + System.IO.Path.GetFileName(excelPfad);
                 Title = "Stundenplan V2 – " + System.IO.Path.GetFileName(excelPfad);
+                // Dateiname auch in der Kopfzeile des (ggf. schon offenen) großen
+                // Ausgabefensters mitziehen – dessen Kopfzeile wird sonst nur beim
+                // Erzeugen gesetzt und bliebe bei "(keine Datei geladen)" stehen.
+                _ausgabeFenster?.SetzeDateiname(excelPfad);
                 LadeExcelDatenNeu(zeigeWarnungen: true);
             }
         }

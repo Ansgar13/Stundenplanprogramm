@@ -24,6 +24,7 @@ namespace Stundenplan_V2
         private readonly RichTextBox _box;
         private readonly Paragraph _para;      // hält alle Zeilen als Inlines
         private readonly CheckBox _autoScroll;
+        private readonly TextBlock _titel;     // Kopfzeile "Datei: …" – wird über SetzeDateiname() aktualisiert
 
         // Nur während der (automatischen) Infeasible-Ursachensuche aktiv. Solange
         // gesetzt, werden im Ausgabefenster die Wörter "lösbar"/"unlösbar" groß
@@ -86,20 +87,17 @@ namespace Stundenplan_V2
             knoepfe.Children.Add(btnLeeren);
             DockPanel.SetDock(knoepfe, Dock.Right);
 
-            string dateiName = string.IsNullOrEmpty(excelPfad)
-                ? "(keine Datei geladen)"
-                : System.IO.Path.GetFileName(excelPfad);
-            var titel = new TextBlock
+            _titel = new TextBlock
             {
-                Text = "Datei: " + dateiName,
                 FontWeight = FontWeights.Bold,
                 FontSize = 14,
                 VerticalAlignment = VerticalAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis
             };
+            SetzeDateiname(excelPfad);   // setzt "Datei: <Name>" bzw. "(keine Datei geladen)"
 
             kopf.Children.Add(knoepfe); // Dock.Right zuerst hinzufügen
-            kopf.Children.Add(titel);   // füllt den restlichen Platz (LastChildFill)
+            kopf.Children.Add(_titel);  // füllt den restlichen Platz (LastChildFill)
             Grid.SetRow(kopf, 0);
 
             // ---------- Große Ausgabe (RichTextBox) ----------
@@ -139,6 +137,20 @@ namespace Stundenplan_V2
         public void UrsachensucheEnde()
         {
             _ursachensucheAktiv = false;
+        }
+
+        /// <summary>
+        /// Aktualisiert die Kopfzeile mit dem Namen der geladenen Datei. Wird beim
+        /// Einlesen einer Excel-Datei aufgerufen, damit der Dateiname auch im schon
+        /// geöffneten Ausgabefenster automatisch mitwandert. Auf dem UI-Thread
+        /// aufrufen. Bei leerem Pfad steht wieder "(keine Datei geladen)".
+        /// </summary>
+        public void SetzeDateiname(string? excelPfad)
+        {
+            string dateiName = string.IsNullOrEmpty(excelPfad)
+                ? "(keine Datei geladen)"
+                : System.IO.Path.GetFileName(excelPfad);
+            _titel.Text = "Datei: " + dateiName;
         }
 
         /// <summary>Setzt den kompletten Fensterinhalt (z. B. beim Öffnen aus TxtLog).</summary>
