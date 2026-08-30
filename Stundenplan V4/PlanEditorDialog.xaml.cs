@@ -8129,6 +8129,21 @@ namespace Stundenplan_V2
                         && v.BetroffeneUNrn.Contains(block.UNr)
                         && (stunde == v.Stunde || stunde == v.Stunde + 1);
 
+                // "Doppelstunden" (min/max je (Klasse,Fach)-Gruppe, UNr-übergreifend):
+                // Die Verletzung traegt in v.UNr nur die ERSTE Mitglieds-UNr (repUnr),
+                // in v.BetroffeneUNrn aber ALLE beteiligten UNrn. Ohne diesen Zweig
+                // faellt sie in den generischen "v.UNr == block.UNr"-Fall unten und
+                // faerbt nur die erste UNr gelb — bei einem auf zwei UNrn verteilten
+                // Unterricht also nur EINE der beiden Doppelstunden. Ueber
+                // BetroffeneUNrn zuordnen, damit ALLE Stunden der Gruppe markiert
+                // werden. v.Tag == "" / v.Stunde == 0 wirken wie bisher als Wildcards
+                // (alle Slots des jeweiligen Blocks). Faellt BetroffeneUNrn ausnahms-
+                // weise null aus, greift weiterhin der generische Zweig (Altverhalten).
+                if (v.Kategorie == "Doppelstunden" && v.BetroffeneUNrn != null)
+                    return v.BetroffeneUNrn.Contains(block.UNr)
+                        && (v.Tag == "" || v.Tag == tag)
+                        && (v.Stunde == 0 || v.Stunde == stunde);
+
                 // An eine konkrete UNr gebundene Verletzungen wie bisher.
                 return v.UNr == block.UNr
                     && (v.Tag == "" || v.Tag == tag)
