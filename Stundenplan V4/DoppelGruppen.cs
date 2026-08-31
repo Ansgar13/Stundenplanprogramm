@@ -71,6 +71,11 @@ namespace Stundenplan_V2
 
         public List<Gruppe> Gruppen { get; } = new();
 
+        // Hinweise, wenn eine MinDoppel-Forderung gekappt wurde, weil die Gruppe
+        // physisch keine Doppelstunde bilden kann (s. BaueGruppen). Der Aufrufer
+        // kann sie protokollieren; leer = nichts gekappt.
+        public List<string> Warnungen { get; } = new();
+
         // Schnellzugriff (Klasse, Fach) -> Gruppe.
         private readonly Dictionary<(string klasse, string fach), Gruppe> _map =
             new(new KlasseFachComparer());
@@ -108,6 +113,51 @@ namespace Stundenplan_V2
                 int MinB(int b) => blocks[b].Teile.Count > 0 ? blocks[b].Teile.Max(t => t.MinDoppel) : 0;
                 int MaxB(int b) => blocks[b].Teile.Count > 0 ? blocks[b].Teile.Max(t => t.MaxDoppel) : 0;
 
+                // Kann diese (Klasse, Fach)-Gruppe physisch überhaupt eine
+                // Doppelstunde bilden? Dafür muss ihr Track zwei
+                // aufeinanderfolgende Slots belegen können. KKK-parallele
+                // Mitglieder (gleiches nicht-leeres KKK, getrimmt/case-insensitiv
+                // wie die Klassenregel) belegen denselben Slot und zählen daher
+                // nur mit max(Wst); eigenständige Mitglieder (leeres KKK) sind
+                // additiv. Reicht die so bestimmte Slot-Kapazität nicht für zwei
+                // aufeinanderfolgende Stunden (< 2), ist eine Doppelstunde
+                // unmöglich — z. B. eine reine Einzelstunde oder ein KKK-
+                // paralleles Band aus lauter Einzelstunden. Dann darf MinDoppel
+                // die Gruppe NICHT zu einer nie erfüllbaren Doppelstunde zwingen
+                // und wird auf 0 gekappt.
+                //
+                // WICHTIG — nur SENKEN, nie erhöhen: Der Wert wird ausschließlich
+                // von min(Mitglieder) auf 0 reduziert, wenn keine Doppelstunde
+                // möglich ist. Gruppen, die eine Doppelstunde bilden KÖNNEN,
+                // behalten exakt das bisherige min(Mitglieder) — es wird also
+                // keine bislang (durch einen Min-0-Partnerblock) relaxierte
+                // Doppelstunde neu scharf geschaltet.
+                int kkkKapazitaet;
+                {
+                    var kkkMax = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    int einzeln = 0;
+                    foreach (var b in mitglieder)
+                    {
+                        string kkk = (blocks[b].KKK ?? "").Trim();
+                        int w = blocks[b].Wst;
+                        if (kkk.Length > 0)
+                            kkkMax[kkk] = Math.Max(kkkMax.TryGetValue(kkk, out var cur) ? cur : 0, w);
+                        else
+                            einzeln += w;
+                    }
+                    kkkKapazitaet = einzeln + kkkMax.Values.Sum();
+                }
+                bool kannDoppel = kkkKapazitaet >= 2;
+
+                int altMin = mitglieder.Min(MinB);
+                int minDoppel = kannDoppel ? altMin : 0;
+                if (!kannDoppel && altMin > 0)
+                    result.Warnungen.Add(
+                        $"Fach {kv.Key.Item2} / Klasse {kv.Key.Item1}: Dopp.Std.-Mindestforderung " +
+                        $"{altMin} ignoriert – die Gruppe kann physisch keine Doppelstunde bilden " +
+                        $"(Slot-Kapazität {kkkKapazitaet}: Einzelstunde bzw. KKK-paralleles Band). " +
+                        $"MinDoppel auf 0 gesetzt.");
+
                 var g = new Gruppe
                 {
                     Klasse = kv.Key.Item1,
@@ -116,9 +166,10 @@ namespace Stundenplan_V2
                     SpurA = mitglieder.Where(b => Wg(b) != "B").ToList(),
                     SpurB = mitglieder.Where(b => Wg(b) != "A").ToList(),
                     HatABTrennung = mitglieder.Any(b => Wg(b) == "A" || Wg(b) == "B"),
-                    // größter Spielraum: max(Max), min(Min)
+                    // größter Spielraum: max(Max); Min = min(Mitglieder), aber auf
+                    // 0 gekappt, wenn keine Doppelstunde möglich ist (s. o.).
                     MaxDoppel = mitglieder.Max(MaxB),
-                    MinDoppel = mitglieder.Min(MinB),
+                    MinDoppel = minDoppel,
                     DoppelÜberPauseErlaubt = mitglieder.Any(b => blocks[b].DoppelÜberPauseErlaubt),
                 };
 

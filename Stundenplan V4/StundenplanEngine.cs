@@ -61,6 +61,12 @@ namespace Stundenplan_V2
         // gesetzt; false = altes Verhalten (Abbruch/Diagnose wie bisher).
         private static bool _fixRelaxErlaubt = false;
 
+        // Verhindert, dass die Doppelstunden-Kappungswarnung (DoppelGruppen:
+        // MinDoppel auf 0, weil physisch keine Doppelstunde möglich) pro Lauf
+        // mehrfach geloggt wird. Wird zu Beginn jedes Planen()-Laufs auf false
+        // gesetzt und nach der ersten Ausgabe auf true.
+        private static bool _doppelKappungGeloggt = false;
+
         // "Fächer beliebig oft am Tag": Fächer aus dieser (prozessweiten, vom
         // ExcelLoader gesetzten) Liste sind von der Tagesregel "Fach pro Klasse
         // pro Tag" ausgenommen und dürfen mehrfach – auch nicht benachbart – pro
@@ -1407,30 +1413,67 @@ namespace Stundenplan_V2
                     return "";  // gemischt oder "jede Woche" -> belegt beide Wochen
                 }
 
+                // Ausnahmen ZWK: Blöcke, deren -3-Klassensperre für DIESE Klasse
+                // block-weit abgeschaltet ist, dürfen auch in sonst gesperrten
+                // Slots liegen (identisch zum echten Modell, s. Klassen-Sperren:
+                // "if (AusnahmenZwk.Aktuell.IstIgnoriert(...)) continue;"). Sie
+                // konkurrieren daher NICHT um die freien (nicht-(-3)) Slots,
+                // sondern dürfen alle S Slots nutzen. Deshalb zwei getrennte
+                // Bedarfssummen. Ein KKK-Verbund gilt nur dann als befreit, wenn
+                // ALLE seine Mitglieder befreit sind (er liegt parallel in einem
+                // Slot; ein einziger nicht-befreiter Teil bindet ihn an die
+                // freien Slots).
+                bool GrpBefreit(IEnumerable<UnterrichtsBlock> grp) =>
+                    grp.All(g => AusnahmenZwk.Aktuell.IstIgnoriert(g, k));
+
+                // NUR nicht-befreite Einheiten -> müssen in die freien Slots.
                 int e = 0, a = 0, bW = 0;
-                void AddEinheit(string woche, int wst)
+                // ALLE Einheiten (inkl. befreiter) -> müssen in die Gesamtzahl S.
+                int eG = 0, aG = 0, bWG = 0;
+                void AddEinheit(string woche, int wst, bool befreit)
                 {
-                    if (woche == "A") a += wst;
-                    else if (woche == "B") bW += wst;
-                    else e += wst;                 // jede Woche
+                    if (woche == "A") { aG += wst; if (!befreit) a += wst; }
+                    else if (woche == "B") { bWG += wst; if (!befreit) bW += wst; }
+                    else { eG += wst; if (!befreit) e += wst; }     // jede Woche
                 }
 
                 foreach (var grp in kkkGruppen.Values)
-                    AddEinheit(WocheVon(grp), grp.Max(g => g.Wst));   // KKK-parallel -> max
+                    AddEinheit(WocheVon(grp), grp.Max(g => g.Wst), GrpBefreit(grp));   // KKK-parallel -> max
                 foreach (var blk in einzelBloecke)
-                    AddEinheit(WocheVon(new[] { blk }), blk.Wst);
+                    AddEinheit(WocheVon(new[] { blk }), blk.Wst, GrpBefreit(new[] { blk }));
 
+                // Bedarf OHNE die befreiten Blöcke (müssen in die freien Slots):
                 int benoetigt = e + Math.Max(a, bW);
+                // Gesamtbedarf INKL. befreiter Blöcke (müssen in ALLE S Slots):
+                int benoetigtGesamt = eG + Math.Max(aG, bWG);
 
-                if (benoetigt > frei)
+                // Zwei unabhängige, jeweils notwendige Bedingungen:
+                //  (1) benoetigt   > frei : die nicht befreiten Blöcke allein
+                //      passen schon nicht in die freien Slots.
+                //  (2) benoetigtGesamt > S : selbst unter Nutzung ALLER Slots
+                //      (auch der -3-Slots, die nur die befreiten Blöcke nutzen
+                //      dürfen) ist es zu viel — dann helfen auch die Ausnahmen
+                //      nicht mehr.
+                bool ueberFrei   = benoetigt > frei;
+                bool ueberGesamt = benoetigtGesamt > S;
+
+                if (ueberFrei || ueberGesamt)
                 {
                     if (!eineGemeldet)
                     {
-                        log("  [Klassencheck] Klassen mit mehr Pflichtunterricht als freien Slots (laut ZWK) – das macht den Plan allein schon unlösbar:");
+                        log("  [Klassencheck] Klassen mit mehr Pflichtunterricht als freien Slots (laut ZWK, Ausnahmen ZWK berücksichtigt) – das macht den Plan allein schon unlösbar:");
                         eineGemeldet = true;
                     }
-                    string abInfo = (a > 0 || bW > 0) ? $"  [jede Woche {e}, A {a}, B {bW}]" : "";
-                    log($"     • {k}: braucht mind. {benoetigt} Slots, hat aber nur {frei} freie → {benoetigt - frei} zu viel{abInfo}");
+                    if (ueberGesamt)
+                    {
+                        string abInfoG = (aG > 0 || bWG > 0) ? $"  [jede Woche {eG}, A {aG}, B {bWG}]" : "";
+                        log($"     • {k}: {benoetigtGesamt} Pflicht-Slots (inkl. Ausnahmen), aber nur {S} Slots insgesamt → {benoetigtGesamt - S} zu viel – auch mit Ausnahmen ZWK unlösbar{abInfoG}");
+                    }
+                    else
+                    {
+                        string abInfo = (a > 0 || bW > 0) ? $"  [jede Woche {e}, A {a}, B {bW}]" : "";
+                        log($"     • {k}: braucht mind. {benoetigt} freie Slots (ohne die per Ausnahmen ZWK befreiten Blöcke), hat aber nur {frei} freie → {benoetigt - frei} zu viel{abInfo}");
+                    }
                 }
             }
 
@@ -3454,6 +3497,7 @@ namespace Stundenplan_V2
         {
             // Diagnose-Buffer für aktuellen Lauf zurücksetzen
             _infeasibleDetails.Clear();
+            _doppelKappungGeloggt = false;
 
             // Schnellmodus für diesen Lauf hinterlegen (PlanenIntern liest den
             // statischen Stand). null => wie bisher.
@@ -3623,6 +3667,15 @@ namespace Stundenplan_V2
             // --------------------------------------------------
             log("Phase 1: Ohne Tausch...");
             reporter?.SetzePhase("Phase 1: ohne Tausch");
+
+            // Wird nach Phase 1 ohnehin Fix-Relax versucht (Option an UND
+            // Fixierungen vorhanden), dann die Ursachensuche im ERSTEN
+            // Phase-1-Lauf zurückstellen: erst Fix-Relax, der "Ursache
+            // suchen?"-Dialog und die (u. U. minutenlange) Diagnose erst dann,
+            // wenn auch Fix-Relax keine Lösung bringt.
+            bool fixRelaxKandidat = _fixRelaxErlaubt &&
+                slots.Any(s => s.FixUNrn != null && s.FixUNrn.Count > 0);
+
             var ohneBlöcke = blocks; // Original-Blöcke
             var ohneLösungen = PlanenIntern(
                 excelPfad, blocks, slots, fachraumLimit, extraFreieTage,
@@ -3658,7 +3711,8 @@ namespace Stundenplan_V2
                 lehrerSpätFrühMinus2: lehrerSpätFrühMinus2,
                 lehrerSpätFrühMinus3: lehrerSpätFrühMinus3,
                 reporter: reporter, abbruch: abbruch, liveState: liveState,
-                darfDiagnose: diagnoseGate);
+                darfDiagnose: diagnoseGate,
+                ursachensucheUnterdruecken: fixRelaxKandidat);
             if (reporter != null)
                 foreach (var l in ohneLösungen)
                     reporter.MeldeGefundeneLösung(l.label, l.quality, l.badUnits);
@@ -4224,6 +4278,14 @@ namespace Stundenplan_V2
             // Folge). Alle übrigen harten Regeln bleiben hart. false =
             // unverändertes Verhalten.
             bool fixRelax = false,
+            // Ursachensuche vorerst zurückstellen: bei Infeasible NUR die Basis-
+            // und die erweiterte FixUNr-Prüfung ausgeben und dann sofort
+            // zurückkehren — OHNE den "Ursache suchen?"-Dialog und ohne die
+            // (u. U. minutenlange) Diagnose-Kaskade. Wird von Planen() für den
+            // ERSTEN Phase-1-Lauf gesetzt, wenn danach ohnehin Fix-Relax
+            // versucht wird: erst Fix-Relax, die Ursachensuche erst, falls auch
+            // Fix-Relax keine Lösung bringt. false = unverändertes Verhalten.
+            bool ursachensucheUnterdruecken = false,
             // Teilplan-Modus: pro UNr eine platziert-Variable; nicht
             // platzierbare UNr werden komplett fallengelassen (alle x=0).
             bool teilplanModus = false,
@@ -4516,6 +4578,17 @@ namespace Stundenplan_V2
             // DoppelGruppen.cs. g.D[s] ersetzt das frühere d[b,s].
             // =====================================================
             var doppelG = DoppelGruppen.Baue(model, x, blocks, slots);
+
+            // Physisch unmögliche Doppelstunden-Mindestforderungen wurden in
+            // DoppelGruppen auf 0 gekappt (Einzelstunde / KKK-paralleles Band).
+            // Einmal pro Lauf und nur im echten Grundmodell (tauschKey == null)
+            // ausgeben, damit der Nutzer eine solche Datenlage bemerkt.
+            if (tauschKey == null && !_doppelKappungGeloggt && doppelG.Warnungen.Count > 0)
+            {
+                _doppelKappungGeloggt = true;
+                foreach (var w in doppelG.Warnungen)
+                    log?.Invoke($"  ⚠ Doppelstunden-Kappung: {w}");
+            }
 
             // =====================================================
             // GROSSE PAUSEN: Doppelstunden nicht über Pause
@@ -6111,6 +6184,19 @@ namespace Stundenplan_V2
                 }
 
                 DiagLog(log, "  [Diagnose] === Ende erweiterte Prüfung ===");
+
+                // Ursachensuche zurückgestellt: Der Aufrufer (Planen) versucht
+                // gleich Fix-Relax. Weder Dialog noch Diagnose-Kaskade hier —
+                // bewiesenInfeasible ist bereits true, ohneLösungen bleibt leer,
+                // sodass Fix-Relax anläuft. Scheitert Fix-Relax, wird die
+                // Ursachensuche dort (fixRelax-Lauf ohne dieses Flag) bzw. in
+                // Planen nachgeholt.
+                if (ursachensucheUnterdruecken)
+                {
+                    DiagLog(log, "  [Diagnose] Ursachensuche vorerst zurückgestellt – " +
+                                 "es wird zuerst Fix-Relax versucht.");
+                    return lösungen;
+                }
 
                 // =====================================================
                 // DIAGNOSE-SOLVER: Lösung ohne Lehrer-Zeitwünsche möglich?
